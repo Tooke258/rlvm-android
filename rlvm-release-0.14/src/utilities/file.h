@@ -73,6 +73,10 @@ void WriteGameFile(const boost::filesystem::path& path, const std::string& data)
 // 路径。存档与全局数据的**读取**都用它——只改写入是不够的。
 bool ReadGameFileAll(const boost::filesystem::path& path, std::string& out);
 
+// 判断"游戏文件"是否存在：优先用读钩子试着打开（SAF 下唯一可行），
+// 失败回退 boost::filesystem::exists。存档菜单用它判断槽位是否占用。
+bool GameFileExists(const boost::filesystem::path& path);
+
 // Android 移植新增：把存档目录从默认的 $HOME/.rlvm/<REGNAME> 改到指定位置。
 // 传空路径表示恢复默认。设置后 System::GameSaveDirectory() 直接返回它，
 // 并且不再尝试用 boost 去创建目录（SAF 下没有真实路径，创建由平台层负责）。

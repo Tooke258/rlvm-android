@@ -38,6 +38,7 @@
 #include <string>
 
 #include "long_operations/load_game_long_operation.h"
+#include "utilities/file.h"
 #include "machine/general_operations.h"
 #include "machine/long_operation.h"
 #include "machine/memory.h"
@@ -69,7 +70,9 @@ namespace {
 struct SaveExists : public RLOp_Store_1<IntConstant_T> {
   int operator()(RLMachine& machine, int slot) {
     fs::path saveFile = Serialization::buildSaveGameFilename(machine, slot);
-    return fs::exists(saveFile) ? 1 : 0;
+    // 经统一入口判断：SAF 下没有真实路径，fs::exists 永远为 0，
+    // 存档菜单会以为所有槽位都是空的（"存了但不显示"）。
+    return GameFileExists(saveFile) ? 1 : 0;
   }
 };
 

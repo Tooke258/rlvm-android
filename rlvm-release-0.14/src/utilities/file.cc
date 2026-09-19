@@ -244,3 +244,13 @@ bool ReadGameFileAll(const boost::filesystem::path& path, std::string& out) {
              std::istreambuf_iterator<char>());
   return true;
 }
+
+bool GameFileExists(const boost::filesystem::path& path) {
+  const int fd = OpenGameFileFd(path.string());
+  if (fd >= 0) {
+    close(fd);
+    return true;
+  }
+  // 钩子没装或打开失败：回退到普通路径判断（非 Android 构建走这里）。
+  return boost::filesystem::exists(path);
+}
