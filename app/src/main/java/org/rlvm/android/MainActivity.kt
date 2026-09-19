@@ -6,6 +6,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
+import android.graphics.drawable.GradientDrawable
 import android.opengl.GLSurfaceView
 import android.view.Gravity
 import android.view.MotionEvent
@@ -13,6 +14,7 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -49,6 +51,12 @@ class MainActivity : Activity() {
     private lateinit var output: TextView
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: RlvmRenderer
+    // 悬浮球 + 侧边栏：游戏画面占满屏幕，控制项与日志收进侧栏，
+    // 由右上角的小球（可拖动）展开/收起。
+    private lateinit var panel: LinearLayout
+    private lateinit var ball: TextView
+    private var panelWidth = 0
+    private var panelOpen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,49 +132,84 @@ class MainActivity : Activity() {
             setOnTouchListener { _, event -> handleTouch(event) }
         }
 
-        setContentView(
-            LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(
-                    LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.VERTICAL
-                        gravity = Gravity.CENTER
-                        // 按钮变多了：拆成两行，避免被挤到屏幕外（横向滚动会让
-                        // 用户看不到后面的按钮）。
-                        addView(
-                            LinearLayout(this@MainActivity).apply {
-                                orientation = LinearLayout.HORIZONTAL
-                                addView(pickButton)
-                                addView(safButton)
-                                addView(stopButton)
-                            }
-                        )
-                        addView(
-                            LinearLayout(this@MainActivity).apply {
-                                orientation = LinearLayout.HORIZONTAL
-                                addView(pathButton)
-                                addView(orientationButton)
-                                addView(fitButton)
-                            }
-                        )
-                    }
-                )
-                addView(
-                    glView,
-                    LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, 0, 3f
-                    )
-                )
-                addView(
-                    ScrollView(this@MainActivity).apply {
-                        layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f
-                        )
-                        addView(output)
-                    }
-                )
+        // ---- 悬浮球 + 侧边栏 -------------------------------------------------
+        // 游戏画面应当占满屏幕；控制项与日志收进可滑出的侧栏，由小球开关。
+        val density = resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+
+        fun buttonRow(vararg views: android.view.View) = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            for (v in views) {
+                addView(v, LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
-        )
+        }
+
+        panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xF0101010.toInt())
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            addView(buttonRow(pickButton, safButton))
+            addView(buttonRow(stopButton, orientationButton))
+            addView(buttonRow(pathButton, fitButton))
+            addView(
+                ScrollView(this@MainActivity).apply { addView(output) },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            )
+        }
+
+        // 悬浮球：可上下拖动（免得挡住游戏 UI），点击则展开/收起侧栏。
+        var dragStartY = 0f
+        var dragged = false
+        ball = TextView(this).apply {
+            text = "≡"
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xCC202020.toInt())
+                setStroke(dp(2), 0x88FFFFFF.toInt())
+            }
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        dragStartY = event.rawY
+                        dragged = false
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dy = event.rawY - dragStartY
+                        if (Math.abs(dy) > dp(6)) dragged = true
+                        if (dragged) {
+                            v.translationY += dy
+                            dragStartY = event.rawY
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!dragged) togglePanel()
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+
+        panelWidth = (resources.displayMetrics.widthPixels * 0.72f).toInt()
+        val ballSize = dp(52)
+        val root = FrameLayout(this)
+        root.addView(glView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val ballParams = FrameLayout.LayoutParams(
+            ballSize, ballSize, Gravity.END or Gravity.CENTER_VERTICAL)
+        ballParams.rightMargin = dp(6)
+        root.addView(ball, ballParams)
+        root.addView(panel, FrameLayout.LayoutParams(
+            panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
+        panel.translationX = panelWidth.toFloat()  // 初始收在屏幕外
+        setContentView(root)
 
         log(buildString {
             appendLine(runCatching {
@@ -273,6 +316,15 @@ class MainActivity : Activity() {
 
     private fun background(block: () -> Unit) {
         thread(name = "rlvm-task") { block() }
+    }
+
+    /** 展开/收起右侧栏（滑入滑出，不重建任何视图）。 */
+    private fun togglePanel() {
+        panelOpen = !panelOpen
+        panel.animate()
+            .translationX(if (panelOpen) 0f else panelWidth.toFloat())
+            .setDuration(180)
+            .start()
     }
 
     /** 当前是否横屏（按实际配置判断，避免与持久化的期望值不一致）。 */
