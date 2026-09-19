@@ -22,9 +22,11 @@ namespace {
 // 合成统计：见头文件里的说明。引擎线程写、探针线程读，用互斥锁即可。
 std::mutex g_blit_stats_mutex;
 GraphicsBlitStats g_blit_stats;
+// 统计默认关闭：它是逐像素累加，放在渲染热路径里纯属浪费。
+// 需要时用诊断文件里的 blit_stats=1 打开。
+bool g_blit_stats_enabled = false;
 
 constexpr char kGraphicsLogTag[] = "rlvm-graphics";
-
 inline uint32_t PackRGBA(int r, int g, int b, int a) {
   return static_cast<uint32_t>(r & 0xFF) | (static_cast<uint32_t>(g & 0xFF) << 8) |
          (static_cast<uint32_t>(b & 0xFF) << 16) |
@@ -208,25 +210,55 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
   const int copy_h = std::min(src.height(), dst.height());
   const int base_alpha = Clamp255(alpha);
 
+  // 统计只在显式打开时累加（逐像素两个计数器在热路径里很贵）。
+  const bool stats = g_blit_stats_enabled;
+
+  const int src_width = size_.width();
+  const int dst_width = dst_size.width();
+
   for (int y = 0; y < copy_h; ++y) {
     const int sy = src.y() + y;
     const int dy = dst.y() + y;
     if (sy < 0 || sy >= size_.height() || dy < 0 || dy >= dst_size.height()) continue;
-    for (int x = 0; x < copy_w; ++x) {
-      const int sx = src.x() + x;
-      const int dx = dst.x() + x;
-      if (sx < 0 || sx >= size_.width() || dx < 0 || dx >= dst_size.width()) continue;
 
-      const uint32_t s = pixels_[static_cast<size_t>(sy) * size_.width() + sx];
+    // 把这一行的有效 x 区间一次算好，内层循环里就没有任何边界判断。
+    int x_begin = std::max(0, -src.x());
+    x_begin = std::max(x_begin, -dst.x());
+    int x_end = std::min(copy_w, src_width - src.x());
+    x_end = std::min(x_end, dst_width - dst.x());
+    if (x_begin >= x_end) continue;
+
+    const uint32_t* s_row =
+        pixels_.data() + static_cast<size_t>(sy) * src_width + src.x();
+    uint32_t* d_row =
+        dest->pixels_.data() + static_cast<size_t>(dy) * dst_width + dst.x();
+
+    // 整行都不透明时直接整段拷贝：这是背景层与全屏推屏最常见的情形。
+    if (base_alpha == 255 && !use_src_alpha) {
+      const size_t count = static_cast<size_t>(x_end - x_begin);
+      std::memcpy(d_row + x_begin, s_row + x_begin, count * sizeof(uint32_t));
+      if (stats) {
+        written += count;
+        for (int x = x_begin; x < x_end; ++x) {
+          if ((d_row[x] & 0x00FFFFFFu) != 0) ++nonblack;
+        }
+      }
+      continue;
+    }
+
+    for (int x = x_begin; x < x_end; ++x) {
+      const uint32_t s = s_row[x];
       const int src_a = use_src_alpha ? AlphaOf(s) : 255;
       const int eff_a = src_a * base_alpha / 255;
       if (eff_a == 0) continue;
 
-      uint32_t& d = dest->pixels_[static_cast<size_t>(dy) * dst_size.width() + dx];
+      uint32_t& d = d_row[x];
       if (eff_a == 255) {
         d = s;
-        ++written;
-        if ((d & 0x00FFFFFFu) != 0) ++nonblack;
+        if (stats) {
+          ++written;
+          if ((d & 0x00FFFFFFu) != 0) ++nonblack;
+        }
         continue;
       }
       const int inv = 255 - eff_a;
@@ -234,11 +266,14 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
                    (GreenOf(s) * eff_a + GreenOf(d) * inv) / 255,
                    (BlueOf(s) * eff_a + BlueOf(d) * inv) / 255,
                    Clamp255(AlphaOf(d) + eff_a));
-      ++written;
-      if ((d & 0x00FFFFFFu) != 0) ++nonblack;
+      if (stats) {
+        ++written;
+        if ((d & 0x00FFFFFFu) != 0) ++nonblack;
+      }
     }
   }
 
+  if (!stats) return;
   std::lock_guard<std::mutex> lock(g_blit_stats_mutex);
   ++g_blit_stats.calls;
   g_blit_stats.written_pixels += written;
@@ -251,6 +286,8 @@ GraphicsBlitStats TakeGraphicsBlitStats() {
   g_blit_stats = GraphicsBlitStats();
   return stats;
 }
+
+void SetBlitStatsEnabled(bool enabled) { g_blit_stats_enabled = enabled; }
 
 // 「推屏」在 CPU 合成架构下等价于「合成到帧缓冲」：上游 SDL 后端把这些调用送进
 // GL 管线，我们则落到 AndroidGraphicsSystem::frame_buffer_ 上，

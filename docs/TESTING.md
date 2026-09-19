@@ -78,6 +78,7 @@ Start-Sleep -Seconds 7
 | `dump_graphics=1` | 运行结束时转储图形栈：每个对象的 src/dst 矩形、alpha、可见性 |
 | `audio_selftest=1` | 重采样自检：440Hz / 44.1kHz 源经重采样后估计出的频率写进报告 |
 | `touch_button=N` | 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者），缺省 1 |
+| `blit_stats=1` | 打开合成统计（逐像素累加，默认关闭；只在排查渲染问题时开） |
 | `time_budget_ms=N` | 单次运行的执行时间片，缺省 0（**不限时**，靠「停止引擎」收尾） |
 | `max_instructions=N` | 指令条数上限 |
 | `frame_log_every=N` | 每 N 帧打一条帧日志，缺省 1（每帧） |

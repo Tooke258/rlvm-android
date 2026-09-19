@@ -128,6 +128,8 @@ struct DiagOptions {
   bool trace = false;
   bool dump_graphics = false;
   bool audio_selftest = false;
+  // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
+  bool blit_stats = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
   // 不同 RealLive 作品的脚本约定不一致，因此做成设备侧可调。
   int touch_button = 1;
@@ -166,6 +168,8 @@ DiagOptions LoadDiagOptions() {
       options.dump_graphics = (number != 0);
     } else if (key == "audio_selftest") {
       options.audio_selftest = (number != 0);
+    } else if (key == "blit_stats") {
+      options.blit_stats = (number != 0);
     } else if (key == "time_budget_ms") {
       if (number > 0) options.time_budget_ms = number;
     } else if (key == "max_instructions") {
@@ -196,14 +200,15 @@ void CaptureFrame(AndroidGraphicsSystem& graphics) {
   ++g_frame_serial;
 
   // 非黑像素数：用于区分「引擎产出的帧本身是空的」与「呈现环节没显示出来」。
-  size_t non_black = 0;
-  for (size_t i = 0; i < count; ++i) {
-    if ((g_frame_pixels[i] & 0x00FFFFFFu) != 0) ++non_black;
-  }
-
   // 帧日志可以按间隔抽样：逐帧输出在长时间运行时会淹没真正重要的诊断信息。
   if (g_frame_log_every <= 1 ||
       (g_frame_serial % static_cast<unsigned int>(g_frame_log_every)) == 1u) {
+    // 注意：非黑像素统计要扫全屏 48 万像素，只在真的要打印时才做——
+    // 之前它每帧都跑，是这个渲染管线里最没意义的一笔开销。
+    size_t non_black = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if ((g_frame_pixels[i] & 0x00FFFFFFu) != 0) ++non_black;
+    }
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
                         "frame %dx%d serial=%u nonblack=%zu/%zu", g_frame_width,
                         g_frame_height, g_frame_serial, non_black, count);
@@ -431,6 +436,7 @@ void RunEngineOn(System& system,
   const DiagOptions diag = LoadDiagOptions();
   g_frame_log_every = diag.frame_log_every;
   g_touch_buttons.store(diag.touch_button);
+  SetBlitStatsEnabled(diag.blit_stats);
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 
@@ -439,6 +445,7 @@ void RunEngineOn(System& system,
   report += "engine assembled (regname=\"" +
             ToDisplayUtf8(gameexe("REGNAME").ToString("")) + "\")\n";
   report += "diagnostics: trace=" + std::string(diag.trace ? "on" : "off") +
+            " blit_stats=" + std::string(diag.blit_stats ? "on" : "off") +
             " time_budget_ms=" + std::to_string(diag.time_budget_ms) +
             " max_instructions=" + std::to_string(max_instructions) +
             " frame_log_every=" + std::to_string(diag.frame_log_every) + "\n";
@@ -522,9 +529,11 @@ void RunEngineOn(System& system,
   report += "stop reason = " + stop_reason + "\n";
   report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
   const GraphicsBlitStats blits = TakeGraphicsBlitStats();
-  report += "graphics blits: calls=" + std::to_string(blits.calls) +
-            " written_pixels=" + std::to_string(blits.written_pixels) +
-            " nonblack_pixels=" + std::to_string(blits.nonblack_pixels) + "\n";
+  if (diag.blit_stats) {
+    report += "graphics blits: calls=" + std::to_string(blits.calls) +
+              " written_pixels=" + std::to_string(blits.written_pixels) +
+              " nonblack_pixels=" + std::to_string(blits.nonblack_pixels) + "\n";
+  }
 
   // 图形栈转储：上游的 GraphicsSystem::Refresh(ostream*) 会把每个对象渲染时的
   // src/dst 矩形、alpha、可见性一并打印出来。这是判断「对象没被画」与

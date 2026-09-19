@@ -58,12 +58,13 @@
 | 诊断可见性 | 上游 `cout`/`cerr` 全部进入 logcat；未实现操作码与被吞掉的异常都可读 |
 | **触摸输入（T2.3）** | 真机点标题菜单 START → 进入正文（加载 `ss_mw00*` 正文资源），悬停高亮与光标位置均正确 |
 | **文字系统被调用** | 正文第一句触发 `RenderGlyphOnto`（U+5FC3 心 / U+81D3 臓 / U+304C が …），系统 CJK 字体经 FreeType 光栅化 |
+| 字形位图正确 | 日志带墨迹统计：`bitmap=26x25 ink=199 max_cov=255`——位图非空、覆盖度满值 |
 
 ## 4. 已知缺口
 
 | 缺口 | 说明 |
 | --- | --- |
-| 文字已光栅化但**未上屏** | `TextWindow::Render` 的表框/工具条（Auto/Skip/…）能合成，但字形所在的文本层没出现在画面上；下一步用 `dump_graphics=1` 看文本窗口的 Rect 与可见性 |
+| 文字已光栅化但**未上屏** | 已排除：文本窗口在合成（`Text Area: Rect(47, 460, Size(800, 600))`）、字形位图有墨迹。剩下的是**颜色**：渲染时 colour=(0,0,0)，而 `#COLOR_TABLE.000=255,255,255`（白），`TextWindow` 构造函数本应把它设为默认色——下一步查颜色在哪一步变成黑的 |
 | HIK 渲染未接入 | `hik_renderer_` 为空。Kud Wafter 标题流程没用到 HIK；用到 HIK 的作品仍需补 |
 | KOE 语音未实现 | 需要先把 KOE/NWK/OVK 语音包的解码链路接上 |
 | 通道数不足 | RLVM 只建模 25 个通道，本作用到 channel 30，`SetBgmVolMod` 会抛 `Invalid channel number 30 in channel_volume` 并被跳过 |
@@ -128,8 +129,10 @@ rlvm-audio: play channel=30 file=BGM/BGM14.nwa loop=1 volume=165   ← 游戏自
 
 ### 下一步（按价值排序）
 
-1. **文字上屏**：字形已光栅化、文本窗口表框已合成，但文本层看不见。用
-   `dump_graphics=1` 打印文本窗口的 `Text Area` 矩形与 `is_visible()` 即可定位。
+1. **文字上屏**：只差颜色。对照点已知：`#COLOR_TABLE.000=255,255,255`、
+   `TextWindow` 构造函数 `SetDefaultTextColor(gexe("COLOR_TABLE", 0))`、
+   `ClearWin()` 会把 `font_colour_ = default_colour_`。要查的是渲染时为何是 (0,0,0)：
+   记录构造后与每次 `SetDefaultTextColor`/`SetFontColour` 的取值即可。
 2. **通道数**：把 `NUM_TOTAL_CHANNELS` 提到本作实际使用范围（30+）或改为按
    `#CHANNEL` 动态分配。注意这属于改动上游语义，需要先记录决策。
 3. ~~**44.1 kHz 重采样**~~：已修复（见 D-017），音调不再偏高。
@@ -222,7 +225,7 @@ frame_log_every=120
 | JNI 回调未清理 Java 异常 | Kotlin 抛异常后 `CallIntMethod` 返回未定义值，对不存在的文件返回了"有效" fd | 每次回调后 `ClearJavaException`；Kotlin 侧也要 try/catch |
 | SAF 每文件一次跨进程查询 | 索引 1600 个文件耗时 61 秒 | 目录列举自带类型标志，降到 2.2 秒 |
 | C++ 成员初始化顺序 | `gameexe_` 声明在子系统之后，子系统构造时取到未初始化引用 → SIGSEGV | 被依赖的成员必须声明在最前 |
-| Adreno 要求 `#version` 在第一行 | 规范允许前置空白，高通驱动不接受；且没查编译状态，失败是静默的 | 着色器用 `trimIndent()`；必须检查编译/链接状态 |
+| 部分移动 GPU 要求 `#version` 在第一行 | 规范允许前置空白，这类驱动不接受；且没查编译状态，失败是静默的 | 着色器用 `trimIndent()`；必须检查编译/链接状态。（**测试机实际是联发科天玑 1200 / Mali GPU**，早前文档里写的 Adreno 是误记） |
 | `fs::file_size` 对目录 | Linux 允许，Android 抛 `Function not implemented` | 只对普通文件取大小 |
 | `CorrectPathCase` 会遍历真实目录 | 真实 Gameexe 有 CG 表条目，SAF 下路径不存在直接抛异常，整台引擎装配失败 | 资源读取一律经 `GameFileSystem` |
 | 上游 `MakeConverter` 把**源速率**也传成 48k | `SDL_BuildAudioCVT(cvt, fmt, ch, freq, fmt, 2, freq)`：源速率写成了目标速率 48k，SDL 判定「无需转换」；自带的 `conv_wave_rate` 又只在「目标 < 源」时生效。于是 44.1kHz 音源按 48kHz 播，快 8.8%（音调高约 1.5 个半音） | 不改上游：在音源外面套 `ResamplingSource`（D-017）；用 `audio_selftest=1` 把「输出频率」变成日志里的数字 |

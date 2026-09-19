@@ -38,6 +38,12 @@ struct GraphicsBlitStats {
 /** 读取并清零累计的合成统计。 */
 GraphicsBlitStats TakeGraphicsBlitStats();
 
+/**
+ * 开关合成统计。默认关闭——它是逐像素累加，会显著拖慢渲染；
+ * 只在需要区分「没画」/「画了但透明」/「画了确实是黑的」时打开。
+ */
+void SetBlitStatsEnabled(bool enabled);
+
 // 像素格式固定为 0xAABBGGRR：在小端内存中即 R,G,B,A 字节序，
 // 与 OpenGL 的 GL_RGBA / GL_UNSIGNED_BYTE 直接对应，后续上传纹理无需转换。
 class AndroidSurface : public Surface {

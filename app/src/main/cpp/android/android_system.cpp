@@ -212,19 +212,32 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
   uint32_t codepoint = 0;
   if (!FirstCodepoint(current, codepoint)) return Size(0, 0);
 
-  static int rendered = 0;
-  if (++rendered <= 5) {
-    __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
-                        "RenderGlyphOnto #%d codepoint=U+%04X size=%d at (%d,%d)",
-                        rendered, codepoint, font_size, insertion_point_x,
-                        insertion_point_y);
-  }
-
   rlvm_android::FontEngine& fonts = rlvm_android::FontEngine::Instance();
   // 上游只用了斜体（TTF_STYLE_ITALIC），不合成加粗，这里保持一致。
   const rlvm_android::GlyphBitmap* glyph =
       fonts.Rasterize(codepoint, font_size, italic, false);
   if (glyph == nullptr) return Size(0, 0);
+
+  static int rendered = 0;
+  if (++rendered <= 5) {
+    // 关键判据：字形位图里到底有没有墨迹。既然已经确认「文本窗口在合成、坐标也对」，
+    // 文字看不见就只剩三种可能：位图是空的、颜色不对、或写到了别的表面上。
+    size_t ink = 0;
+    int max_coverage = 0;
+    for (uint8_t value : glyph->coverage) {
+      if (value != 0) {
+        ++ink;
+        if (value > max_coverage) max_coverage = value;
+      }
+    }
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                        "RenderGlyphOnto #%d codepoint=U+%04X size=%d at (%d,%d) "
+                        "bitmap=%dx%d ink=%zu max_cov=%d colour=(%d,%d,%d)",
+                        rendered, codepoint, font_size, insertion_point_x,
+                        insertion_point_y, glyph->width, glyph->height, ink,
+                        max_coverage, font_colour.r(), font_colour.g(),
+                        font_colour.b());
+  }
 
   AndroidSurface* target = dynamic_cast<AndroidSurface*>(destination.get());
   if (target == nullptr) return Size(0, 0);

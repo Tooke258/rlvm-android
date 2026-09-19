@@ -38,6 +38,7 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     private var pixels: ByteBuffer? = null
     private var frameWidth = 0
     private var frameHeight = 0
+    private var uploadCount = 0
     // 这两个会被 UI 线程读取（触摸坐标换算），GL 线程写入，用 @Volatile 保证可见性。
     @Volatile
     private var surfaceWidth = 1
@@ -190,7 +191,12 @@ class RlvmRenderer : GLSurfaceView.Renderer {
             GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, frameWidth, frameHeight, 0,
             GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
         )
-        Log.i(TAG, "uploaded frame ${frameWidth}x$frameHeight serial=$serial err=${GLES30.glGetError()}")
+        // 逐帧打日志会拖慢 GL 线程（logcat 是同步 I/O），只在开头和偶尔抽样时打。
+        uploadCount++
+        if (uploadCount <= 3 || uploadCount % 300 == 0) {
+            Log.i(TAG, "uploaded frame ${frameWidth}x$frameHeight serial=$serial " +
+                "count=$uploadCount err=${GLES30.glGetError()}")
+        }
     }
 
     private fun buildProgram(vertexSource: String, fragmentSource: String): Int {
