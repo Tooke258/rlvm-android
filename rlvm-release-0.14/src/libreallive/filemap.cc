@@ -87,7 +87,9 @@ void Mapping::mopen() {
       throw Error("Cannot create empty file");
     len = msz_;
   } else {
-    len = std::max(msz_, st.st_size);
+    // 32 位 Android 上 off_t 是 long（32 位）而 struct stat::st_size 是 long long，
+    // std::max 无法推导出共同类型。统一提升到 long long 再比较。
+    len = static_cast<size_t>(std::max<long long>(msz_, st.st_size));
   }
   fp = open(fn_.c_str(), O_BINARY | (mode_ == Read ? O_RDONLY : O_RDWR), 0644);
   if (fp == INVALID_HANDLE_VALUE)

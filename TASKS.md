@@ -16,11 +16,11 @@
 
 | ID | 任务 | 输出 | 验收 | 状态 |
 | --- | --- | --- | --- | --- |
-| T1.1 | Android 化 CMakeLists（接入 RLVM 上游源码） | `app/src/main/cpp/CMakeLists.txt` | CMake 配置无错误 | TODO |
-| T1.2a | `boost::filesystem` → `std::filesystem`（先取得编译基线） | 上游 `utilities/`、`systems/base/` 改动 | 编译通过 | TODO |
-| T1.2b | 桌面依赖替换（SDL 相关的音频/渲染/文本见阶段 4） | 依赖替换方案 + 代码 | 缺失依赖逐步减少 | TODO |
-| T1.3 | 编译迭代修复 | 可编译的 `librlvm.so` | `externalNativeBuildDebug` 通过 | TODO |
-| T1.4 | 最小 JNI 验证 | `native-bridge.cpp` | App 能调用 native 并返回结果 | TODO（骨架已含 `versionString` / `probeAbi`，待接入真实引擎） |
+| T1.1 | Android 化 CMakeLists（接入 RLVM 上游源码） | `app/src/main/cpp/CMakeLists.txt` | CMake 配置无错误 | **DONE** |
+| T1.2a | `boost::filesystem` → `std::filesystem` | 上游改动 | 编译通过 | **暂缓**：已用 Boost 官方开关绕过 C++20 依赖，无需为编译而迁移；是否迁移取决于存档兼容性（见 D-011） |
+| T1.2b | 桌面依赖替换（SDL 相关的音频/渲染/文本见阶段 4） | 依赖替换方案 + 代码 | 缺失依赖逐步减少 | 部分完成：SDL 音频转换用 shim 顶替（D-012），SDL 渲染/事件/文本仍待阶段 3/4 重写 |
+| T1.3 | 编译迭代修复 | 可编译的 `librlvm.so` | `externalNativeBuildDebug` 通过 | **DONE**：两 ABI 均通过，APK 21.6 MB |
+| T1.4 | 最小 JNI 验证 | `native-bridge.cpp` | App 能调用 native 并返回结果 | 部分完成：RegisterNatives 桥接与 App 内调用已就位，待接入真实引擎实例 |
 
 ## 阶段 2：文件系统与 JNI 桥接
 

@@ -31,6 +31,8 @@ rlvm-release-0.14/                     # 工程根 = git 仓库根
 │                    DECISIONS.md（决策记录 D-00N）
 ├── dev-log/         <task-id>.jsonl 任务日志
 ├── tools/_smoke/    NDK 交叉编译冒烟测试
+│                    setup_third_party.ps1 获取第三方源码
+├── third_party/     第三方源码（gitignore；Boost/ogg/vorbis，跑脚本生成）
 ├── app/             Android 应用模块
 │   ├── build.gradle.kts
 │   └── src/main/

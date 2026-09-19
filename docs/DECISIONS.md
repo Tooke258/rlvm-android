@@ -91,3 +91,46 @@
 - **理由**：先把 `boost::filesystem` 换成 `std::filesystem` 获得**可编译基线**（此时仍假定能用普通路径访问），SAF 语义留到 T2.2；否则"编译适配"与"文件访问模型重写"两个不同性质的问题会互相干扰，难以定位错误。
 - **依据**：`tools/_smoke/hello.cpp` 已实测 NDK r28c 下 `std::filesystem` 可用（见 `docs/ENVIRONMENT.md` 5.2）。
 - **状态**：已决定
+
+---
+
+## D-010 Boost 1.92.0 从源码编译所需库，绕开 b2
+
+- **日期**：2026-09-19
+- **决策**：使用 `E:\boost-1.92.0`（b2-nodocs 布局），在 CMake 中直接编译 Boost.Filesystem / Boost.Serialization / Boost.Iostreams 的源文件。
+- **理由**：① RLVM 核心 149 个文件中完全不含 `<SDL/...>`，但深度依赖 Boost——`BOOST_CLASS_VERSION` ×9、`boost::serialization::access` ×24、文本归档 ×72，存档格式无法用标准库替代；② 实测核心用到的 36 个 Boost 头里只有 1 个缺失（`filesystem/convenience.hpp`，早已被移除，其 API 已在 `operations.hpp`），说明 1.92 几乎可直接使用；③ 直接编源码比把 b2 调到能交叉编译更可控。
+- **代价**：Boost 源码树需由 `tools/setup_third_party.ps1` 获取（约 140 MB，gitignore）。CMake 用 `BOOST_SOURCE_DIR` 定位，默认 `E:/boost-1.92.0`，支持 `-D` 或环境变量覆盖。
+- **状态**：已执行并验证
+
+---
+
+## D-011 定义 BOOST_FILESYSTEM_SINGLE_THREADED，保持 C++17
+
+- **日期**：2026-09-19
+- **决策**：全局定义 `BOOST_FILESYSTEM_SINGLE_THREADED`，`CMAKE_CXX_STANDARD` 保持 17。
+- **理由**：Boost 1.92 的 `libs/filesystem/src/atomic_tools.hpp` 直接使用 `std::atomic_ref`（C++20），而 **NDK r28c 的 libc++ 根本没有实现该类**——实测确认 `std::atomic_ref` 在 libc++ 头文件中不存在，因此升到 C++20 也无效。Boost 为此提供官方单线程开关：定义后内部改用非原子访问。该宏只出现在 Boost.Filesystem 的两个**私有源文件**中，公共头文件不引用，故不构成 ODR 风险。
+- **语义影响**：Boost.Filesystem 的全局 path locale 指针与目录迭代内部状态不再原子访问。RLVM 的文件操作集中在引擎线程，风险低。
+- **遗留**：若将来确认不需要兼容既有 PC 存档，可迁移到 `std::filesystem` 并彻底移除该开关与本库（见 T1.2a）。
+- **状态**：已执行并验证（两 ABI 均通过）
+
+---
+
+## D-012 用最小 SDL 兼容层顶替 wavfile.cc 的音频转换依赖
+
+- **日期**：2026-09-19
+- **决策**：新增 `app/src/main/cpp/compat/sdl_shim/SDL/SDL_mixer.h` 与其实现，提供 `SDL_AudioCVT` / `SDL_BuildAudioCVT` / `SDL_ConvertAudio` 及所需常量，**不改动 vendored 源码**。
+- **理由**：`vendor/xclannad/wavfile.cc` 是核心文件列表中唯一引用 `<SDL/SDL_mixer.h>` 的文件，但它实际只用 SDL 做 PCM 格式转换（S8↔S16）、声道数转换与线性重采样，并未使用 SDL 的窗口/事件/混音功能。该文件被 `nwk_voice_archive.cc` 依赖，无法简单排除。
+- **备选**：改写 vendored 文件（diff 更大、偏离上游更多）；或在阶段 4 让 AAudio 后端直接接受源格式（更彻底，但依赖更大的重构）。
+- **清理条件**：T4.1 的 AAudio 后端能够直接接受源格式后，可移除本 shim。
+- **状态**：已执行并验证
+
+---
+
+## D-013 libogg / libvorbis 从源码编入，只编解码器
+
+- **日期**：2026-09-19
+- **决策**：从 GitHub 获取 libogg 1.3.5 与 libvorbis 1.3.7，在 CMake 中作为静态库编译；libvorbis 只编译解码所需源文件。
+- **理由**：OVK 与 KOE 语音包是 Ogg Vorbis，`ovk_voice_sample.cc` / `ovk_voice_archive.cc` / `koedec_ogg.cc` 使用 `ov_open_callbacks` / `ov_info` / `ov_read` 接口。编码器部分（`vorbisenc.c` / `psytune.c` / `analysis.c` / `barkmel.c` / `tone.c`）依赖 `lib/modes/*.h` 这类构建期生成的头文件，而 RLVM 不需要编码功能。注意 `psy.c` 必须保留，`res0.c` 等仍会引用其 `_vp_*` 符号。
+- **下载源**：xiph 官方源在本机 302 响应耗时 129 秒，GitHub 归档仅 4 秒，故脚本优先 GitHub。
+- **许可**：libogg / libvorbis 为 BSD 许可，与 GPLv3 兼容。
+- **状态**：已执行并验证

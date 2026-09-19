@@ -33,9 +33,13 @@ build.ninja
 tools/_smoke/*.so
 tools/_smoke/*.o
 
+# ---- 第三方依赖（体积大，由 tools/setup_third_party.ps1 获取）----
+third_party/
+
 # ---- OS / editor ----
 .DS_Store
 Thumbs.db
 *~
 *.swp
-.vscode/
+.vscode/*
+!.vscode/c_cpp_properties.json
