@@ -304,8 +304,42 @@ std::shared_ptr<Surface> AndroidTextWindow::GetNameSurface() {
   return name_surface_;
 }
 
-// 名字框与 ruby（注音）的绘制同样依赖字形光栅化，阶段 4 再实现。
-void AndroidTextWindow::RenderNameInBox(const std::string& /*utf8str*/) {}
+/**
+ * 名字框。基类会把 name_surface_ 合成到名字框位置上，所以这里只要把名字
+ * 光栅化进 name_surface_ 即可——之前这里是空实现，名字因此从未出现。
+ */
+void AndroidTextWindow::RenderNameInBox(const std::string& utf8str) {
+  std::shared_ptr<Surface> surface = GetNameSurface();
+  AndroidSurface* target = dynamic_cast<AndroidSurface*>(surface.get());
+  if (target == nullptr) return;
+
+  target->Fill(RGBAColour(0, 0, 0, 0));
+
+  // 名字用当前字形颜色（与正文同一套默认色/颜色表逻辑）。
+  int x = 0;
+  const int size = font_size_in_pixels();
+  for (size_t i = 0; i < utf8str.size();) {
+    // 取一个 UTF-8 码点。
+    uint32_t codepoint = static_cast<unsigned char>(utf8str[i]);
+    size_t length = 1;
+    if (codepoint >= 0xF0) { length = 4; codepoint &= 0x07; }
+    else if (codepoint >= 0xE0) { length = 3; codepoint &= 0x0F; }
+    else if (codepoint >= 0xC0) { length = 2; codepoint &= 0x1F; }
+    for (size_t k = 1; k < length && i + k < utf8str.size(); ++k) {
+      codepoint = (codepoint << 6) | (static_cast<unsigned char>(utf8str[i + k]) & 0x3F);
+    }
+    i += length;
+    if (length > 1 && length > utf8str.size()) break;
+
+    rlvm_android::FontEngine& fonts = rlvm_android::FontEngine::Instance();
+    const rlvm_android::GlyphBitmap* glyph =
+        fonts.Rasterize(codepoint, size, false, false);
+    if (glyph == nullptr) continue;
+    target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height, x,
+                          0, font_colour_);
+    x += glyph->advance;
+  }
+}
 
 void AndroidTextWindow::DisplayRubyText(const std::string& /*utf8str*/) {}
 

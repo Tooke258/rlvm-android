@@ -758,14 +758,18 @@ void RequestStop(JNIEnv* /*env*/, jobject /*thiz*/) {
  * 坐标已经是**游戏帧坐标**（Kotlin 侧按帧在视图里的实际绘制矩形换算过），
  * 这里只做入队：真正的注入在引擎线程的 ExecuteEventSystem 里完成。
  */
-void TouchEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint action, jfloat x, jfloat y) {
+void TouchEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint action, jfloat x, jfloat y,
+                jint buttons) {
   AndroidSystem* system = g_current_system.load();
   if (system == nullptr) return;  // 引擎没在跑，忽略
 
+  // buttons 为 0 时退回诊断文件的缺省值（1=左键 2=右键 3=两者）。
+  const int resolved = buttons != 0 ? static_cast<int>(buttons)
+                                    : g_touch_buttons.load();
   static_cast<AndroidEventSystem&>(system->event())
       .PostTouchEvent(static_cast<int>(action),
                       Point(static_cast<int>(x), static_cast<int>(y)),
-                      g_touch_buttons.load());
+                      resolved);
 }
 
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
@@ -806,7 +810,7 @@ const JNINativeMethod kNativeMethods[] = {
     {"setDiagnosticsDir", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
-    {"touchEvent", "(IFF)V", reinterpret_cast<void*>(TouchEvent)},
+    {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},

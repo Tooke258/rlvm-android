@@ -64,7 +64,7 @@ object NativeBridge {
      *
      * action: 0=按下 1=移动 2=抬起。
      */
-    external fun touchEvent(action: Int, x: Float, y: Float)
+    external fun touchEvent(action: Int, x: Float, y: Float, buttons: Int)
 
     /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。

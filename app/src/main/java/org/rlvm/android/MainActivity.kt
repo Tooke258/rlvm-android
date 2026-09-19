@@ -234,17 +234,31 @@ class MainActivity : Activity() {
      */
     private fun handleTouch(event: MotionEvent): Boolean {
         val action = when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> TOUCH_DOWN
+            MotionEvent.ACTION_DOWN -> {
+                downTimeMs = System.currentTimeMillis()
+                longPress = false
+                TOUCH_DOWN
+            }
             MotionEvent.ACTION_MOVE -> TOUCH_MOVE
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> TOUCH_UP
+            MotionEvent.ACTION_UP -> {
+                longPress = System.currentTimeMillis() - downTimeMs >= 400
+                TOUCH_UP
+            }
+            MotionEvent.ACTION_CANCEL -> TOUCH_UP
             MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> return false
             else -> return false
         }
 
         val point = renderer.mapToFrame(event.x, event.y) ?: return false
-        runCatching { NativeBridge.touchEvent(action, point.x, point.y) }
+        // 长按 = 鼠标右键（用来打开游戏菜单/退出），短按 = 左键。
+        // 长按 = 右键（打开游戏菜单/退出），短按 = 左键（推进文字）。
+        val buttons = if (action == TOUCH_UP && longPress) 2 else 1
+        runCatching { NativeBridge.touchEvent(action, point.x, point.y, buttons) }
         return true
     }
+
+    private var longPress = false
+    private var downTimeMs = 0L
 
     private fun log(text: String) {
         runOnUiThread {
