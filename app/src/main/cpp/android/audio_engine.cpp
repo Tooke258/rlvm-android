@@ -454,6 +454,9 @@ struct AudioEngine::Channel {
   std::atomic<bool> fade_out_request{false};
   // 仅由音频回调读写的淡出剩余帧数（回调是唯一写入者，无需原子）。
   int fade_out_remaining = 0;
+  // 起播淡入剩余帧数：BGM/语音文件的起始样本往往不是零，瞬间满音量起播
+  // 会产生一个台阶（听感就是"起播爆点"）。起播时做 2ms 淡入即可消除。
+  int fade_in_remaining = 0;
   // 换源交叉淡化：新音源先挂起（受 mutex 保护），等旧内容淡出结束后由解码
   // 线程装上并开始播放。这样"直接切换到新音频"也不会在切换点留下咔哒声。
   std::unique_ptr<AudioSource> pending_source;
@@ -463,6 +466,8 @@ struct AudioEngine::Channel {
 
 // 淡出长度：约 4ms @48kHz。太短压不住咔哒，太长会让人觉得"反应慢"。
 constexpr int kFadeOutFrames = 192;
+// 起播淡入长度：约 2ms @48kHz。只用来消除起播台阶，不影响听感。
+constexpr int kFadeInFrames = 96;
 // 主增益余量（约 -2dB）：给"BGM + 语音 + 音效"的和留出空间，
 // 避免经常顶到满刻度导致高音破音。
 constexpr double kMasterGain = 0.79;
@@ -651,6 +656,8 @@ void AudioEngine::Play(int channel_index,
   }
   channel.volume.store(clamped);
   channel.loop.store(loop);
+  // 起播淡入：消除"从 0 直接跳到文件首样本"的台阶（BGM 起播爆点）。
+  channel.fade_in_remaining = kFadeInFrames;
   channel.playing.store(true);
 }
 
@@ -715,6 +722,8 @@ void AudioEngine::DecoderLoop() {
           channel->volume.store(channel->pending_volume.load());
           channel->loop.store(channel->pending_loop.load());
           channel->draining.store(false);
+          // 新音源淡入 + 旧内容已淡出 = 交叉淡化，切换点无台阶。
+          channel->fade_in_remaining = kFadeInFrames;
           channel->playing.store(true);
           did_work = true;
           continue;
@@ -804,6 +813,7 @@ void AudioEngine::MixInto(int16_t* out,
         channel->fade_out_request.load(std::memory_order_relaxed)) {
       fade_remaining = kFadeOutFrames;
     }
+    int fade_in_remaining = channel->fade_in_remaining;
     bool fade_finished = false;
 
     for (size_t i = 0; i < samples; ++i) {
@@ -819,6 +829,14 @@ void AudioEngine::MixInto(int16_t* out,
           }
         }
       }
+      // 起播淡入：与淡出互斥（换源时旧内容淡出、新内容淡入，天然形成交叉淡化）。
+      if (fade_in_remaining > 0 && fade_remaining == 0) {
+        gain = gain * (kFadeInFrames - fade_in_remaining) / kFadeInFrames;
+        if ((i & 1u) == 1u) {
+          --fade_in_remaining;
+          if (fade_in_remaining < 0) fade_in_remaining = 0;
+        }
+      }
       const int32_t mixed =
           out[i] + (static_cast<int32_t>(scratch[i]) * gain) / 255;
       // 主增益余量 + 软限幅：给多通道相加以空间，且避免高音破音。
@@ -829,6 +847,7 @@ void AudioEngine::MixInto(int16_t* out,
     }
 
     channel->fade_out_remaining = fade_remaining;
+    channel->fade_in_remaining = fade_in_remaining;
     if (fade_finished) {
       // 淡出完成：真正停掉通道。source 留在原处，由下一次 Play 或 Shutdown 回收
       // ——音频回调里不能加锁去动它。
