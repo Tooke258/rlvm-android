@@ -96,6 +96,8 @@ $fx="$repo\rlvm-release-0.14\test"
 | 2026-09-19 | JNI 桥接 + RLVM 解析链路（T1.4） | 通过：Gameexe 解析、SEEN TOC（1 个场景，索引 1）、Scenario 构造（含解压）、无崩溃 |
 | 2026-09-19 | 引擎装配 + 执行字节码（T2.4） | 通过：AndroidSystem 顶替 SDLSystem，执行 6 条指令后进入文本长操作，无崩溃 |
 | 2026-09-19 | SAF 文件访问（T2.2） | 通过：SAF 目录列举、Gameexe.ini 整体读入、SEEN.TXT 经 fd + mmap 打开并解析出同样的 TOC |
+| 2026-09-19 | `SEEN####.TXT` 场景覆盖（补丁机制） | 通过：两条后端 TOC 均变为 `[1,2]`，覆盖文件内容也被正确解析 |
+| 2026-09-19 | 大小写不敏感解析 | 通过：夹具改为全小写（`gameexe.ini`/`seen.txt`/`seen0002.txt`）后，两条后端仍能按标准名找到文件 |
 
 ## 6. SAF 测试流程
 

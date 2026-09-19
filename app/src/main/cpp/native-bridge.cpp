@@ -26,6 +26,7 @@
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
 #include "modules/modules.h"
+#include "utilities/file.h"
 
 namespace {
 
@@ -89,8 +90,10 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
     }
 
     // --- Gameexe.ini ---
-    const fs::path gameexe_path = root / "Gameexe.ini";
-    if (fs::exists(gameexe_path)) {
+    // 上游的 CorrectPathCase 负责大小写纠正：RealLive 游戏来自 Windows/FAT，
+    // 文件名大小写常不规整，而 Android 文件系统区分大小写。
+    const fs::path gameexe_path = CorrectPathCase(root / "Gameexe.ini");
+    if (!gameexe_path.empty()) {
       // 注意：Gameexe 位于全局命名空间，只有 Archive / Scenario 在 libreallive 里。
       Gameexe gameexe(gameexe_path);
       const std::string caption = gameexe("CAPTION").ToString("");
@@ -98,12 +101,12 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
       if (!caption.empty()) report += " (CAPTION=" + caption + ")";
       report += "\n";
     } else {
-      report += "Gameexe: Gameexe.ini not found\n";
+      report += "Gameexe: Gameexe.ini not found (even after case correction)\n";
     }
 
     // --- SEEN.TXT ---
-    const fs::path seen_path = root / "Seen.txt";
-    if (fs::exists(seen_path)) {
+    const fs::path seen_path = CorrectPathCase(root / "Seen.txt");
+    if (!seen_path.empty()) {
       libreallive::Archive archive(seen_path.string());
       // ReadTOC() 把 (offset, length) 表映射成场景索引；offset 为 0 的条目不存在，
       // 所以索引不一定从 0 开始。这里直接遍历 TOC 拿到真实索引。
@@ -131,7 +134,7 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
                 std::to_string(archive.GetProbableEncodingType());
       report += "\n";
     } else {
-      report += "Seen: Seen.txt not found\n";
+      report += "Seen: Seen.txt not found (even after case correction)\n";
     }
 
     report += "PROBE OK\n";
@@ -197,11 +200,12 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
   try {
     const std::string dir = JStringToUtf8(env, jdir);
     const fs::path root(dir);
-    const fs::path gameexe_path = root / "Gameexe.ini";
-    const fs::path seen_path = root / "Seen.txt";
+    const fs::path gameexe_path = CorrectPathCase(root / "Gameexe.ini");
+    const fs::path seen_path = CorrectPathCase(root / "Seen.txt");
 
-    if (!fs::exists(gameexe_path) || !fs::exists(seen_path)) {
-      report += "ERROR: Gameexe.ini or Seen.txt missing\n";
+    if (gameexe_path.empty() || seen_path.empty()) {
+      report += "ERROR: Gameexe.ini or Seen.txt missing "
+                "(case-corrected lookup also failed)\n";
       return env->NewStringUTF(report.c_str());
     }
 
