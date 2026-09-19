@@ -6,9 +6,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <sstream>
 #include <thread>
 
 #include "xclannad/wavfile.h"
@@ -114,6 +117,159 @@ bool WavFileSource::Rewind() {
   if (!file_) return false;
   file_->Seek(0);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// ResamplingSource
+// ---------------------------------------------------------------------------
+
+ResamplingSource::ResamplingSource(std::unique_ptr<AudioSource> inner,
+                                   int source_rate,
+                                   int target_rate)
+    : inner_(std::move(inner)) {
+  if (source_rate > 0 && target_rate > 0 && source_rate != target_rate) {
+    step_ = static_cast<double>(source_rate) / static_cast<double>(target_rate);
+  }
+}
+
+bool ResamplingSource::Refill() {
+  // 保留最后一个输入帧作为插值锚点：跨 Refill 的插值必须连续，否则会有周期性爆音。
+  size_t kept = 0;
+  if (in_len_ > 0) {
+    in_[0] = in_[(in_len_ - 1) * kAudioChannels];
+    in_[1] = in_[(in_len_ - 1) * kAudioChannels + 1];
+    position_ -= static_cast<double>(in_len_ - 1);
+    if (position_ < 0.0) position_ = 0.0;
+    kept = 1;
+  }
+
+  const size_t got = inner_->ReadFrames(in_ + kept * kAudioChannels,
+                                       kInputFrames - kept);
+  in_len_ = kept + got;
+  return got > 0;
+}
+
+size_t ResamplingSource::ReadFrames(int16_t* out, size_t frames) {
+  if (!inner_ || frames == 0) return 0;
+
+  // 第一次读取时先把输入缓冲填上。
+  if (in_len_ == 0 && !Refill()) return 0;
+
+  size_t produced = 0;
+  while (produced < frames) {
+    const size_t index = static_cast<size_t>(position_);
+    if (index + 1 >= in_len_) {
+      if (!Refill()) break;  // 输入耗尽：返回已产出的部分
+      continue;
+    }
+
+    const double frac = position_ - static_cast<double>(index);
+    const int16_t* a = in_ + index * kAudioChannels;
+    const int16_t* b = a + kAudioChannels;
+    for (int ch = 0; ch < kAudioChannels; ++ch) {
+      out[produced * kAudioChannels + ch] = static_cast<int16_t>(
+          a[ch] + (static_cast<double>(b[ch] - a[ch]) * frac));
+    }
+    ++produced;
+    position_ += step_;
+  }
+  return produced;
+}
+
+bool ResamplingSource::Rewind() {
+  in_len_ = 0;
+  position_ = 0.0;
+  return inner_ ? inner_->Rewind() : false;
+}
+
+namespace {
+
+/** 自检用的合成音源：按需生成 index 的 440Hz 正弦（交错立体声）。 */
+class SineTestSource : public AudioSource {
+ public:
+  SineTestSource(int rate, int frames) : rate_(rate), total_(frames) {}
+
+  size_t ReadFrames(int16_t* out, size_t frames) override {
+    size_t produced = 0;
+    while (produced < frames && pos_ < total_) {
+      const double t = static_cast<double>(pos_) / rate_;
+      const int16_t sample = static_cast<int16_t>(std::sin(2.0 * 3.14159265358979 *
+                                                           440.0 * t) *
+                                                  20000.0);
+      out[produced * 2] = sample;
+      out[produced * 2 + 1] = sample;
+      ++pos_;
+      ++produced;
+    }
+    return produced;
+  }
+
+  bool Rewind() override {
+    pos_ = 0;
+    return true;
+  }
+
+ private:
+  int rate_;
+  int total_;
+  int pos_ = 0;
+};
+
+/**
+ * 用过零点数估计频率：每秒过零次数 = 2 × 频率。
+ *
+ * 只看左声道：缓冲区是交错立体声，左右样本相同，若按样本计数会把每次过零
+ * 算成一次半（等值样本之间不构成过零），得到恰好一半的频率。
+ */
+double EstimateFrequency(const std::vector<int16_t>& samples, size_t frames, int rate) {
+  int crossings = 0;
+  for (size_t i = 1; i < frames; ++i) {
+    const int16_t previous = samples[(i - 1) * 2];
+    const int16_t current = samples[i * 2];
+    if ((previous < 0 && current >= 0) || (previous >= 0 && current < 0)) {
+      ++crossings;
+    }
+  }
+  const double seconds = static_cast<double>(frames) / static_cast<double>(rate);
+  return (crossings / 2.0) / seconds;
+}
+
+}  // namespace
+
+std::string ResamplerSelfTest() {
+  std::ostringstream report;
+
+  const int source_rate = 44100;
+  const int target_rate = kAudioSampleRate;
+  const int source_frames = source_rate;  // 1 秒
+
+  // 1) 直通（不重采样）：把 44.1kHz 数据当 48kHz 播，正是修复前的行为。
+  std::unique_ptr<AudioSource> plain(
+      new SineTestSource(source_rate, source_frames));
+  std::vector<int16_t> plain_out(static_cast<size_t>(target_rate) * 2, 0);
+  const size_t plain_got = plain->ReadFrames(plain_out.data(), target_rate);
+  plain_out.resize(plain_got * 2);
+  report << "audio self-test: passthrough " << source_rate << "Hz -> "
+         << target_rate << "Hz gives "
+         << EstimateFrequency(plain_out, plain_got, target_rate)
+         << " Hz (expected ~" << 440.0 * target_rate / source_rate
+         << ", i.e. the 8.8% pitch-up bug)\n";
+
+  // 2) 经重采样：应当仍然是 440Hz。
+  std::unique_ptr<AudioSource> resampled(new ResamplingSource(
+      std::unique_ptr<AudioSource>(new SineTestSource(source_rate, source_frames)),
+      source_rate, target_rate));
+  std::vector<int16_t> out(static_cast<size_t>(target_rate) * 2, 0);
+  const size_t got = resampled->ReadFrames(out.data(), target_rate);
+  out.resize(got * 2);
+  report << "audio self-test: resampled " << source_rate << "Hz -> " << target_rate
+         << "Hz gives " << EstimateFrequency(out, got, target_rate)
+         << " Hz (expected ~440); frames=" << got << "\n";
+
+  // 3) 顺带核对重采样率：1 秒 44.1kHz 输入应产出约 48000 帧。
+  report << "audio self-test: expected frames ~" << target_rate
+         << ", produced " << got << "\n";
+  return report.str();
 }
 
 // ---------------------------------------------------------------------------
@@ -261,10 +417,12 @@ std::unique_ptr<AudioSource> AudioEngine::OpenSource(int fd,
   //
   // 注意：上游的 MakeConverter 调 SDL_BuildAudioCVT 时源速率与目标速率都传 freq(48000)，
   // 其自定义的 conv_wave_rate 也只在「源速率 > 48000」时生效。因此低于 48kHz 的
-  // 音源不会被重采样。这里把音源的真实参数记录下来，便于核对真实游戏的数据。
+  // 音源不会被重采样——这正是音调偏高的根因。真实速率必须在 MakeConverter
+  // 之前取（转换器包装之后拿到的是目标参数），下面据此套一层重采样。
+  const int source_rate = static_cast<int>(reader->wavinfo.SamplingRate);
   __android_log_print(ANDROID_LOG_INFO, kLogTag,
                       "source: %s rate=%d channels=%d bits=%d (target %d/%d)",
-                      extension.c_str(), reader->wavinfo.SamplingRate,
+                      extension.c_str(), source_rate,
                       reader->wavinfo.Channels, reader->wavinfo.DataBits,
                       WAVFILE::freq, WAVFILE::channels);
 
@@ -273,7 +431,18 @@ std::unique_ptr<AudioSource> AudioEngine::OpenSource(int fd,
     delete reader;
     return nullptr;
   }
-  return std::unique_ptr<AudioSource>(new WavFileSource(converted));
+  std::unique_ptr<AudioSource> source(new WavFileSource(converted));
+
+  // 源速率 != 目标速率时补上重采样（44.1kHz 的 BGM 是主要场景；22.05kHz 的
+  // 音效/语音同理，之前也是被当 48kHz 播放）。
+  if (source_rate > 0 && source_rate != WAVFILE::freq) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "resampling %d -> %d Hz (ratio %.4f)", source_rate,
+                        WAVFILE::freq,
+                        static_cast<double>(source_rate) / WAVFILE::freq);
+    source.reset(new ResamplingSource(std::move(source), source_rate, WAVFILE::freq));
+  }
+  return source;
 }
 
 void AudioEngine::Play(int channel_index,

@@ -13,6 +13,9 @@
 # 打印每个对象的 src/dst 矩形、alpha、可见性。
 # dump_graphics=1
 
+# 重采样自检：合成 440Hz 正弦走一遍重采样源，把估计频率写进报告。
+# audio_selftest=1
+
 # 单次运行的执行时间片（毫秒），缺省 3000。
 # time_budget_ms=8000
 

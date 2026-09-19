@@ -104,6 +104,7 @@ class RunGuard {
 struct DiagOptions {
   bool trace = false;
   bool dump_graphics = false;
+  bool audio_selftest = false;
   // 0 表示不限时：应用要能一直停在标题/正文上，BGM 才不会「响一下就没了」。
   // 自动化测试需要在报告里拿到结果时，用 diag 文件设一个有限值。
   int time_budget_ms = 0;
@@ -137,6 +138,8 @@ DiagOptions LoadDiagOptions() {
       options.trace = (number != 0);
     } else if (key == "dump_graphics") {
       options.dump_graphics = (number != 0);
+    } else if (key == "audio_selftest") {
+      options.audio_selftest = (number != 0);
     } else if (key == "time_budget_ms") {
       if (number > 0) options.time_budget_ms = number;
     } else if (key == "max_instructions") {
@@ -406,6 +409,9 @@ void RunEngineOn(System& system,
             " time_budget_ms=" + std::to_string(diag.time_budget_ms) +
             " max_instructions=" + std::to_string(max_instructions) +
             " frame_log_every=" + std::to_string(diag.frame_log_every) + "\n";
+
+  // 重采样自检：把「音调是否偏高」变成日志里的一个频率数字。
+  if (diag.audio_selftest) report += rlvm_android::ResamplerSelfTest();
 
   AndroidGraphicsSystem* graphics =
       dynamic_cast<AndroidGraphicsSystem*>(&system.graphics());

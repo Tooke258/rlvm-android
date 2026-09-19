@@ -76,6 +76,7 @@ Start-Sleep -Seconds 7
 | --- | --- |
 | `trace=1` | 逐条指令追踪（上游 `set_tracing_on`），输出在 `rlvm-stderr` |
 | `dump_graphics=1` | 运行结束时转储图形栈：每个对象的 src/dst 矩形、alpha、可见性 |
+| `audio_selftest=1` | 重采样自检：440Hz / 44.1kHz 源经重采样后估计出的频率写进报告 |
 | `time_budget_ms=N` | 单次运行的执行时间片，缺省 0（**不限时**，靠「停止引擎」收尾） |
 | `max_instructions=N` | 指令条数上限 |
 | `frame_log_every=N` | 每 N 帧打一条帧日志，缺省 1（每帧） |

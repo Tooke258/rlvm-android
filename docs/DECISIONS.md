@@ -74,6 +74,29 @@
 
 ---
 
+## D-017 自建 44.1k→48k 重采样（`ResamplingSource`）
+
+- **日期**：2026-09-19
+- **决策**：在 `audio_engine` 里新增 `ResamplingSource` 装饰器，`OpenSource()`
+  在 `MakeConverter` **之前**读走解码器的真实采样率，速率不同就套一层线性插值重采样
+  到 `WAVFILE::freq`（48000）。不改上游、不改 vendored xclannad。
+- **理由**：`WAVFILE::MakeConverter` 里 `SDL_BuildAudioCVT(cvt, from_format, ch, freq,
+  format, 2, freq)` 把**源速率**也传成了目标速率 48k，SDL 因此认为不需要转换；
+  xclannad 自带的 `conv_wave_rate` 又只在 `freq < original->SamplingRate`（即目标低于
+  源）时才生效。两条路都不覆盖「44.1k → 48k」，于是数据被当成 48k 直接播：
+  **快 8.8%、音调高约 1.5 个半音**（用户报「音调偏高，高音耳机略有爆音感」）。
+- **为什么不用更好的插值**：16-bit 游戏 BGM 用线性插值已足够，且不会引入过冲；
+  换窗口化 sinc 只是质量优化，不是正确性问题，留待需要时再评估。
+- **副作用**：解码线程多一层 memcpy 与一次浮点乘加；音频回调完全不受影响
+  （重采样在解码线程上，回调只是从环形缓冲取数）。
+- **验证**：`audio_selftest=1` 时运行自检——合成 440Hz / 44100Hz 正弦，
+  直通（模拟修复前）测得 **478.367Hz**，经重采样后测得 **439.509Hz**（期望 440），
+  1 秒输入产出 47999 帧（期望 48000）。真机上重采样后 BGM 连续三个窗口
+  `active_channels=1`、峰值非零，未被饿死。
+- **状态**：已执行并验证
+
+---
+
 ## D-008 T0.2 骨架不引入 Compose，推迟到 T3.2
 
 - **日期**：2026-09-19

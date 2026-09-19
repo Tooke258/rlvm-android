@@ -51,7 +51,7 @@
 | 资源查找层 | `FindFile(doesntmatter, g00)` → `g00/doesntmatter.g00`，可用 fd 打开 |
 | 帧呈现 | CPU 合成 → 帧缓冲 → JNI → GL 纹理 → 屏幕，截图确认 |
 | 图像解码 | 320x240 BMP 经 `GRPCONV` 解码并正确合成（通道序已修正） |
-| 音频链路 | NWA 解码 → 混音 → AAudio → 蓝牙输出；脚手架验证阶段峰值与源一致（用户确认听到） |
+| 音频链路 | NWA 解码 → **44.1k→48k 重采样** → 混音 → AAudio；自检 440Hz 源输出 439.5Hz（修复前 478.4Hz） |
 | 真实游戏加载 | Kud Wafter：37 KB `GAMEEXE.INI`、3.5 MB `SEEN.TXT`、TOC 62 个场景、`REGNAME=KEY\クドわふたー` |
 | **真实游戏渲染** | 标题画面完整呈现（蓝天村庄背景 + START/LOAD/CONFIG/EXIT + 标题 logo），真机截图确认 |
 | **游戏自行驱动 BGM** | 日志 `play channel=30 file=BGM/BGM14.nwa`；此后每 300 帧上报一次 `rlvm-audio runtime: active_channels=1 peak_in_window=…`，持续 70 秒以上不停 |
@@ -67,7 +67,7 @@
 | 通道数不足 | RLVM 只建模 25 个通道，本作用到 channel 30，`SetBgmVolMod` 会抛 `Invalid channel number 30 in channel_volume` 并被跳过 |
 | 若干未实现操作码 | Sys 2055 / 2056 / 300 / 1231 / 3503、Os 120；目前一律「跳过继续」，未见功能受损 |
 | PNG / JPEG 解码 | 解码器存在但被 `#if HAVE_LIBPNG/JPEG` 排除；RealLive 原生格式用不到 |
-| 44.1kHz 重采样 | 上游不对低于 48kHz 的音源重采样，真实 BGM 会播快约 8.8%（已确认） |
+| ~~44.1kHz 重采样~~ | **已修复**（D-017）：自建 `ResamplingSource`，44.1kHz→48kHz 线性插值 |
 | 触摸输入 | `EventSystem` 是桩，从不注入点击（很可能是首屏无进展的原因之一） |
 | 存档读写经 SAF | 未实现 |
 | 引擎生命周期 | 只有"跑一段"，没有启动/暂停/恢复/退出 |
@@ -132,7 +132,7 @@ rlvm-audio: play channel=30 file=BGM/BGM14.nwa loop=1 volume=165   ← 游戏自
    文字系统第一次被真正调用的入口。
 2. **通道数**：把 `NUM_TOTAL_CHANNELS` 提到本作实际使用范围（30+）或改为按
    `#CHANNEL` 动态分配。注意这属于改动上游语义，需要先记录决策。
-3. **44.1 kHz 重采样**：真实 BGM 是 44.1 kHz，当前按 48 kHz 播放会快约 8.8%。
+3. ~~**44.1 kHz 重采样**~~：已修复（见 D-017），音调不再偏高。
 4. **未实现操作码**：Sys 2055 / 2056 / 300 / 1231 / 3503、Os 120。先确认
    `#SEEN_START` 到正文这段是否真的不依赖它们。
 5. **引擎生命周期**：目前只有「跑一段」，没有启动/暂停/恢复/退出。
@@ -224,7 +224,7 @@ frame_log_every=120
 | Adreno 要求 `#version` 在第一行 | 规范允许前置空白，高通驱动不接受；且没查编译状态，失败是静默的 | 着色器用 `trimIndent()`；必须检查编译/链接状态 |
 | `fs::file_size` 对目录 | Linux 允许，Android 抛 `Function not implemented` | 只对普通文件取大小 |
 | `CorrectPathCase` 会遍历真实目录 | 真实 Gameexe 有 CG 表条目，SAF 下路径不存在直接抛异常，整台引擎装配失败 | 资源读取一律经 `GameFileSystem` |
-| 上游不对 <48kHz 音源重采样 | 真实 BGM 是 44.1kHz，会播快约 8.8% | 待修：给 `WavFileSource` 套重采样装饰器 |
+| 上游 `MakeConverter` 把**源速率**也传成 48k | `SDL_BuildAudioCVT(cvt, fmt, ch, freq, fmt, 2, freq)`：源速率写成了目标速率 48k，SDL 判定「无需转换」；自带的 `conv_wave_rate` 又只在「目标 < 源」时生效。于是 44.1kHz 音源按 48kHz 播，快 8.8%（音调高约 1.5 个半音） | 不改上游：在音源外面套 `ResamplingSource`（D-017）；用 `audio_selftest=1` 把「输出频率」变成日志里的数字 |
 | 极简夹具掩盖问题 | 空 `REGNAME`、无 CG 表、无 `#DISKMARK`——四个 bug 直到接真实游戏才暴露 | 关键路径要用真实数据验证，但商业资源不进仓库 |
 | PowerShell 5.1 按 ANSI 读无 BOM 的 `.ps1` | 中文注释被误解码后吞掉后续行 | 仓库内 `.ps1` 一律纯 ASCII |
 | FreeType 模块表须与编译文件一致 | `ftmodule.h` 列了 19 个模块，少编一个就链接失败 | 用自定义 `ftmodule_android.h`；可变字体支持还需编 `ftmm.c` |
