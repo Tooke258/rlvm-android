@@ -184,6 +184,10 @@ const GlyphBitmap* FontEngine::Rasterize(uint32_t codepoint,
   glyph.width = static_cast<int>(bitmap.width);
   glyph.height = static_cast<int>(bitmap.rows);
   glyph.advance = static_cast<int>(face_->glyph->advance.x >> 6);
+  glyph.bearing_x = face_->glyph->bitmap_left;
+  glyph.bearing_y = face_->glyph->bitmap_top;
+  glyph.ascent = static_cast<int>(face_->size->metrics.ascender >> 6);
+  glyph.descent = static_cast<int>(-(face_->size->metrics.descender >> 6));
 
   if (glyph.width > 0 && glyph.height > 0 && bitmap.buffer != nullptr) {
     glyph.coverage.resize(static_cast<size_t>(glyph.width) * glyph.height);

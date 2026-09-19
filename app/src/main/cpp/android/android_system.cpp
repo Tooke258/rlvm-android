@@ -238,16 +238,23 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
   AndroidSurface* target = dynamic_cast<AndroidSurface*>(destination.get());
   if (target == nullptr) return Size(0, 0);
 
+  // 按**基线**摆放字形：insertion_point 的 y 是这一行的顶部，先加 ascent 得到基线，
+  // 再减去 bitmap_top 得到位图顶。按位图左上角摆会让不同高度的字各自贴顶线。
+  const int baseline = insertion_point_y + glyph->ascent;
+  const int origin_x = insertion_point_x + glyph->bearing_x;
+  const int origin_y = baseline - glyph->bearing_y;
+
   // 与上游 SDLTextSystem 相同的做法：阴影先画在 (+2, +2)，再把字形画在原点。
   if (shadow_colour != nullptr && font_shadow() != 0) {
     target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height,
-                          insertion_point_x + 2, insertion_point_y + 2,
-                          *shadow_colour);
+                          origin_x + 2, origin_y + 2, *shadow_colour);
   }
   target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height,
-                        insertion_point_x, insertion_point_y, font_colour);
+                        origin_x, origin_y, font_colour);
 
-  return Size(glyph->width, glyph->height);
+  // 返回「推进量 × 行高」：调用方用宽度推进插入点、用高度换行。
+  // 返回位图尺寸会让每个字的推进量各不相同（字距忽宽忽窄）。
+  return Size(glyph->advance, glyph->ascent + glyph->descent);
 }
 
 int AndroidTextSystem::GetCharWidth(int size, uint16_t codepoint) {

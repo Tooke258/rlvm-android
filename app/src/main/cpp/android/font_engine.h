@@ -25,6 +25,12 @@ struct GlyphBitmap {
   int width = 0;
   int height = 0;
   int advance = 0;
+  // FreeType 给出的字形定位信息。缺了这两项就只能按「位图左上角」摆放，
+  // 不同高度的字形会各自贴在同一条顶线上——真机上表现为「文字上下不齐」。
+  int bearing_x = 0;  // slot->bitmap_left：位图左边缘相对笔位置的水平偏移
+  int bearing_y = 0;  // slot->bitmap_top：位图顶边缘相对基线的垂直偏移
+  int ascent = 0;     // 该字号的上伸部，用来把行顶换算成基线
+  int descent = 0;    // 下伸部（正数）
   std::vector<uint8_t> coverage;  // width * height
 };
 
