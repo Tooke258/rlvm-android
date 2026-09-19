@@ -403,6 +403,26 @@ void System::DumpRenderTree(RLMachine& machine) {
   graphics().Refresh(&tree);
 }
 
+// -----------------------------------------------------------------------
+// config 菜单的三个配置项（见 system.h 的说明）。
+// 目前是进程内存储：菜单能正常往返，但重启后会回到默认值。
+// -----------------------------------------------------------------------
+
+namespace {
+
+int g_cursor_mono = 0;
+int g_reduce_distortion = 0;
+int g_sound_quality = 0;
+
+}  // namespace
+
+int System::cursor_mono() const { return g_cursor_mono; }
+void System::set_cursor_mono(const int in) { g_cursor_mono = in; }
+int System::reduce_distortion() const { return g_reduce_distortion; }
+void System::set_reduce_distortion(const int in) { g_reduce_distortion = in; }
+int System::sound_quality() const { return g_sound_quality; }
+void System::set_sound_quality(const int in) { g_sound_quality = in; }
+
 boost::filesystem::path System::GetHomeDirectory() {
   std::string drive, home;
   char* homeptr = getenv("HOME");

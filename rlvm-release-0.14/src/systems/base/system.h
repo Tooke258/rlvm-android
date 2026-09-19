@@ -151,6 +151,17 @@ class System {
   bool low_priority() const { return globals_.low_priority_; }
   void set_low_priority(const int in) { globals_.low_priority_ = in; }
 
+  // Android 移植新增：本作 config 菜单读写的三个配置项。
+  // 上游 RLVM 把它们（含成对的 setter）整体标成了"不支持"，导致菜单读到的
+  // 永远是默认值——表现就是"改完退出 config 再进去就丢了"。
+  // 这里先给出进程内的存取（菜单能正常往返）；持久化到全局数据是下一步。
+  int cursor_mono() const;
+  void set_cursor_mono(const int in);
+  int reduce_distortion() const;
+  void set_reduce_distortion(const int in);
+  int sound_quality() const;
+  void set_sound_quality(const int in);
+
   std::shared_ptr<Platform> platform() { return platform_; }
   void SetPlatform(const std::shared_ptr<Platform>& platform);
 

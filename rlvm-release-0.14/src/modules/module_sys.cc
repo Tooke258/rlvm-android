@@ -484,8 +484,10 @@ SysModule::SysModule() : RLModule("Sys", 1, 004) {
   AddOpcode(1503, 0, "cgGetFlag", ReturnIntValue(&CGMTable::GetFlag));
   AddOpcode(1504, 0, "cgStatus", ReturnIntValue(&CGMTable::GetStatus));
 
-  AddUnsupportedOpcode(2050, 0, "SetCursorMono");
-  AddUnsupportedOpcode(2000, 0, "CursorMono");
+  // Android 移植：本作 config 菜单会读写这三对配置项。上游把它们整体标成
+  // "不支持"，于是菜单读到的永远是默认值（改完再进就丢）。
+  AddOpcode(2000, 0, "CursorMono", ReturnIntValue(&System::cursor_mono));
+  AddOpcode(2050, 0, "SetCursorMono", CallFunction(&System::set_cursor_mono));
   AddOpcode(2051,
             0,
             "SetSkipAnimations",
@@ -576,10 +578,11 @@ SysModule::SysModule() : RLModule("Sys", 1, 004) {
   AddOpcode(2257, 0, "SetFontShadow", CallFunction(&TextSystem::set_font_shadow));
   AddOpcode(2357, 0, "FontShadow", ReturnIntValue(&TextSystem::font_shadow));
 
-  AddUnsupportedOpcode(2054, 0, "SetReduceDistortion");
-  AddUnsupportedOpcode(2004, 0, "ReduceDistortion");
-  AddUnsupportedOpcode(2059, 0, "SetSoundQuality");
-  AddUnsupportedOpcode(2009, 0, "SoundQuality");
+  AddOpcode(2004, 0, "ReduceDistortion", ReturnIntValue(&System::reduce_distortion));
+  AddOpcode(2054, 0, "SetReduceDistortion",
+            CallFunction(&System::set_reduce_distortion));
+  AddOpcode(2009, 0, "SoundQuality", ReturnIntValue(&System::sound_quality));
+  AddOpcode(2059, 0, "SetSoundQuality", CallFunction(&System::set_sound_quality));
 
   AddOpcode(2221, 0, "SetGeneric1", CallFunction(&EventSystem::set_generic1));
   AddOpcode(2620,
