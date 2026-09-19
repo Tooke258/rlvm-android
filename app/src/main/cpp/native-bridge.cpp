@@ -27,6 +27,7 @@
 #include <boost/filesystem/path.hpp>
 
 #include "libreallive/archive.h"
+#include "libreallive/bytecode.h"
 #include "libreallive/gameexe.h"
 #include "android/android_system.h"
 #include "android/android_graphics.h"
@@ -412,6 +413,55 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
  * 装配 AndroidSystem + RLMachine 并执行字节码。
  * 「普通路径」与「SAF」两个入口共用这段逻辑，差异只在 Archive 怎么打开。
  */
+/**
+ * 汉化支持（见 docs/LOCALIZATION.md）：把每个场景的文本串按顺序导出成 TSV。
+ *
+ * 导出顺序 = 「场景号升序、场景内出现顺序」。这个顺序必须可靠，因为它是后续
+ * 与中文译文对齐的唯一依据；序章「心臓がドキドキ…」应能在结果里找到。
+ */
+void ExportSceneText(libreallive::Archive& archive,
+                     const std::string& out_dir,
+                     std::string& report) {
+  if (out_dir.empty()) {
+    report += "export_jp_text: no diagnostics dir; skipped\n";
+    return;
+  }
+
+  std::ostringstream out;
+  int scenes = 0;
+  int strings = 0;
+  for (auto it = archive.begin(); it != archive.end(); ++it) {
+    const int index = it->first;
+    libreallive::Scenario* scenario = archive.GetScenario(index);
+    if (scenario == nullptr) continue;
+    ++scenes;
+
+    int ordinal = 0;
+    for (auto element = scenario->begin(); element != scenario->end(); ++element) {
+      // BytecodeList 是 forward_list<unique_ptr<BytecodeElement>>，取 get() 判型。
+      const libreallive::TextoutElement* text =
+          dynamic_cast<const libreallive::TextoutElement*>((*element).get());
+      if (text == nullptr) continue;
+      // 场景文本是 CP932，转成 UTF-8 便于比对与显示。
+      out << index << '\t' << ordinal++ << '\t' << cp932toUTF8(text->GetText(), 0)
+          << '\n';
+      ++strings;
+    }
+  }
+
+  const std::string path = out_dir + "/jp-text.tsv";
+  std::ofstream file(path, std::ios::binary);
+  if (!file) {
+    report += "export_jp_text: cannot write " + path + "\n";
+    return;
+  }
+  const std::string payload = out.str();
+  file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+  file.close();
+  report += "export_jp_text: scenes=" + std::to_string(scenes) +
+            " strings=" + std::to_string(strings) + " -> " + path + "\n";
+}
+
 void RunEngineOn(System& system,
                  Gameexe& gameexe,
                  libreallive::Archive& archive,
@@ -456,6 +506,16 @@ void RunEngineOn(System& system,
 
   // 重采样自检：把「音调是否偏高」变成日志里的一个频率数字。
   if (diag.audio_selftest) report += rlvm_android::ResamplerSelfTest();
+
+  // 汉化支持：导出各场景日文文本串（见 docs/LOCALIZATION.md）。
+  if (diag.export_jp_text) {
+    std::string export_dir;
+    {
+      std::lock_guard<std::mutex> lock(g_diag_mutex);
+      export_dir = g_diag_dir;
+    }
+    ExportSceneText(archive, export_dir, report);
+  }
 
   AndroidGraphicsSystem* graphics =
       dynamic_cast<AndroidGraphicsSystem*>(&system.graphics());
