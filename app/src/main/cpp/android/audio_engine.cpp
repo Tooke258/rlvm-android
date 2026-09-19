@@ -431,7 +431,17 @@ struct AudioEngine::Channel {
   // 音源已读完但环形缓冲还没播完：此时保持 playing，等缓冲排空再停，
   // 否则结尾会被硬截断（见 DecoderLoop 里的说明）。
   std::atomic<bool> draining{false};
+  // 停播时的淡出（防咔哒声）：控制线程请求，音频回调逐步衰减到 0 再停通道。
+  std::atomic<bool> fade_out_request{false};
+  // 仅由音频回调读写的淡出剩余帧数（回调是唯一写入者，无需原子）。
+  int fade_out_remaining = 0;
 };
+
+// 淡出长度：约 4ms @48kHz。太短压不住咔哒，太长会让人觉得"反应慢"。
+constexpr int kFadeOutFrames = 192;
+// 主增益余量（约 -2dB）：给"BGM + 语音 + 音效"的和留出空间，
+// 避免经常顶到满刻度导致高音破音。
+constexpr double kMasterGain = 0.79;
 
 AudioEngine& AudioEngine::Instance() {
   static AudioEngine instance;
@@ -596,6 +606,7 @@ void AudioEngine::Play(int channel_index,
 
   channel.playing.store(false);   // 先停，避免回调读到半更新状态
   channel.draining.store(false);
+  channel.fade_out_request.store(false);
   channel.ring->Reset();
   {
     std::lock_guard<std::mutex> lock(channel.mutex);
@@ -610,11 +621,9 @@ void AudioEngine::Stop(int channel_index) {
   if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
     return;
   Channel& channel = *channels_[channel_index];
-  // 显式停止是"立刻停"，不走进 draining（否则游戏切场景时残留的尾巴会继续响）。
-  channel.draining.store(false);
-  channel.playing.store(false);
-  std::lock_guard<std::mutex> lock(channel.mutex);
-  channel.source.reset();
+  // 不立即切断：请求淡出，由音频回调把当前波形衰减到 0 再停通道。
+  // 瞬时切断会让波形从非零值直接跳到零，听起来就是"咔"的一声。
+  channel.fade_out_request.store(true);
 }
 
 void AudioEngine::SetVolume(int channel_index, int volume) {
@@ -734,13 +743,45 @@ void AudioEngine::MixInto(int16_t* out,
     }
 
     const size_t samples = got * kAudioChannels;
+
+    // 停播淡出：被请求停止后逐帧把增益降到 0，避免波形被硬切断产生咔哒声。
+    int fade_remaining = channel->fade_out_remaining;
+    if (fade_remaining <= 0 &&
+        channel->fade_out_request.load(std::memory_order_relaxed)) {
+      fade_remaining = kFadeOutFrames;
+    }
+    bool fade_finished = false;
+
     for (size_t i = 0; i < samples; ++i) {
+      int gain = volume;
+      if (fade_remaining > 0) {
+        gain = volume * fade_remaining / kFadeOutFrames;
+        // 交错立体声：每两个样本算一帧，在帧边界上递减。
+        if ((i & 1u) == 1u) {
+          --fade_remaining;
+          if (fade_remaining <= 0) {
+            fade_remaining = 0;
+            fade_finished = true;
+          }
+        }
+      }
       const int32_t mixed =
-          out[i] + (static_cast<int32_t>(scratch[i]) * volume) / 255;
-      out[i] = ClampToInt16(mixed);
+          out[i] + (static_cast<int32_t>(scratch[i]) * gain) / 255;
+      // 主增益余量 + 软限幅：给多通道相加以空间，且避免高音破音。
+      out[i] = SoftLimit(static_cast<int32_t>(mixed * kMasterGain));
       const int magnitude = out[i] < 0 ? -static_cast<int>(out[i])
                                        : static_cast<int>(out[i]);
       if (magnitude > *peak) *peak = magnitude;
+    }
+
+    channel->fade_out_remaining = fade_remaining;
+    if (fade_finished) {
+      // 淡出完成：真正停掉通道。source 留在原处，由下一次 Play 或 Shutdown 回收
+      // ——音频回调里不能加锁去动它。
+      channel->fade_out_request.store(false);
+      channel->fade_out_remaining = 0;
+      channel->playing.store(false);
+      channel->draining.store(false);
     }
   }
 }
