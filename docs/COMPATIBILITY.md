@@ -66,3 +66,13 @@ rlBabel 是关键：RealLive 允许游戏调用外部 DLL，补丁借此改变�
 只有 RLVM 已重新实现的 DLL 能被接管。目前实现的有 `rlBabel`，以及数个游戏专用 DLL
 （Little Busters 的 `ef00`/`pt00`、Tomoyo After 的 `dt00`）。
 补丁若依赖其它自研 Windows DLL，在任何平台都无法运行——这与 Android 无关。
+
+## 7. Android 平台差异（实现时实际踩到的）
+
+| 差异 | 表现 | 对策 |
+| --- | --- | --- |
+| Adreno 驱动对 GLSL `#version` 的位置极其严格 | 规范允许 `#version` 前有空白，但高通驱动报 `P0005: #version must be on the first line`，着色器编译失败且**链接时报的错是误导性的** | 着色器源码用 `trimIndent()` 去掉起始换行；并且**必须检查编译/链接状态并打印 info log**，否则失败是静默的 |
+| `fs::file_size` 对目录的行为 | Linux 上对目录取 size 允许，Android 抛 `Function not implemented` | 只对普通文件取大小；判断是否为目录要用 `is_directory` |
+| 文件名大小写 | 见第 5 节：SAF 的 documentId 精确匹配，而游戏来自 Windows/FAT | 路径后端用上游 `CorrectPathCase()`，SAF 后端在 `SafFileSystem` 内逐级解析 |
+| SAF 的 `ACTION_OPEN_DOCUMENT_TREE` 授权 | 必须由用户在系统选择器中完成一次，无法用 adb 或代码绕过 | 授权后用 `takePersistableUriPermission` 持久化，后续无需重复操作 |
+| PowerShell 5.1 读取无 BOM 的 `.ps1` | 按 ANSI/GBK 解码，中文字符被误解码后可吞掉后续行 | 仓库内的 `.ps1` 一律保持纯 ASCII（脚本头部已注明） |

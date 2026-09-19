@@ -37,7 +37,7 @@
 | --- | --- | --- | --- | --- |
 | T3.1 | SAF 目录选择器 | `MainActivity` 内的选择器 | 重启后仍可访问目录 | **DONE**：ACTION_OPEN_DOCUMENT_TREE + takePersistableUriPermission + SharedPreferences（与 T2.2 一并落地） |
 | T3.2 | 游戏库与设置 UI（**在此引入 Compose + Material 3**） | `MainScreen.kt`、`GameViewModel.kt` | 界面可交互 | TODO |
-| T3.3 | GLSurfaceView 集成 | `GameScreen.kt` | 游戏画面能显示 | TODO |
+| T3.3 | GLSurfaceView 集成 | `RlvmRenderer.kt` | 游戏画面能显示 | **DONE**：呈现链路打通（CPU 合成 → 帧缓冲 → JNI → GL 纹理 → 屏幕），实测显示正确 |
 
 ## 阶段 4：音频与渲染
 

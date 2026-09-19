@@ -7,6 +7,7 @@
 #include "libreallive/gameexe.h"
 #include "machine/rlmachine.h"
 #include "systems/base/colour.h"
+#include "systems/base/platform.h"
 
 namespace {
 
@@ -183,9 +184,18 @@ AndroidSystem::AndroidSystem(Gameexe& gameexe)
 
 AndroidSystem::~AndroidSystem() = default;
 
-void AndroidSystem::Run(RLMachine& /*machine*/) {
-  // 上游 SDL 版本在这里处理窗口事件与重绘；Android 侧的对应逻辑
-  // 要等 T3.3（GLSurfaceView）与 T2.3（触摸输入）。
+void AndroidSystem::Run(RLMachine& machine) {
+  // 与上游 SDLSystem::Run 相同的顺序：事件 -> 文本 -> 声音 -> 图形 -> 平台。
+  event_system_->ExecuteEventSystem(machine);
+  text_system_->ExecuteTextSystem();
+  sound_system_->ExecuteSoundSystem();
+  graphics_->ExecuteGraphicsSystem(machine);
+  if (platform())
+    platform()->Run(machine);
+
+  // 上游由 SDL 的视频事件驱动重绘；Android 侧没有这种事件源，
+  // 因此每轮主循环主动合成一帧。GL 线程按自己的节奏取走最新的一帧。
+  graphics_->Refresh(nullptr);
 }
 
 GraphicsSystem& AndroidSystem::graphics() { return *graphics_; }

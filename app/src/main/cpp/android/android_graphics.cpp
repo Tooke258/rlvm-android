@@ -40,7 +40,10 @@ void ForEachPixel(const Rect& area, const Size& bounds, Fn fn) {
 // AndroidSurface
 // ---------------------------------------------------------------------------
 
-AndroidSurface::AndroidSurface(const Size& size) { Resize(size); }
+AndroidSurface::AndroidSurface(const Size& size, AndroidGraphicsSystem* owner)
+    : owner_(owner) {
+  Resize(size);
+}
 
 void AndroidSurface::Resize(const Size& size) {
   size_ = size;
@@ -141,20 +144,47 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
   }
 }
 
-// 推屏相关：阶段 3/4 接入 GLSurfaceView 后再实现。
-void AndroidSurface::RenderToScreen(const Rect& /*src*/, const Rect& /*dst*/,
-                                    int /*alpha*/) const {}
+// 「推屏」在 CPU 合成架构下等价于「合成到帧缓冲」：上游 SDL 后端把这些调用送进
+// GL 管线，我们则落到 AndroidGraphicsSystem::frame_buffer_ 上，
+// 最后由 GL 线程把这一张合成好的图传成纹理显示。
+void AndroidSurface::RenderToScreen(const Rect& src, const Rect& dst,
+                                    int alpha) const {
+  if (owner_ == nullptr) return;
+  std::shared_ptr<AndroidSurface> target = owner_->frame_buffer();
+  if (!target) return;
+  BlitToSurface(*target, src, dst, alpha, true);
+}
 
-void AndroidSurface::RenderToScreenAsColorMask(const Rect& /*src*/, const Rect& /*dst*/,
-                                               const RGBAColour& /*colour*/,
-                                               int /*filter*/) const {}
+void AndroidSurface::RenderToScreenAsColorMask(const Rect& src, const Rect& dst,
+                                               const RGBAColour& colour,
+                                               int /*filter*/) const {
+  if (owner_ == nullptr) return;
+  std::shared_ptr<AndroidSurface> target = owner_->frame_buffer();
+  if (!target) return;
+  BlitToSurface(*target, src, dst, colour.a(), true);
+  // 近似实现：整块叠加一次色调。真正的逐像素色彩遮罩需要 GL 管线（T4.2）。
+  target->ApplyColour(RGBColour(colour.r(), colour.g(), colour.b()), dst);
+}
 
-void AndroidSurface::RenderToScreen(const Rect& /*src*/, const Rect& /*dst*/,
-                                    const int /*opacity*/[4]) const {}
+void AndroidSurface::RenderToScreen(const Rect& src, const Rect& dst,
+                                    const int opacity[4]) const {
+  if (owner_ == nullptr) return;
+  std::shared_ptr<AndroidSurface> target = owner_->frame_buffer();
+  if (!target) return;
+  // 近似实现：四角不透明度取平均。上游用 GL 做双线性插值。
+  const int average = (opacity[0] + opacity[1] + opacity[2] + opacity[3]) / 4;
+  BlitToSurface(*target, src, dst, average, true);
+}
 
 void AndroidSurface::RenderToScreenAsObject(const GraphicsObject& /*rp*/,
-                                            const Rect& /*src*/, const Rect& /*dst*/,
-                                            int /*alpha*/) const {}
+                                            const Rect& src, const Rect& dst,
+                                            int alpha) const {
+  if (owner_ == nullptr) return;
+  std::shared_ptr<AndroidSurface> target = owner_->frame_buffer();
+  if (!target) return;
+  // 近似实现：暂不应用对象自身的色调/亮度调制，只做带 alpha 的合成。
+  BlitToSurface(*target, src, dst, alpha, true);
+}
 
 void AndroidSurface::GetDCPixel(const Point& pos, int& r, int& g, int& b) const {
   if (!Contains(pos.x(), pos.y())) {
@@ -168,7 +198,7 @@ void AndroidSurface::GetDCPixel(const Point& pos, int& r, int& g, int& b) const 
 }
 
 Surface* AndroidSurface::Clone() const {
-  AndroidSurface* copy = new AndroidSurface(size_);
+  AndroidSurface* copy = new AndroidSurface(size_, owner_);
   copy->pixels_ = pixels_;
   return copy;
 }
@@ -190,20 +220,25 @@ AndroidGraphicsSystem::AndroidGraphicsSystem(System& system, Gameexe& gameexe)
   // 上游约定：DC0 是背景（haikei），DC1 起是各图形层。
   AllocateDC(0, screen_size());
   AllocateDC(1, screen_size());
+  // 合成目标：每帧先把 DC0 与各对象画到这里，再由 GL 线程取走。
+  frame_buffer_ = std::make_shared<AndroidSurface>(screen_size(), this);
 }
 
-void AndroidGraphicsSystem::BeginFrame() {}
+void AndroidGraphicsSystem::BeginFrame() {
+  // 每帧从干净缓冲开始（上游 GL 后端同样从清屏开始）。
+  if (frame_buffer_) frame_buffer_->Fill(RGBAColour(0, 0, 0, 255));
+}
 
-void AndroidGraphicsSystem::EndFrame() {}
+void AndroidGraphicsSystem::EndFrame() { ++frame_count_; }
 
 std::shared_ptr<Surface> AndroidGraphicsSystem::EndFrameToSurface() {
-  return last_frame_;
+  return frame_buffer_;
 }
 
 void AndroidGraphicsSystem::AllocateDC(int dc, Size size) {
   auto& slot = display_contexts_[dc];
   if (!slot) {
-    slot = std::make_shared<AndroidSurface>(size);
+    slot = std::make_shared<AndroidSurface>(size, this);
   } else if (slot->GetSize().width() < size.width() ||
              slot->GetSize().height() < size.height()) {
     slot->Resize(size);
@@ -234,7 +269,7 @@ std::shared_ptr<Surface> AndroidGraphicsSystem::GetDC(int dc) {
 }
 
 std::shared_ptr<Surface> AndroidGraphicsSystem::BuildSurface(const Size& size) {
-  return std::make_shared<AndroidSurface>(size);
+  return std::make_shared<AndroidSurface>(size, this);
 }
 
 ColourFilter* AndroidGraphicsSystem::BuildColourFiller() {
@@ -245,4 +280,34 @@ std::shared_ptr<const Surface> AndroidGraphicsSystem::LoadSurfaceFromFile(
     const std::string& /*short_filename*/) {
   // 图像文件（GRP/GAN/ANM/HIK）的解码与缓存属于 T3.3/T4.2 的工作。
   return std::shared_ptr<const Surface>();
+}
+
+void AndroidGraphicsSystem::DrawBringUpPattern() {
+  if (!frame_buffer_) return;
+  const Size size = frame_buffer_->GetSize();
+  if (size.width() <= 0 || size.height() <= 0) return;
+
+  const int bar_height = size.height() / 10;
+  const uint32_t colours[8] = {
+      PackRGBA(0, 0, 0, 255),       PackRGBA(255, 0, 0, 255),
+      PackRGBA(0, 255, 0, 255),     PackRGBA(0, 0, 255, 255),
+      PackRGBA(255, 255, 0, 255),   PackRGBA(0, 255, 255, 255),
+      PackRGBA(255, 0, 255, 255),   PackRGBA(255, 255, 255, 255),
+  };
+  for (int i = 0; i < 8; ++i) {
+    const int r = static_cast<int>(colours[i] & 0xFF);
+    const int g = static_cast<int>((colours[i] >> 8) & 0xFF);
+    const int b = static_cast<int>((colours[i] >> 16) & 0xFF);
+    frame_buffer_->Fill(RGBAColour(r, g, b, 255),
+                        Rect(Point(i * size.width() / 8, 0),
+                             Size(size.width() / 8, bar_height)));
+  }
+
+  // 一个随帧号横向移动的方块：连续两帧不同，证明画面确实在更新。
+  const int box = size.height() / 8;
+  const int travel = std::max(1, size.width() - box);
+  const int x = static_cast<int>((frame_count_ * 17u) % static_cast<unsigned>(travel));
+  const int y = size.height() / 2 - box / 2;
+  frame_buffer_->Fill(RGBAColour(255, 255, 255, 255),
+                      Rect(Point(x, y), Size(box, box)));
 }

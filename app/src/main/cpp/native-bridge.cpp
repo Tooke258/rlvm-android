@@ -8,8 +8,11 @@
 #include <android/log.h>
 
 #include <exception>
+#include <cstring>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 
@@ -21,6 +24,7 @@
 #include "libreallive/archive.h"
 #include "libreallive/gameexe.h"
 #include "android/android_system.h"
+#include "android/android_graphics.h"
 #include "android/game_file_system.h"
 #include "android/jni_saf_backend.h"
 #include "android/saf_file_system.h"
@@ -32,6 +36,44 @@
 namespace {
 
 constexpr char kLogTag[] = "rlvm-native";
+
+// ---------------------------------------------------------------------------
+// 帧呈现缓冲
+//
+// 引擎在自己的线程上合成帧，GL 线程按自己的节奏取走最新的一帧。
+// 这里保存一份拷贝而不是直接暴露 AndroidGraphicsSystem 的帧缓冲：
+// 引擎实例的生命周期（T2.4）尚未定型，拷贝可以让两边解耦。
+// ---------------------------------------------------------------------------
+std::mutex g_frame_mutex;
+std::vector<uint32_t> g_frame_pixels;
+int g_frame_width = 0;
+int g_frame_height = 0;
+unsigned int g_frame_serial = 0;
+
+/** 把图形系统当前的帧缓冲拷进呈现缓冲。 */
+void CaptureFrame(AndroidGraphicsSystem& graphics) {
+  std::shared_ptr<AndroidSurface> frame = graphics.frame_buffer();
+  if (!frame) return;
+
+  const Size size = frame->GetSize();
+  const size_t count = static_cast<size_t>(size.width()) *
+                       static_cast<size_t>(size.height());
+  if (count == 0) return;
+
+  std::lock_guard<std::mutex> lock(g_frame_mutex);
+  g_frame_pixels.assign(frame->pixels(), frame->pixels() + count);
+  g_frame_width = size.width();
+  g_frame_height = size.height();
+  ++g_frame_serial;
+
+  // 采样校验和：用于区分「引擎产出的帧本身是空的」与「呈现环节没显示出来」。
+  uint64_t checksum = 0;
+  for (size_t i = 0; i < count; i += 97) checksum += g_frame_pixels[i];
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "frame %dx%d serial=%u sampled_checksum=%llu", g_frame_width,
+                      g_frame_height, g_frame_serial,
+                      static_cast<unsigned long long>(checksum));
+}
 
 /** 把 Java 字符串转成 UTF-8 的 std::string。 */
 std::string JStringToUtf8(JNIEnv* env, jstring value) {
@@ -170,6 +212,7 @@ void RunEngineOn(System& system,
                  Gameexe& gameexe,
                  libreallive::Archive& archive,
                  int max_instructions,
+                 bool draw_bring_up_pattern,
                  std::string& report) {
   RLMachine machine(system, archive);
   AddAllModules(machine);
@@ -178,22 +221,53 @@ void RunEngineOn(System& system,
 
   report += "engine assembled (regname=\"" + gameexe("REGNAME").ToString("") + "\")\n";
 
+  AndroidGraphicsSystem* graphics =
+      dynamic_cast<AndroidGraphicsSystem*>(&system.graphics());
+
+  // 与上游 RLVMInstance::Run 相同的结构：每轮先让子系统跑一遍（含合成一帧），
+  // 再以 10ms 为时间片连续执行字节码。
+  const unsigned int time_budget_ms = 3000;
+  const unsigned int started = system.event().GetTicks();
   int executed = 0;
+  int frames_presented = 0;
   std::string stop_reason = "instruction budget exhausted";
+
   while (executed < max_instructions) {
     if (machine.halted()) {
       stop_reason = "machine halted";
       break;
     }
-    machine.ExecuteNextInstruction();
-    ++executed;
+    if (system.event().GetTicks() - started > time_budget_ms) {
+      stop_reason = "time budget exhausted";
+      break;
+    }
+
+    system.Run(machine);
+    if (draw_bring_up_pattern && graphics != nullptr)
+      graphics->DrawBringUpPattern();
+    if (graphics != nullptr) {
+      CaptureFrame(*graphics);
+      ++frames_presented;
+    }
+
     if (machine.CurrentLongOperation()) {
       stop_reason = "entered long operation";
       break;
     }
+
+    const unsigned int slice_start = system.event().GetTicks();
+    unsigned int now = slice_start;
+    do {
+      machine.ExecuteNextInstruction();
+      ++executed;
+      now = system.event().GetTicks();
+    } while (!machine.CurrentLongOperation() && !system.force_wait() &&
+             (now - slice_start < 10));
+    system.set_force_wait(false);
   }
 
   report += "instructions executed = " + std::to_string(executed) + "\n";
+  report += "frames presented = " + std::to_string(frames_presented) + "\n";
   report += "stop reason = " + stop_reason + "\n";
   report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
 }
@@ -224,7 +298,7 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     libreallive::Archive archive(seen_path.string(),
                                  gameexe("REGNAME").ToString(""));
     AndroidSystem system(gameexe);
-    RunEngineOn(system, gameexe, archive, max_instructions, report);
+    RunEngineOn(system, gameexe, archive, max_instructions, true, report);
     report += "RUN OK\n";
   } catch (const std::exception& e) {
     report += std::string("EXCEPTION: ") + e.what() + "\n";
@@ -336,7 +410,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       report += "Seen via SAF: TOC entries=" + std::to_string(scenarios) +
                 "; indices=[" + indices + "]\n";
 
-      RunEngineOn(system, gameexe, archive, max_instructions, report);
+      RunEngineOn(system, gameexe, archive, max_instructions, true, report);
     }
     report += "RUN OK\n";
   } catch (const std::exception& e) {
@@ -354,6 +428,32 @@ void SetSafBackendFromJava(JNIEnv* env, jobject /*thiz*/, jobject backend) {
   rlvm_android::InstallJniSafBackend(env, backend);
 }
 
+/** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
+jint GetFrameSize(JNIEnv* /*env*/, jobject /*thiz*/) {
+  std::lock_guard<std::mutex> lock(g_frame_mutex);
+  if (g_frame_width <= 0 || g_frame_height <= 0) return 0;
+  return (g_frame_width << 16) | (g_frame_height & 0xFFFF);
+}
+
+/**
+ * 把当前帧复制到调用方提供的直接缓冲区（宽*高 个 RGBA8888 像素）。
+ * 返回帧序号；缓冲区过小或暂无帧时返回 -1。
+ * 序号与上次相同表示没有新帧，GL 线程据此跳过重复上传。
+ */
+jint CopyFrameToBuffer(JNIEnv* env, jobject /*thiz*/, jobject buffer) {
+  void* address = env->GetDirectBufferAddress(buffer);
+  if (address == nullptr) return -1;
+  const jlong capacity = env->GetDirectBufferCapacity(buffer);
+
+  std::lock_guard<std::mutex> lock(g_frame_mutex);
+  if (g_frame_pixels.empty()) return -1;
+  const size_t bytes = g_frame_pixels.size() * sizeof(uint32_t);
+  if (capacity < static_cast<jlong>(bytes)) return -1;
+
+  std::memcpy(address, g_frame_pixels.data(), bytes);
+  return static_cast<jint>(g_frame_serial);
+}
+
 const JNINativeMethod kNativeMethods[] = {
     {"versionString", "()Ljava/lang/String;", reinterpret_cast<void*>(VersionString)},
     {"probeAbi", "()I", reinterpret_cast<void*>(ProbeAbi)},
@@ -365,6 +465,9 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(SetSafBackendFromJava)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
+    {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},
+    {"copyFrameToBuffer", "(Ljava/nio/ByteBuffer;)I",
+     reinterpret_cast<void*>(CopyFrameToBuffer)},
 };
 
 /** 必须与 Kotlin 侧 org.rlvm.android.NativeBridge 完全一致。 */

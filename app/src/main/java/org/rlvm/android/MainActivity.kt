@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.opengl.GLSurfaceView
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -31,6 +32,7 @@ class MainActivity : Activity() {
     }
 
     private lateinit var output: TextView
+    private lateinit var glView: GLSurfaceView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +56,13 @@ class MainActivity : Activity() {
             setOnClickListener { runAppDirScenario() }
         }
 
+        // 画面区：native 在引擎线程上合成帧，这里只负责显示。
+        glView = GLSurfaceView(this).apply {
+            setEGLContextClientVersion(3)
+            setRenderer(RlvmRenderer())
+            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+        }
+
         setContentView(
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -67,9 +76,15 @@ class MainActivity : Activity() {
                     }
                 )
                 addView(
+                    glView,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, 0, 3f
+                    )
+                )
+                addView(
                     ScrollView(this@MainActivity).apply {
                         layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                            ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f
                         )
                         addView(output)
                     }
@@ -84,6 +99,16 @@ class MainActivity : Activity() {
             val saved = savedTreeUri()
             append(if (saved == null) "尚未授权任何目录，请点“选择游戏目录”。" else "已授权目录：$saved")
         })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::glView.isInitialized) glView.onResume()
+    }
+
+    override fun onPause() {
+        if (::glView.isInitialized) glView.onPause()
+        super.onPause()
     }
 
     // -- SAF 目录授权 ------------------------------------------------------

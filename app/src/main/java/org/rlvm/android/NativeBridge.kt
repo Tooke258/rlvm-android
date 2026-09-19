@@ -47,4 +47,13 @@ object NativeBridge {
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */
     external fun runScenarioSaf(maxInstructions: Int): String
+
+    /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
+    external fun getFrameSize(): Int
+
+    /**
+     * 把当前帧复制到 [buffer]（需为直接缓冲区，容量 >= 宽*高*4，RGBA8888）。
+     * 返回帧序号；与上次相同表示没有新帧。失败返回 -1。
+     */
+    external fun copyFrameToBuffer(buffer: java.nio.ByteBuffer): Int
 }
