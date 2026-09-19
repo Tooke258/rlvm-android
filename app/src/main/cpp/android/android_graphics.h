@@ -23,6 +23,21 @@
 
 class AndroidGraphicsSystem;
 
+/**
+ * 合成统计。
+ *
+ * 用来区分「什么都没有画」与「画了但内容本身是黑的」——只看最终帧的非黑像素数
+ * 无法分辨这两者，而它们的修法完全不同。
+ */
+struct GraphicsBlitStats {
+  uint64_t calls = 0;           // BlitToSurface 的调用次数
+  uint64_t written_pixels = 0;  // 实际写入的目标像素数（有效 alpha）
+  uint64_t nonblack_pixels = 0; // 其中写入结果不是黑色的像素数
+};
+
+/** 读取并清零累计的合成统计。 */
+GraphicsBlitStats TakeGraphicsBlitStats();
+
 // 像素格式固定为 0xAABBGGRR：在小端内存中即 R,G,B,A 字节序，
 // 与 OpenGL 的 GL_RGBA / GL_UNSIGNED_BYTE 直接对应，后续上传纹理无需转换。
 class AndroidSurface : public Surface {
@@ -42,6 +57,17 @@ class AndroidSurface : public Surface {
   void Invert(const Rect& area) override;
   void Mono(const Rect& area) override;
   void ApplyColour(const RGBColour& colour, const Rect& area) override;
+
+  // GRP type-2 区域表（「多子图」）：一个文件里可以切出多个子图，
+  // 每个子图有自己的矩形与原点偏移。上游的对象渲染全靠 GetPattern：
+  // 图形对象调用 objPattNo(n) 选第 n 个子图，取到的矩形就是渲染源矩形。
+  // 不实现它时基类返回全 0 矩形，结果是「对象存在、也参与渲染，但源矩形 0x0，
+  // 一个像素都画不出来」——真机上表现为整个画面全黑。
+  int GetNumPatterns() const override;
+  const GrpRect& GetPattern(int patt_no) const override;
+
+  // 设置区域表。空表表示单图资源，自动退化成「整张图一个子图」。
+  void SetRegionTable(std::vector<GrpRect> region_table);
   Size GetSize() const override;
 
   void BlitToSurface(Surface& dest_surface,
@@ -94,6 +120,9 @@ class AndroidSurface : public Surface {
 
   Size size_;
   std::vector<uint32_t> pixels_;
+  std::vector<GrpRect> region_table_;
+  // 区域表是否由图像加载显式设置（未设置时跟随尺寸自动生成整图子图）。
+  bool region_table_explicit_ = false;
   AndroidGraphicsSystem* owner_;
 };
 

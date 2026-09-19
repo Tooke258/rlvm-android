@@ -9,6 +9,8 @@
 
 #include <exception>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -30,6 +32,7 @@
 #include "android/audio_engine.h"
 #include "android/game_file_system.h"
 #include "android/jni_saf_backend.h"
+#include "android/log_redirect.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
@@ -54,6 +57,69 @@ std::vector<uint32_t> g_frame_pixels;
 int g_frame_width = 0;
 int g_frame_height = 0;
 unsigned int g_frame_serial = 0;
+int g_frame_log_every = 1;
+
+// ---------------------------------------------------------------------------
+// 设备侧诊断开关
+//
+// 为什么需要：真机迭代一轮要重新构建 + 安装（数分钟），而「首屏为什么是黑的」
+// 这类问题需要反复调整观察参数（跑多久、要不要逐条指令追踪）。
+// 因此把参数放进一个纯文本文件，用 adb push 改一行就能换一次实验，
+// 不必重新编译。文件由 Kotlin 侧告知路径（本机外部文件目录）。
+//
+// 文件格式：每行 `key=value`，`#` 开头为注释。缺省值即原行为。
+//   trace=1              逐条指令追踪（上游 set_tracing_on，输出走 stderr）
+//   time_budget_ms=8000  单次运行的执行时间片
+//   max_instructions=N   指令条数上限
+//   frame_log_every=60   每 N 帧才打一条帧日志（默认 1，即每帧）
+// ---------------------------------------------------------------------------
+std::mutex g_diag_mutex;
+std::string g_diag_dir;
+
+struct DiagOptions {
+  bool trace = false;
+  bool dump_graphics = false;
+  int time_budget_ms = 3000;
+  int max_instructions = 0;  // 0 表示沿用调用方传入的值
+  int frame_log_every = 1;
+};
+
+/** 读取并解析诊断文件；文件不存在时返回缺省值。 */
+DiagOptions LoadDiagOptions() {
+  DiagOptions options;
+
+  std::string dir;
+  {
+    std::lock_guard<std::mutex> lock(g_diag_mutex);
+    dir = g_diag_dir;
+  }
+  if (dir.empty()) return options;
+
+  std::ifstream stream(dir + "/rlvm-diag.txt");
+  if (!stream) return options;
+
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (line.empty() || line[0] == '#') continue;
+    const std::string::size_type equals = line.find('=');
+    if (equals == std::string::npos) continue;
+    const std::string key = line.substr(0, equals);
+    const std::string value = line.substr(equals + 1);
+    const int number = std::atoi(value.c_str());
+    if (key == "trace") {
+      options.trace = (number != 0);
+    } else if (key == "dump_graphics") {
+      options.dump_graphics = (number != 0);
+    } else if (key == "time_budget_ms") {
+      if (number > 0) options.time_budget_ms = number;
+    } else if (key == "max_instructions") {
+      if (number > 0) options.max_instructions = number;
+    } else if (key == "frame_log_every") {
+      if (number > 0) options.frame_log_every = number;
+    }
+  }
+  return options;
+}
 
 /** 把图形系统当前的帧缓冲拷进呈现缓冲。 */
 void CaptureFrame(AndroidGraphicsSystem& graphics) {
@@ -76,9 +142,14 @@ void CaptureFrame(AndroidGraphicsSystem& graphics) {
   for (size_t i = 0; i < count; ++i) {
     if ((g_frame_pixels[i] & 0x00FFFFFFu) != 0) ++non_black;
   }
-  __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                      "frame %dx%d serial=%u nonblack=%zu/%zu", g_frame_width,
-                      g_frame_height, g_frame_serial, non_black, count);
+
+  // 帧日志可以按间隔抽样：逐帧输出在长时间运行时会淹没真正重要的诊断信息。
+  if (g_frame_log_every <= 1 ||
+      (g_frame_serial % static_cast<unsigned int>(g_frame_log_every)) == 1u) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "frame %dx%d serial=%u nonblack=%zu/%zu", g_frame_width,
+                        g_frame_height, g_frame_serial, non_black, count);
+  }
 }
 
 /** 把 Java 字符串转成 UTF-8 的 std::string。 */
@@ -294,18 +365,30 @@ void RunEngineOn(System& system,
   // 在 Android 上 std::cerr 又看不到，于是表现为「跑了很多指令却什么都没发生」。
   machine.SetPrintUndefinedOpcodes(true);
 
+  // 设备侧诊断参数（文件不存在时全部取缺省值，行为与之前一致）。
+  const DiagOptions diag = LoadDiagOptions();
+  g_frame_log_every = diag.frame_log_every;
+  if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
+  if (diag.trace) machine.set_tracing_on();
+
   // REGNAME 是 CP932 编码的游戏数据，显示前先转成 UTF-8——
   // 否则报告本身含有非法 UTF-8 字节。
   report += "engine assembled (regname=\"" +
             ToDisplayUtf8(gameexe("REGNAME").ToString("")) + "\")\n";
+  report += "diagnostics: trace=" + std::string(diag.trace ? "on" : "off") +
+            " time_budget_ms=" + std::to_string(diag.time_budget_ms) +
+            " max_instructions=" + std::to_string(max_instructions) +
+            " frame_log_every=" + std::to_string(diag.frame_log_every) + "\n";
 
   AndroidGraphicsSystem* graphics =
       dynamic_cast<AndroidGraphicsSystem*>(&system.graphics());
 
   // 与上游 RLVMInstance::Run 相同的结构：每轮先让子系统跑一遍（含合成一帧），
   // 再以 10ms 为时间片连续执行字节码。
-  const unsigned int time_budget_ms = 3000;
+  const unsigned int time_budget_ms = static_cast<unsigned int>(diag.time_budget_ms);
   const unsigned int started = system.event().GetTicks();
+  // 只统计本次运行造成的合成量，先清零。
+  TakeGraphicsBlitStats();
   int executed = 0;
   int frames_presented = 0;
   std::string stop_reason = "instruction budget exhausted";
@@ -353,6 +436,19 @@ void RunEngineOn(System& system,
   report += "frames presented = " + std::to_string(frames_presented) + "\n";
   report += "stop reason = " + stop_reason + "\n";
   report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
+  const GraphicsBlitStats blits = TakeGraphicsBlitStats();
+  report += "graphics blits: calls=" + std::to_string(blits.calls) +
+            " written_pixels=" + std::to_string(blits.written_pixels) +
+            " nonblack_pixels=" + std::to_string(blits.nonblack_pixels) + "\n";
+
+  // 图形栈转储：上游的 GraphicsSystem::Refresh(ostream*) 会把每个对象渲染时的
+  // src/dst 矩形、alpha、可见性一并打印出来。这是判断「对象没被画」与
+  // 「对象画到了屏幕外/全透明」最直接的手段。
+  if (diag.dump_graphics && graphics != nullptr) {
+    std::ostringstream tree;
+    graphics->Refresh(&tree);
+    report += "graphics tree dump:\n" + tree.str();
+  }
 
   // 音频连线验证：主动让 SoundSystem 播放游戏自己的 BGM，确认
   // AndroidSoundSystem -> AudioEngine -> AAudio 这条链路真的出声。
@@ -536,6 +632,19 @@ void SetSafBackendFromJava(JNIEnv* env, jobject /*thiz*/, jobject backend) {
   rlvm_android::InstallJniSafBackend(env, backend);
 }
 
+/**
+ * 告知 native 侧诊断文件的所在目录（应用的外部文件目录）。
+ *
+ * 真机迭代一轮要重新构建 + 安装，很慢；把「跑多久 / 是否逐条追踪」这类
+ * 观察参数放进目录下的 rlvm-diag.txt，用 adb push 改一行即可换一次实验。
+ */
+void SetDiagnosticsDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
+  std::lock_guard<std::mutex> lock(g_diag_mutex);
+  g_diag_dir = JStringToUtf8(env, jdir);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "diagnostics dir = %s",
+                      g_diag_dir.c_str());
+}
+
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
 jint GetFrameSize(JNIEnv* /*env*/, jobject /*thiz*/) {
   std::lock_guard<std::mutex> lock(g_frame_mutex);
@@ -571,6 +680,8 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(RunScenario)},
     {"setSafBackend", "(Lorg/rlvm/android/SafFileSystem;)V",
      reinterpret_cast<void*>(SetSafBackendFromJava)},
+    {"setDiagnosticsDir", "(Ljava/lang/String;)V",
+     reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},
@@ -584,6 +695,10 @@ constexpr char kBridgeClassName[] = "org/rlvm/android/NativeBridge";
 }  // namespace
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
+  // 尽早接管 stdout / stderr：上游 RLVM 的诊断信息全走这两个流，
+  // 而 Android 应用默认把它们丢进 /dev/null。晚一步装就会漏掉早期输出。
+  rlvm_android::InstallLogRedirect();
+
   JNIEnv* env = nullptr;
   if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
     return JNI_ERR;

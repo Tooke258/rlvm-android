@@ -1,0 +1,23 @@
+# RLVM Android 诊断开关（设备侧，不需要重新构建 APK）
+#
+# 用法：把本文件改名成 rlvm-diag.txt 后 push 到应用的外部文件目录：
+#   adb push tools/rlvm-diag.sample.txt /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+# 然后点「运行 SAF 引擎」。文件不存在时全部取缺省值（即正常行为）。
+#
+# 格式：每行 key=value，'#' 开头为注释。
+
+# 逐条指令追踪（上游 set_tracing_on）。输出走 stderr -> logcat 的 rlvm-stderr 标签。
+# trace=1
+
+# 运行结束时转储图形栈（上游 GraphicsSystem::Refresh(ostream*)），
+# 打印每个对象的 src/dst 矩形、alpha、可见性。
+# dump_graphics=1
+
+# 单次运行的执行时间片（毫秒），缺省 3000。
+# time_budget_ms=8000
+
+# 指令条数上限，缺省沿用 Kotlin 侧传入的值（200000）。
+# max_instructions=200000
+
+# 每 N 帧打一条帧日志，缺省 1（每帧）。长时间运行时调大可以少淹没有用信息。
+# frame_log_every=60

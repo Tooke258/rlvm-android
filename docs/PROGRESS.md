@@ -8,10 +8,11 @@
 
 ## 1. 一句话现状
 
-**基础设施与全部平台后端已经打通并在真机上验证：游戏能加载、脚本能执行、画面能呈现、
-声音能出声。但真实游戏的首屏仍然全黑——脚本在观察窗口内什么都没画。**
+**真实游戏（Kud Wafter）已经在真机上跑出画面：标题背景、START/LOAD/CONFIG/EXIT 菜单、
+标题 logo 全部正常渲染，BGM 由游戏自行请求并经 AAudio 播放。**
 
-这不是"没接通"，而是"游戏还没走到绘制那一步"。阻塞点见第 5 节。
+那条「首屏全黑」的阻塞点已在第 5 节定位并修复：根因是 Android 后端没有实现
+`Surface::GetPattern`（GRP type-2 区域表），导致每个图形对象的源矩形都是 0×0。
 
 ## 2. 里程碑与提交（旧 → 新）
 
@@ -34,6 +35,7 @@
 | `4a53ca0` | 真实游戏联调：修复四个被极简夹具掩盖的 bug |
 | `2657960` | T4.1b：`AndroidSoundSystem` 接到 `AudioEngine` |
 | `c4e9ef9` | 文字渲染（FreeType）+ 报告日志修复 |
+| `HEAD`   | 诊断能力（stdout/stderr → logcat、设备侧诊断文件）+ **修复全黑根因**：GRP type-2 区域表 |
 
 ## 3. 已验证的能力（每条都有真机证据）
 
@@ -51,59 +53,89 @@
 | 图像解码 | 320x240 BMP 经 `GRPCONV` 解码并正确合成（通道序已修正） |
 | 音频链路 | NWA 解码 → 混音 → AAudio → 蓝牙输出，峰值与源一致（用户已确认听到） |
 | 真实游戏加载 | Kud Wafter：37 KB `GAMEEXE.INI`、3.5 MB `SEEN.TXT`、TOC 62 个场景、`REGNAME=KEY\クドわふたー` |
+| **真实游戏渲染** | 标题画面完整呈现（蓝天村庄背景 + START/LOAD/CONFIG/EXIT + 标题 logo），真机截图确认 |
+| **游戏自行请求音频** | 日志 `play channel=30 file=BGM/BGM14.nwa`（标题曲），非脚手架触发 |
+| 诊断可见性 | 上游 `cout`/`cerr` 全部进入 logcat；未实现操作码与被吞掉的异常都可读 |
 
 ## 4. 已知缺口
 
 | 缺口 | 说明 |
 | --- | --- |
-| 文字从未被渲染 | `FontEngine` 已实现并链接，但引擎在观察窗口内一次都没调用文字系统 |
-| 音频从未被游戏触发 | `AndroidSoundSystem` 已接通，但引擎没请求过 BGM/SE；听到的声音来自显式验证触发 |
-| HIK 渲染未接入 | `hik_renderer_` 为空，`BACKGROUND_HIK` 分支会退回 DC0（黑） |
+| 文字尚未被游戏调用 | `FontEngine` 已实现并链接；本轮跑到标题菜单，正文尚未进入（文字只在正文里出现） |
+| HIK 渲染未接入 | `hik_renderer_` 为空。Kud Wafter 标题流程没用到 HIK；用到 HIK 的作品仍需补 |
 | KOE 语音未实现 | 需要先把 KOE/NWK/OVK 语音包的解码链路接上 |
-| GRP type-2 多子图 | 区域表未接入，`Surface::GetPattern` 仍是基类默认值 |
+| 通道数不足 | RLVM 只建模 25 个通道，本作用到 channel 30，`SetBgmVolMod` 会抛 `Invalid channel number 30 in channel_volume` 并被跳过 |
+| 若干未实现操作码 | Sys 2055 / 2056 / 300 / 1231 / 3503、Os 120；目前一律「跳过继续」，未见功能受损 |
 | PNG / JPEG 解码 | 解码器存在但被 `#if HAVE_LIBPNG/JPEG` 排除；RealLive 原生格式用不到 |
 | 44.1kHz 重采样 | 上游不对低于 48kHz 的音源重采样，真实 BGM 会播快约 8.8%（已确认） |
 | 触摸输入 | `EventSystem` 是桩，从不注入点击（很可能是首屏无进展的原因之一） |
 | 存档读写经 SAF | 未实现 |
 | 引擎生命周期 | 只有"跑一段"，没有启动/暂停/恢复/退出 |
 
-## 5. 当前阻塞点与下一步（最重要）
+## 5. 「首屏全黑」的根因与修复（已解决）
 
-### 观察到的现象
-
-真实 Kud Wafter（场景正确地从 `#SEEN_START=9010` 启动）：
+### 现象（修复前）
 
 ```
-engine assembled (regname="KEY\クドわふたー")
-instructions executed = 1668
-frames presented = 174          （约 58fps，稳定）
-stop reason = time budget exhausted
-halted = no
-画面 nonblack = 0/480000        （全黑）
-文字系统调用 = 0
-引擎请求音频 = 0
+instructions executed = 22395
+frames presented = 1686
+graphics blits: calls=5732 written_pixels=2400000 nonblack_pixels=0
+画面 nonblack = 0/480000            （全黑）
+graphics tree dump:
+  Object #18:
+    Rendering Rect(0, 0, Size(0, 0)) to Rect(0, 0, Size(0, 0))
+  Object #21:
+    Rendering Rect(0, 0, Size(0, 0)) to Rect(0, 447, Size(0, 0))
 ```
 
-### 三种可能，按可能性排序
+### 定位过程（按顺序，每一步都用真机证据推翻上一个猜测）
 
-1. **在等待输入**：`EventSystem` 从不注入点击，标题画面可能在死等一次点击。
-2. **用 HIK 渲染画面**：`hik_renderer_` 未接入，`DrawFrame` 在 `BACKGROUND_HIK`
-   分支下拿不到渲染器就退回 DC0（全黑）。
-3. **每条指令都在抛被吞掉的异常**：`halt_on_exception(false)` 会静默跳过，
-   而 `std::cout`/`std::cerr` 在 Android 应用里默认被丢弃，所以看不到。
+1. **把 stdout/stderr 接到 logcat**（D-014）。这一步立刻显示：脚本在正常推进，
+   并且一直在报被吞掉的东西——`Undefined: opcode<1:4:2055, 0>(1)`、
+   `Invalid channel number 30 in channel_volume` 等。原先「在等输入 / 在等 HIK」
+   的猜测都不成立：追踪显示游戏一路从 SEEN9010（引导）→ 9011（标题渐入）→ 9012
+   （标题菜单）走完了。
+2. **加图像加载日志**，确认资源链路没问题：`KURO` 800×600、`TT_LOGO_WAR00` 800×600、
+   `TT_TTA_BG00` 800×600（576 KB）都成功解码。
+3. **加合成计数**（`AndroidSurface::BlitToSurface` 里统计写入像素与非黑像素）：
+   5732 次 blit、写入 240 万像素（恰好 5 张全屏）、**非黑像素 0**。
+4. **用上游自带的 `GraphicsSystem::Refresh(ostream*)` 转储图形栈**（`dump_graphics=1`），
+   决定性证据出现：所有对象的源矩形都是 `Size(0, 0)`。
 
-### 下一步该做什么
+### 根因
 
-**把引擎的 `std::cout` / `std::cerr` 重定向到 logcat**（native 侧替换 streambuf，
-转发给 `__android_log_print`）。Android 应用的原生标准输出默认丢弃，这是目前所有
-"看不见"的诊断被卡住的根因。做完之后：
+上游对象渲染的源矩形来自 `GraphicsObjectData::SrcRect()`：
+`CurrentSurface(go)->GetPattern(go.GetPattNo()).rect`。
+Android 后端没有实现 `GetPattern`，基类返回静态空 `GrpRect`，于是每个对象都退化成
+0×0 的源矩形——对象、脚本、文件系统全都正常，只是**一个像素都画不出来**。
 
-- `machine.SetPrintUndefinedOpcodes(true)` 的输出就能看到；
-- 可以直接判断是上面三种情况中的哪一种；
-- 也能顺手用 `machine.set_tracing_on()` 做逐条指令追踪。
+### 修复
 
-若确认是 (1)，T2.3 触摸输入就从"可选"变成"必需"；
-若是 (2)，则要在 `AndroidGraphicsSystem` 里接入 HIK 渲染器。
+`AndroidSurface` 增加 GRP type-2 区域表（D-015）：加载图像时把 xclannad 解码器的
+`region_table`（子图矩形 + 原点偏移）搬进表面，覆写 `GetNumPatterns()` / `GetPattern()`；
+没有区域表的资源退化成「整张图一个子图」；区域表保证永不为空（`GetPattern` 返引用）。
+
+### 修复后的真机结果
+
+```
+graphics blits: calls=2169 written_pixels=341873182 nonblack_pixels=269250703
+frame 800x600 serial=481 nonblack=480000/480000
+rlvm-audio: play channel=30 file=BGM/BGM14.nwa loop=1 volume=165   ← 游戏自己请求的标题曲
+```
+
+真机截图：标题背景 + START/LOAD/CONFIG/EXIT 菜单 + 「クドわふたー」标题 logo。
+
+### 下一步（按价值排序）
+
+1. **触摸输入（T2.3）**：`EventSystem` 仍是桩。现在标题菜单已经画出来且脚本在
+   轮询 `GetCursorPos`，注入点击就能验证「START → 进入正文」这条链路，也是
+   文字系统第一次被真正调用的入口。
+2. **通道数**：把 `NUM_TOTAL_CHANNELS` 提到本作实际使用范围（30+）或改为按
+   `#CHANNEL` 动态分配。注意这属于改动上游语义，需要先记录决策。
+3. **44.1 kHz 重采样**：真实 BGM 是 44.1 kHz，当前按 48 kHz 播放会快约 8.8%。
+4. **未实现操作码**：Sys 2055 / 2056 / 300 / 1231 / 3503、Os 120。先确认
+   `#SEEN_START` 到正文这段是否真的不依赖它们。
+5. **引擎生命周期**：目前只有「跑一段」，没有启动/暂停/恢复/退出。
 
 ## 6. 工程事实速查
 
@@ -149,8 +181,25 @@ rlvm-release-0.14/                工作区根（同时也是 git 仓库根）
 ### 界面与日志
 
 应用有三个按钮：选择游戏目录 / 运行 SAF 引擎 / 运行应用目录（诊断）。
-日志标签：`rlvm-native`、`rlvm-audio`、`rlvm-gl`、`rlvm-font`。
+日志标签：`rlvm-native`、`rlvm-audio`、`rlvm-gl`、`rlvm-font`、`rlvm-graphics`，
+以及**上游诊断输出** `rlvm-stdout` / `rlvm-stderr`（见下方诊断文件）。
 可用 `uiautomator dump` 取控件 bounds 后 `input tap` 自动点击，无需人工。
+截图：`adb shell screencap -p /sdcard/s.png` + `adb pull`——**不要**用
+PowerShell 的 `>` 重定向，它会把二进制流改坏（见第 7 节）。
+
+### 设备侧诊断文件（不用重新构建）
+
+把同名文件 push 到 `/sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt`，
+点「运行 SAF 引擎」即可生效；文件不存在时全部取缺省值。模板见
+`tools/rlvm-diag.sample.txt`：
+
+```
+trace=1            # 逐条指令追踪（上游 set_tracing_on），走 rlvm-stderr
+dump_graphics=1    # 运行结束时转储图形栈（src/dst 矩形、alpha、可见性）
+time_budget_ms=25000
+max_instructions=200000
+frame_log_every=120
+```
 
 ### 上游改动
 
@@ -173,6 +222,9 @@ rlvm-release-0.14/                工作区根（同时也是 git 仓库根）
 | 极简夹具掩盖问题 | 空 `REGNAME`、无 CG 表、无 `#DISKMARK`——四个 bug 直到接真实游戏才暴露 | 关键路径要用真实数据验证，但商业资源不进仓库 |
 | PowerShell 5.1 按 ANSI 读无 BOM 的 `.ps1` | 中文注释被误解码后吞掉后续行 | 仓库内 `.ps1` 一律纯 ASCII |
 | FreeType 模块表须与编译文件一致 | `ftmodule.h` 列了 19 个模块，少编一个就链接失败 | 用自定义 `ftmodule_android.h`；可变字体支持还需编 `ftmm.c` |
+| **surface 未实现 `GetPattern` 会导致整屏全黑** | 对象、脚本、图像加载全部正常，blit 上万次，写入的像素却 100% 是黑的 | 源矩形来自 `GetPattern`，基类默认返回 0×0 矩形；必须实现 GRP type-2 区域表（D-015） |
+| PowerShell 的 `>` 重定向会损坏 `adb exec-out screencap` 的 PNG | 图片打不开（`invalid or unsupported image data`） | 用 `adb shell screencap -p /sdcard/x.png` + `adb pull` |
+| 只看「最终帧非黑像素数」无法定位渲染问题 | 分不清「没画」「画了但透明」「画了确实是黑的」 | 加合成计数（写入像素/非黑像素）+ 上游 `Refresh(ostream*)` 图形栈转储 |
 
 ## 8. Android 后端代码结构
 
@@ -197,7 +249,10 @@ rlvm-release-0.14/                工作区根（同时也是 git 仓库根）
    `am start -n org.rlvm.android/.MainActivity`。
 4. 自动点击：`uiautomator dump` 后 `pull` 出 UI XML，取 `运行 SAF 引擎` 的 bounds
    中点，`input tap <x> <y>`。
-5. 读结果：`adb -s ... logcat -d -s rlvm-native:V rlvm-audio:V rlvm-font:V '*:S'`。
+5. 读结果：`adb -s ... logcat -d -s rlvm-native:V rlvm-audio:V rlvm-graphics:V rlvm-stderr:V '*:S'`。
+6. 需要更细的观察时，改 `rlvm-diag.txt` 再 push（见第 6 节），无需重新构建：
+   打开 `trace` 看指令流，打开 `dump_graphics` 看每个对象的 src/dst 矩形。
+7. 肉眼确认：`adb shell screencap -p /sdcard/s.png` + `adb pull`，**不要**用 shell 重定向。
 
 SAF 目录授权需要人工在系统选择器里点一次（SAF 的固有环节，无法绕过）；
 授权会持久化，之后无需重复操作。

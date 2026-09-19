@@ -134,3 +134,39 @@
 - **下载源**：xiph 官方源在本机 302 响应耗时 129 秒，GitHub 归档仅 4 秒，故脚本优先 GitHub。
 - **许可**：libogg / libvorbis 为 BSD 许可，与 GPLv3 兼容。
 - **状态**：已执行并验证
+
+---
+
+## D-014 在 fd 层面把 stdout / stderr 重定向到 logcat
+
+- **日期**：2026-09-19
+- **决策**：新增 `android/log_redirect.{h,cc}`，在 `JNI_OnLoad` 里用管道接管 fd 1 / fd 2，
+  由读取线程逐行转发给 `__android_log_print`（标签 `rlvm-stdout` / `rlvm-stderr`）。
+- **理由**：Android 应用的原生标准输出被丢进 `/dev/null`，而上游 RLVM 的诊断信息
+  （未实现的操作码、被吞掉的指令异常、模块警告，共 200 余处 `cout` / `cerr` / `printf`）
+  全部走这两个流。结果就是「跑了上千条指令却什么都看不到」，任何基于日志的判断都无法进行。
+- **备选**：替换 `std::streambuf`（只覆盖 C++ 流，漏掉 `printf` 与直接 `write(1, ...)`）；
+  或输出到文件（需要额外拿路径，且不如 logcat 便于 `adb logcat` 直接过滤）。
+- **副作用**：管道有 64 KB 缓冲，极端情况下若读取线程卡住会让写端阻塞；读取线程只做
+  转发，实测无影响。逐行输出还顺带绕开了 logcat 单条消息的长度上限。
+- **状态**：已执行并验证（正是它让「首屏全黑」的根因在几分钟内定位）
+
+---
+
+## D-015 在 AndroidSurface 上实现 GRP type-2 区域表（GetPattern）
+
+- **日期**：2026-09-19
+- **决策**：`AndroidSurface` 保存 `region_table_`，加载图像时把 xclannad 解码器的
+  `region_table`（每个子图的矩形 + 原点偏移）搬进来，并覆写
+  `GetNumPatterns()` / `GetPattern(int)`；无区域表的资源退化为「整张图一个子图」。
+- **理由**：上游对象渲染的源矩形完全来自 `GraphicsObjectData::SrcRect()`，它取的是
+  `CurrentSurface(go)->GetPattern(go.GetPattNo()).rect`。基类的默认实现返回静态空
+  `GrpRect`，于是**每个对象的源矩形都是 0×0**——对象存在、也确实参与渲染循环，
+  但一个像素都画不出来。真机表现是「脚本跑了几万条指令、合成统计里上万次 blit，
+  画面却 100% 全黑」。
+- **证据链**：见 `docs/PROGRESS.md` 第 5 节。关键证据是上游自带的
+  `GraphicsSystem::Refresh(std::ostream*)` 转储，它直接打印出
+  `Rendering Rect(0, 0, Size(0, 0)) to Rect(0, 0, Size(0, 0))`。
+- **语义影响**：只影响 Android 后端的 `Surface` 实现，未改动 `libreallive` / `machine` /
+  `modules` / `systems/base` 的任何语义。
+- **状态**：已执行并验证（Kud Wafter 标题画面完整呈现，见 PROGRESS 第 3 节）

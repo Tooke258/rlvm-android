@@ -400,6 +400,7 @@ add_library(rlvm SHARED
     android/font_engine.cpp
     android/game_file_system.cpp
     android/jni_saf_backend.cpp
+    android/log_redirect.cc
     android/saf_file_system.cpp
     # SDL 音频转换的最小兼容层：供 vendor/xclannad/wavfile.cc 使用
     compat/sdl_shim/sdl_audio_compat.cpp

@@ -37,6 +37,12 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 让 native 侧知道诊断文件（rlvm-diag.txt）放在哪里：应用的外部文件目录，
+        // 可以用 adb push 直接改，不需要重新构建。
+        getExternalFilesDir(null)?.let { dir ->
+            runCatching { NativeBridge.setDiagnosticsDir(dir.absolutePath) }
+        }
+
         output = TextView(this).apply {
             textSize = 11f
             setTextIsSelectable(true)

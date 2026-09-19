@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <vector>
 
+#include <android/log.h>
 #include <unistd.h>
 
 #include "android/game_file_system.h"
@@ -16,6 +18,12 @@
 #include "xclannad/file.h"
 
 namespace {
+
+// 合成统计：见头文件里的说明。引擎线程写、探针线程读，用互斥锁即可。
+std::mutex g_blit_stats_mutex;
+GraphicsBlitStats g_blit_stats;
+
+constexpr char kGraphicsLogTag[] = "rlvm-graphics";
 
 inline uint32_t PackRGBA(int r, int g, int b, int a) {
   return static_cast<uint32_t>(r & 0xFF) | (static_cast<uint32_t>(g & 0xFF) << 8) |
@@ -61,6 +69,43 @@ void AndroidSurface::Resize(const Size& size) {
       static_cast<size_t>(std::max(0, size.width())) *
       static_cast<size_t>(std::max(0, size.height()));
   pixels_.assign(count, 0u);
+
+  // 不变式：区域表永远非空——GetPattern 返回引用，空表会越界。
+  // 没有显式设置过区域表的表面（DC0/DC1、临时表面）默认「整张图算一个子图」，
+  // 尺寸变化时跟着更新。
+  if (!region_table_explicit_) {
+    GrpRect whole;
+    whole.rect = Rect(Point(0, 0), size);
+    whole.originX = 0;
+    whole.originY = 0;
+    region_table_.assign(1, whole);
+  }
+}
+
+void AndroidSurface::SetRegionTable(std::vector<GrpRect> region_table) {
+  region_table_explicit_ = true;
+  if (region_table.empty()) {
+    GrpRect whole;
+    whole.rect = Rect(Point(0, 0), size_);
+    whole.originX = 0;
+    whole.originY = 0;
+    region_table_.assign(1, whole);
+    return;
+  }
+  region_table_ = std::move(region_table);
+}
+
+int AndroidSurface::GetNumPatterns() const {
+  return static_cast<int>(region_table_.size());
+}
+
+// 与上游 SDLSurface 一致：越界的子图编号退回第 0 个
+//（RealLive 脚本里常见「文件只有一个子图，但 pattern 号照样给」的写法）。
+const Surface::GrpRect& AndroidSurface::GetPattern(int patt_no) const {
+  if (patt_no >= 0 && static_cast<size_t>(patt_no) < region_table_.size()) {
+    return region_table_[static_cast<size_t>(patt_no)];
+  }
+  return region_table_[0];
 }
 
 bool AndroidSurface::Contains(int x, int y) const {
@@ -155,6 +200,9 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
   AndroidSurface* dest = dynamic_cast<AndroidSurface*>(&dest_surface);
   if (dest == nullptr) return;
 
+  uint64_t written = 0;
+  uint64_t nonblack = 0;
+
   const Size dst_size = dest->GetSize();
   const int copy_w = std::min(src.width(), dst.width());
   const int copy_h = std::min(src.height(), dst.height());
@@ -177,6 +225,8 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
       uint32_t& d = dest->pixels_[static_cast<size_t>(dy) * dst_size.width() + dx];
       if (eff_a == 255) {
         d = s;
+        ++written;
+        if ((d & 0x00FFFFFFu) != 0) ++nonblack;
         continue;
       }
       const int inv = 255 - eff_a;
@@ -184,8 +234,22 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
                    (GreenOf(s) * eff_a + GreenOf(d) * inv) / 255,
                    (BlueOf(s) * eff_a + BlueOf(d) * inv) / 255,
                    Clamp255(AlphaOf(d) + eff_a));
+      ++written;
+      if ((d & 0x00FFFFFFu) != 0) ++nonblack;
     }
   }
+
+  std::lock_guard<std::mutex> lock(g_blit_stats_mutex);
+  ++g_blit_stats.calls;
+  g_blit_stats.written_pixels += written;
+  g_blit_stats.nonblack_pixels += nonblack;
+}
+
+GraphicsBlitStats TakeGraphicsBlitStats() {
+  std::lock_guard<std::mutex> lock(g_blit_stats_mutex);
+  GraphicsBlitStats stats = g_blit_stats;
+  g_blit_stats = GraphicsBlitStats();
+  return stats;
 }
 
 // 「推屏」在 CPU 合成架构下等价于「合成到帧缓冲」：上游 SDL 后端把这些调用送进
@@ -244,6 +308,8 @@ void AndroidSurface::GetDCPixel(const Point& pos, int& r, int& g, int& b) const 
 Surface* AndroidSurface::Clone() const {
   AndroidSurface* copy = new AndroidSurface(size_, owner_);
   copy->pixels_ = pixels_;
+  copy->region_table_ = region_table_;
+  copy->region_table_explicit_ = region_table_explicit_;
   return copy;
 }
 
@@ -403,7 +469,27 @@ std::shared_ptr<const Surface> AndroidGraphicsSystem::LoadSurfaceFromFile(
   surface->SetPixelsFromRGBA(pixels.data());
   surface->SetIsMask(is_mask);
 
-  // 注意：GRP type-2 的区域表（多子图）尚未接入，Surface::GetPattern 仍是基类默认值。
-  // 单图资源不受影响；需要多子图的游戏要等这一步补上。
+  // GRP type-2 区域表：解码器已经把每个子图的矩形与原点偏移解析出来了，
+  // 这里原样搬进表面。没有区域表的资源退化成「整张图一个子图」。
+  // 这一步不能省：对象渲染的源矩形完全来自 GetPattern()。
+  std::vector<Surface::GrpRect> region_table;
+  region_table.reserve(converter->region_table.size());
+  for (const GRPCONV::REGION& region : converter->region_table) {
+    Surface::GrpRect pattern;
+    // 上游约定：x2/y2 是闭区间，转成半开区间要 +1。
+    pattern.rect = Rect(Point(region.x1, region.y1),
+                        Point(region.x2 + 1, region.y2 + 1));
+    pattern.originX = region.origin_x;
+    pattern.originY = region.origin_y;
+    region_table.push_back(pattern);
+  }
+  surface->SetRegionTable(std::move(region_table));
+
+  // 图像加载日志：区分「文件根本没找到」与「找到了但解码结果是空的/全透明」。
+  __android_log_print(ANDROID_LOG_INFO, kGraphicsLogTag,
+                      "loaded \"%s\" %dx%d mask=%d patterns=%d bytes=%zu",
+                      short_filename.c_str(), width, height, is_mask ? 1 : 0,
+                      surface->GetNumPatterns(), data.size());
+
   return surface;
 }

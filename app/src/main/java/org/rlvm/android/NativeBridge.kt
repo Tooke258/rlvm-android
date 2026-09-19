@@ -43,6 +43,14 @@ object NativeBridge {
     external fun setSafBackend(backend: SafFileSystem)
 
     /**
+     * 告知 native 侧诊断文件（rlvm-diag.txt）所在目录。
+     *
+     * 该文件用于在设备上调整诊断参数（逐条指令追踪、运行时长等），
+     * 这样迭代时不必每次重新构建安装。
+     */
+    external fun setDiagnosticsDir(dir: String)
+
+    /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */
