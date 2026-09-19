@@ -69,6 +69,10 @@ int OpenGameFileWriteFd(const std::string& file_id);
 // 普通 ofstream。存档与全局数据（Config）都经这里落盘。
 void WriteGameFile(const boost::filesystem::path& path, const std::string& data);
 
+// 读取整个"游戏文件"到内存：优先走读钩子（SAF 下唯一可行），失败回退普通
+// 路径。存档与全局数据的**读取**都用它——只改写入是不够的。
+bool ReadGameFileAll(const boost::filesystem::path& path, std::string& out);
+
 // Android 移植新增：把存档目录从默认的 $HOME/.rlvm/<REGNAME> 改到指定位置。
 // 传空路径表示恢复默认。设置后 System::GameSaveDirectory() 直接返回它，
 // 并且不再尝试用 boost 去创建目录（SAF 下没有真实路径，创建由平台层负责）。

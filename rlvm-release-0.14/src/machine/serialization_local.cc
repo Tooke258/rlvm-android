@@ -180,10 +180,15 @@ void loadLocalMemoryFrom(std::istream& iss, Memory& memory) {
 
 void loadGameForSlot(RLMachine& machine, int slot) {
   fs::path path = buildSaveGameFilename(machine, slot);
-  fs::ifstream file(path, std::ios::binary);
-  checkInFileOpened(file, path);
-
-  loadGameFrom(file, machine);
+  // 经统一入口读取：SAF 下没有真实路径，必须走平台读钩子
+  //（只把写入改过去是不够的，否则表现为"存得下、读不回"）。
+  std::string data;
+  if (!ReadGameFileAll(path, data)) {
+    throw rlvm::Exception(
+        str(format(_("Could not open save game file %1%")) % path));
+  }
+  std::istringstream buffer(data, std::ios::binary);
+  loadGameFrom(buffer, machine);
 }
 
 void loadGameFrom(std::istream& iss, RLMachine& machine) {

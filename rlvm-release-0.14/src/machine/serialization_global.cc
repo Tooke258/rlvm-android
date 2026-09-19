@@ -108,12 +108,15 @@ void saveGlobalMemoryTo(std::ostream& oss, RLMachine& machine) {
 
 void loadGlobalMemory(RLMachine& machine) {
   fs::path home = buildGlobalMemoryFilename(machine);
-  fs::ifstream file(home, std::ios::binary);
+  // 同上：走统一读取入口，SAF 下也能读到全局数据（Config）。
+  std::string data;
+  const bool opened = ReadGameFileAll(home, data);
+  std::istringstream file(data, std::ios::binary);
 
   // If we were able to open the file for reading, load it. Don't
   // complain if we're unable to, since this may be the first run on
   // this certain game and it may not exist yet.
-  if (file) {
+  if (opened) {
     try {
       loadGlobalMemoryFrom(file, machine);
     }

@@ -223,3 +223,24 @@ void SetGameSaveDirectoryOverride(const boost::filesystem::path& path) {
 boost::filesystem::path GetGameSaveDirectoryOverride() {
   return g_game_save_directory_override;
 }
+
+bool ReadGameFileAll(const boost::filesystem::path& path, std::string& out) {
+  out.clear();
+  const int fd = OpenGameFileFd(path.string());
+  if (fd >= 0) {
+    char buffer[16 * 1024];
+    for (;;) {
+      const ssize_t n = read(fd, buffer, sizeof(buffer));
+      if (n <= 0) break;
+      out.append(buffer, static_cast<size_t>(n));
+    }
+    close(fd);
+    return !out.empty();
+  }
+
+  std::ifstream file(path.string(), std::ios::binary);
+  if (!file) return false;
+  out.assign((std::istreambuf_iterator<char>(file)),
+             std::istreambuf_iterator<char>());
+  return true;
+}
