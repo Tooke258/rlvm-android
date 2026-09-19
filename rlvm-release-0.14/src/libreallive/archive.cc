@@ -69,7 +69,8 @@ Archive::Archive(int fd, const std::string& display_name,
       second_level_xor_key_(NULL),
       regname_(regname) {
   ReadTOC();
-  // 刻意不调用 ReadOverrides()：SAF 下没有真实目录可以枚举。
+  // 这里不调用 ReadOverrides()（SAF 下没有 boost::filesystem 可枚举的目录）；
+  // 调用方改为用 SAF 后端列目录后调用 ApplyOverrides()，见 native-bridge.cpp。
   SelectSecondLevelXorKey(regname);
 }
 
@@ -147,13 +148,25 @@ void Archive::ReadOverrides() {
   // Iterate over all files in the directory and override the table of contents
   // if there is a free SEENXXXX.TXT file.
   fs::path seen_dir = fs::path(name_).parent_path();
+  std::vector<std::string> filenames;
   fs::directory_iterator end;
   for (fs::directory_iterator it(seen_dir); it != end; ++it) {
-    std::string filename = it->path().filename().string();
+    filenames.push_back(it->path().filename().string());
+  }
+  ApplyOverrides(filenames, [&seen_dir](const std::string& filename) {
+    return new Mapping((seen_dir / filename).string(), Read);
+  });
+}
+
+void Archive::ApplyOverrides(const std::vector<std::string>& filenames,
+                             const OverrideOpener& opener) {
+  for (const std::string& filename : filenames) {
     if (filename.size() == 12 && istarts_with(filename, "seen") &&
         iends_with(filename, ".txt") && isdigit(filename[4]) &&
         isdigit(filename[5]) && isdigit(filename[6]) && isdigit(filename[7])) {
-      Mapping* mapping = new Mapping((seen_dir / filename).string(), Read);
+      Mapping* mapping = opener(filename);
+      if (mapping == NULL)
+        continue;
       maps_to_delete_.emplace_back(mapping);
 
       int index = std::stoi(filename.substr(4, 4));

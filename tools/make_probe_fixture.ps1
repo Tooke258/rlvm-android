@@ -42,6 +42,33 @@ $OutDir = (New-Item -ItemType Directory -Force -Path $OutDir).FullName
 Copy-Item -LiteralPath $gameexeSrc -Destination (Join-Path $OutDir 'Gameexe.ini') -Force
 Copy-Item -LiteralPath $seenSrc -Destination (Join-Path $OutDir 'Seen.txt') -Force
 
+# Also stage a SEEN0002.TXT override file. This exercises the fan-translation /
+# patch mechanism: Archive::ReadOverrides() (path backend) and
+# Archive::ApplyOverrides() (SAF backend) must both pick it up, which shows up as
+# an extra scenario index in the probe report.
+#
+# Content matters: a real SEEN####.TXT holds the *scenario payload* itself, not a
+# whole SEEN.TXT. The packed file starts with a table of (offset, length) pairs;
+# an entry whose offset is 0 does not exist. We therefore slice scenario 1's bytes
+# out of Seen.txt and register them as override index 2 - so the fixture is built
+# purely from upstream test data and stays free of commercial content.
+$seenBytes = [System.IO.File]::ReadAllBytes($seenSrc)
+$sliceOffset = -1
+$sliceLength = -1
+for ($i = 0; $i -lt 16; $i++) {
+    $entryOffset = [BitConverter]::ToInt32($seenBytes, $i * 8)
+    if ($entryOffset -ne 0) {
+        $sliceOffset = $entryOffset
+        $sliceLength = [BitConverter]::ToInt32($seenBytes, $i * 8 + 4)
+        break
+    }
+}
+if ($sliceOffset -lt 0) { throw 'Could not find a scenario entry in the TOC of Seen.txt' }
+
+$scenarioBytes = New-Object byte[] $sliceLength
+[Array]::Copy($seenBytes, $sliceOffset, $scenarioBytes, 0, $sliceLength)
+[System.IO.File]::WriteAllBytes((Join-Path $OutDir 'SEEN0002.TXT'), $scenarioBytes)
+
 # Keys read without a default during engine assembly. A real game always has
 # them; the upstream minimal fixture does not.
 #

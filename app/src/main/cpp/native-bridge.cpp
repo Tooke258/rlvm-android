@@ -265,6 +265,24 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
                                    gameexe("REGNAME").ToString(""));
       close(fd);
 
+      // 补丁机制：SEEN####.TXT 场景覆盖。
+      // SAF 下没有可供 boost::filesystem 枚举的目录，因此这里用 SAF 后端
+      // 列出文件名，再按名打开——文件名规则本身仍由 Archive 判定。
+      const std::vector<std::string> names = backend->ListDirectory("");
+      archive.ApplyOverrides(
+          names, [&backend](const std::string& name) -> libreallive::Mapping* {
+            const int override_fd = backend->OpenFd(name);
+            if (override_fd < 0) return nullptr;
+            libreallive::Mapping* mapping = nullptr;
+            try {
+              mapping = new libreallive::Mapping(override_fd, 0);
+            } catch (...) {
+              mapping = nullptr;
+            }
+            close(override_fd);
+            return mapping;
+          });
+
       int scenarios = 0;
       std::string indices;
       for (libreallive::Archive::const_iterator it = archive.begin();

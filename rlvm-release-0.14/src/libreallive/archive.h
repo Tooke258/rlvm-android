@@ -36,6 +36,7 @@
 
 #include <map>
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,16 @@ class Archive {
 
   // Returns a specific scenario by |index| number or NULL if none exist.
   Scenario* GetScenario(int index);
+
+  // Android 移植新增：把「枚举目录里的文件名」与「按名打开文件」外部化，
+  // 让非路径后端（SAF）也能应用 SEEN####.TXT 覆盖。
+  //
+  // 目录扫描本身依赖 boost::filesystem，在 SAF 下无法使用；而 *文件名规则*
+  // （12 字符、seen+4 位数字+.txt）属于格式知识，应当留在 Archive 内部。
+  // opener 返回新分配的 Mapping，返回 NULL 表示跳过该文件。
+  typedef std::function<Mapping*(const std::string&)> OverrideOpener;
+  void ApplyOverrides(const std::vector<std::string>& filenames,
+                      const OverrideOpener& opener);
 
   // Does a quick pass through all scenarios in the archive, looking for any
   // with non-default encoding. This short circuits when it finds one.
