@@ -99,6 +99,7 @@ NDK 目录里 clang 的可执行文件是 `clang++.exe` / `clang.exe`（不是 `
 | 技术决策 | `docs/DECISIONS.md`，编号 `D-00N` |
 | 源码架构 | `docs/ARCHITECTURE.md` |
 | 环境与工具链 | `docs/ENVIRONMENT.md` |
+| 真机测试回路 | `docs/TESTING.md`（设备、adb 命令、测试夹具） |
 
 ## 7. 停止与升级条件
 

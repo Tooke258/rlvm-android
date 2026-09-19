@@ -1,0 +1,9 @@
+{"type":"task","id":"T1.4","phase":"阶段 1：原生层编译适配","timestamp":"2026-09-19T16:16:00+08:00","goal":"最小 JNI 验证：确认 App 能在真机上调用 native 并让 RLVM 引擎真正执行逻辑"}
+{"type":"agent_output","content":"native-bridge.cpp 中新增第三个显式注册的 native 方法 probeGameDir(String)Ljava/lang/String;，它在给定目录下：(1) 用 boost::filesystem 遍历文件；(2) 解析 Gameexe.ini；(3) 打开 SEEN 归档并遍历 TOC、构造 Scenario。Kotlin 侧 NativeBridge 增加对应 external 声明，MainActivity 在后台线程调用并把报告显示到界面。全程遵循 RegisterNatives 显式注册。"}
+{"type":"device","content":"真机：Redmi K40 游戏版（M2012K10C / ares），Android 12（SDK 31），ABI arm64-v8a,armeabi-v7a —— 恰好匹配 task.md 的 minSdk=31 与两个目标 ABI。"}
+{"type":"fixture","content":"测试样本取自 RLVM 上游自带测试数据（非商业游戏文件），避免任何版权问题：test/Gameexe_data/Gameexe.ini（601 字节）与 test/Module_Mem_SEEN/cpyrng_0.TXT（80573 字节，经 kprl 打包的 SEEN）。推送到应用专属外部目录 /sdcard/Android/data/org.rlvm.android/files/probe/，该目录无需任何存储权限，卸载即清除。"}
+{"type":"round","n":1,"input":"首次真机运行","result":"native bridge registered；目录遍历正常；Gameexe parsed OK (CAPTION=Canon: A firearm)；Seen archive opened 但 scenario(0)=null；无崩溃。"}
+{"type":"agent_output","content":"查 Archive::ReadTOC() 发现 TOC 是 (offset, length) 表，offset 为 0 的条目表示该索引不存在，因此场景索引不一定从 0 开始。对样本文件头手工解析：entry0 offs=0（不存在），entry1 offs=0x13880 len=0x23D —— 场景在索引 1。改用 Archive 公开的 begin()/end() 遍历 TOC 拿到真实索引。"}
+{"type":"local_verify","command":"gradlew assembleDebug && adb install -r && adb shell am start -n org.rlvm.android/.MainActivity && adb logcat -s rlvm-native","result":"native bridge registered / Gameexe: parsed OK (CAPTION=Canon: A firearm) / Seen: TOC entries=1; indices=[1]; firstScenario=constructed; probableEncoding=0 / PROBE OK。AndroidRuntime 与 libc 无崩溃日志。截图确认界面显示一致。","status":"pass"}
+{"type":"summary","content":"这是整个移植第一次在真实 Android 设备上执行 RLVM 的实际逻辑。已跑通：boost::filesystem 目录访问 → Gameexe.ini 解析 → SEEN 归档 TOC 读取 → Scenario 构造（含 compression.cc 的解压路径）。T1.4 完成。"}
+{"type":"next","action":"阶段 2：T2.1 JNI 接口设计、T2.2 SAF 虚拟文件系统、T2.4 引擎生命周期（需要 AndroidSystem 顶替 SDLSystem）。"}

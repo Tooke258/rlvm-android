@@ -19,4 +19,12 @@ object NativeBridge {
 
     /** 返回 native 侧指针位宽（64 / 32），用于验证 ABI 与预期一致。 */
     external fun probeAbi(): Int
+
+    /**
+     * 引擎探针：在 [gameDir] 下解析 Gameexe.ini 并打开 SEEN 归档，返回可读报告。
+     *
+     * 这是 Android 上第一次执行 RLVM 的真实逻辑（boost::filesystem + libreallive）。
+     * 属于 I/O 操作，必须在后台线程调用。
+     */
+    external fun probeGameDir(gameDir: String): String
 }

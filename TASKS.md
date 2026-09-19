@@ -20,7 +20,7 @@
 | T1.2a | `boost::filesystem` → `std::filesystem` | 上游改动 | 编译通过 | **暂缓**：已用 Boost 官方开关绕过 C++20 依赖，无需为编译而迁移；是否迁移取决于存档兼容性（见 D-011） |
 | T1.2b | 桌面依赖替换（SDL 相关的音频/渲染/文本见阶段 4） | 依赖替换方案 + 代码 | 缺失依赖逐步减少 | 部分完成：SDL 音频转换用 shim 顶替（D-012），SDL 渲染/事件/文本仍待阶段 3/4 重写 |
 | T1.3 | 编译迭代修复 | 可编译的 `librlvm.so` | `externalNativeBuildDebug` 通过 | **DONE**：两 ABI 均通过，APK 21.6 MB |
-| T1.4 | 最小 JNI 验证 | `native-bridge.cpp` | App 能调用 native 并返回结果 | 部分完成：RegisterNatives 桥接与 App 内调用已就位，待接入真实引擎实例 |
+| T1.4 | 最小 JNI 验证 | `native-bridge.cpp` | App 能调用 native 并返回结果 | **DONE**：真机（Redmi K40 / Android 12）上跑通 Gameexe 解析 + SEEN TOC + Scenario 构造，详见 dev-log/T1.4.jsonl |
 
 ## 阶段 2：文件系统与 JNI 桥接
 
