@@ -148,3 +148,42 @@ New-Item -ItemType Directory -Force -Path $g00Dir | Out-Null
 $writer.Close()
 
 Write-Host "Image fixture: g00\test.g00 ($fileSize bytes, 320x240 BMP content)"
+
+# ---------------------------------------------------------------------------
+# Audio fixture: a 3-second 440 Hz sine, 44.1 kHz stereo 16-bit WAV.
+#
+# Deliberately not 48 kHz so that WAVFILE::MakeConverter has to resample, which
+# also exercises the SDL audio shim (compat/sdl_shim). The tone is audible, so a
+# human can confirm the pipeline really produces sound.
+# ---------------------------------------------------------------------------
+$sampleRate = 44100
+$seconds = 3
+$totalFrames = $sampleRate * $seconds
+$dataBytes = $totalFrames * 2 * 2          # stereo, 16-bit
+
+$audioStream = New-Object System.IO.MemoryStream
+$audioWriter = New-Object System.IO.BinaryWriter($audioStream)
+$audioWriter.Write([char[]]'RIFF')
+$audioWriter.Write([uint32](36 + $dataBytes))
+$audioWriter.Write([char[]]'WAVE')
+$audioWriter.Write([char[]]'fmt ')
+$audioWriter.Write([uint32]16)
+$audioWriter.Write([uint16]1)              # PCM
+$audioWriter.Write([uint16]2)              # stereo
+$audioWriter.Write([uint32]$sampleRate)
+$audioWriter.Write([uint32]($sampleRate * 4))
+$audioWriter.Write([uint16]4)              # block align
+$audioWriter.Write([uint16]16)             # bits per sample
+$audioWriter.Write([char[]]'data')
+$audioWriter.Write([uint32]$dataBytes)
+
+for ($i = 0; $i -lt $totalFrames; $i++) {
+    $value = [int16](20000 * [Math]::Sin(2 * [Math]::PI * 440 * $i / $sampleRate))
+    $audioWriter.Write($value)
+    $audioWriter.Write($value)
+}
+$audioWriter.Flush()
+[System.IO.File]::WriteAllBytes((Join-Path $OutDir 'test.wav'), $audioStream.ToArray())
+$audioWriter.Close()
+
+Write-Host "Audio fixture: test.wav ($($dataBytes + 44) bytes, 3s 440Hz stereo)"

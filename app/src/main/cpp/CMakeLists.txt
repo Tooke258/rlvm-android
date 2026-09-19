@@ -351,6 +351,7 @@ add_library(rlvm SHARED
     # Android 平台后端（替代上游的 SDLSystem）
     android/android_graphics.cpp
     android/android_system.cpp
+    android/audio_engine.cpp
     android/game_file_system.cpp
     android/jni_saf_backend.cpp
     android/saf_file_system.cpp
@@ -389,10 +390,13 @@ target_compile_options(rlvm PRIVATE
 find_library(log_lib log)
 find_library(android_lib android)
 find_library(z_lib z)
+# AAudio：minSdk 31 远高于其引入版本（API 26），无需 Oboe（见 D-004）。
+find_library(aaudio_lib aaudio)
 
 target_link_libraries(rlvm
     vorbis                      # 语音解码（OVK/KOE Ogg Vorbis）；ogg 由其 PUBLIC 传递
     ${log_lib}
     ${android_lib}
     ${z_lib}
+    ${aaudio_lib}
 )

@@ -12,6 +12,8 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -25,6 +27,7 @@
 #include "libreallive/gameexe.h"
 #include "android/android_system.h"
 #include "android/android_graphics.h"
+#include "android/audio_engine.h"
 #include "android/game_file_system.h"
 #include "android/jni_saf_backend.h"
 #include "android/saf_file_system.h"
@@ -437,6 +440,35 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
                 "; indices=[" + indices + "]\n";
 
       RunEngineOn(system, gameexe, archive, max_instructions, true, report);
+    }
+
+    // 音频探针：经 SAF 打开 test.wav（3 秒 440Hz 正弦），用 AAudio 播放 3 秒后
+    // 汇报回调次数、渲染帧数与峰值。峰值非零说明真的把非静音数据送进了设备。
+    {
+      const int audio_fd = backend->OpenFd("test.wav");
+      if (audio_fd < 0) {
+        report += "audio: test.wav not found via SAF\n";
+      } else {
+        rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
+        if (!audio.Start()) {
+          report += "audio: start failed: " + audio.LastError() + "\n";
+        } else {
+          std::unique_ptr<rlvm_android::AudioSource> source =
+              audio.OpenSource(audio_fd, "wav");
+          if (!source) {
+            report += "audio: decode failed\n";
+          } else {
+            audio.ResetPeak();
+            audio.Play(0, std::move(source), false, 255);
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            const rlvm_android::AudioEngine::Stats stats = audio.GetStats();
+            report += "audio: callbacks=" + std::to_string(stats.callbacks) +
+                      " frames=" + std::to_string(stats.frames_rendered) +
+                      " peak=" + std::to_string(stats.peak_amplitude) + "\n";
+            audio.Stop(0);
+          }
+        }
+      }
     }
     report += "RUN OK\n";
   } catch (const std::exception& e) {

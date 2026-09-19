@@ -43,7 +43,7 @@
 
 | ID | 任务 | 输出 | 验收 | 状态 |
 | --- | --- | --- | --- | --- |
-| T4.1 | AAudio 音频（原计划用 Oboe，已改，见 D-004） | `audio-engine.cpp` | 语音播放正常，无爆音 | TODO |
+| T4.1 | AAudio 音频（原计划用 Oboe，已改，见 D-004） | `android/audio_engine.*` | 语音播放正常，无爆音 | **DONE（首版）**：44.1kHz WAV 经 SAF 播放，峰值与夹具一致；NWA/OGG 已接线待真机素材验证 |
 | T4.2 | 渲染管线重写（OpenGL 1.x 固定管线 → GLES 3.0） | `gl-renderer.cpp`、`GameRenderer.kt` | 画面正常，无花屏 | TODO |
 | T4.2a | 图像加载（GRP/PDT/G00 解码接入 + 经 GameFileSystem 读取） | `AndroidGraphicsSystem::LoadSurfaceFromFile` | 能加载并显示真实图像 | **DONE**：SAF 下解码 320x240 BMP 并正确合成显示，通道序已修正 |
 | T4.3 | 同步与性能 | 优化补丁 | 视觉小说场景稳定 60fps | TODO |
