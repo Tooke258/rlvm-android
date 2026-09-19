@@ -28,7 +28,9 @@ class MainActivity : Activity() {
         const val REQUEST_PICK_TREE = 1001
         const val PREFS = "rlvm"
         const val KEY_TREE_URI = "saf_tree_uri"
-        const val MAX_INSTRUCTIONS = 200000
+        // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
+        // 指令上限也放宽到实际达不到的值，由「停止引擎」按钮负责收尾。
+        const val MAX_INSTRUCTIONS = Int.MAX_VALUE
     }
 
     private lateinit var output: TextView
@@ -61,6 +63,15 @@ class MainActivity : Activity() {
             text = getString(R.string.run_app_dir)
             setOnClickListener { runAppDirScenario() }
         }
+        // 引擎默认一直跑（停在标题/正文上，BGM 才会持续），所以需要一个喊停的入口。
+        // requestStop 只置标志，native 在下一轮循环收尾；不必放到后台线程。
+        val stopButton = Button(this).apply {
+            text = getString(R.string.stop_engine)
+            setOnClickListener {
+                NativeBridge.requestStop()
+                log("已请求停止引擎。")
+            }
+        }
 
         // 画面区：native 在引擎线程上合成帧，这里只负责显示。
         glView = GLSurfaceView(this).apply {
@@ -79,6 +90,7 @@ class MainActivity : Activity() {
                         addView(pickButton)
                         addView(safButton)
                         addView(pathButton)
+                        addView(stopButton)
                     }
                 )
                 addView(

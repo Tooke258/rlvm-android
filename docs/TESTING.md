@@ -76,9 +76,13 @@ Start-Sleep -Seconds 7
 | --- | --- |
 | `trace=1` | 逐条指令追踪（上游 `set_tracing_on`），输出在 `rlvm-stderr` |
 | `dump_graphics=1` | 运行结束时转储图形栈：每个对象的 src/dst 矩形、alpha、可见性 |
-| `time_budget_ms=N` | 单次运行的执行时间片，缺省 3000 |
+| `time_budget_ms=N` | 单次运行的执行时间片，缺省 0（**不限时**，靠「停止引擎」收尾） |
 | `max_instructions=N` | 指令条数上限 |
 | `frame_log_every=N` | 每 N 帧打一条帧日志，缺省 1（每帧） |
+
+**注意**：应用默认不限时运行，报告只在「停止引擎」或达到 `time_budget_ms` /
+`max_instructions` 时才打印。自动化验证请显式设置 `time_budget_ms`。
+同一时刻只允许一台引擎运行，重复点「运行」会被拒绝。
 
 排查「跑了很多指令却什么都没发生」时，上游诊断输出是关键：
 

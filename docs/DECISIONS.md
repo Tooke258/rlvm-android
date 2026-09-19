@@ -170,3 +170,23 @@
 - **语义影响**：只影响 Android 后端的 `Surface` 实现，未改动 `libreallive` / `machine` /
   `modules` / `systems/base` 的任何语义。
 - **状态**：已执行并验证（Kud Wafter 标题画面完整呈现，见 PROGRESS 第 3 节）
+
+---
+
+## D-016 应用默认不限时运行，并提供停止与防重入
+
+- **日期**：2026-09-19
+- **决策**：`time_budget_ms` 缺省改为 `0`（不限时）；`MainActivity` 的指令上限放到
+  `Int.MAX_VALUE`；新增「停止引擎」按钮 → `NativeBridge.requestStop()` → native 置
+  `g_stop_requested`，引擎线程在下一轮循环开头收尾；同时用 `RunGuard` 保证任一时刻
+  只有一台引擎在运行。
+- **理由**：探针阶段「跑 3 秒就返回报告」是为了诊断，但真机表现是**画面和 BGM 只能
+  存在几秒**——一停止循环，引擎对象析构，游戏音乐自然就断了。应用要能一直停在标题/
+  正文上，就必须让引擎持续运行；而持续运行又必须解决「怎么停」和「重复点运行会起
+  第二台引擎（两台共用 AudioEngine 与帧缓冲）」这两个问题。
+- **代价**：报告的停止原因只有在停止或达到指令上限时才打印。自动化验证需要把
+  `time_budget_ms` 写进 `rlvm-diag.txt`（见 docs/TESTING.md）。
+- **验证**：不设诊断文件运行 72 秒仍在跑且 `active_channels=1`（BGM 持续）；
+  点「停止引擎」后报告 `stop reason = stop requested`；重复点击返回
+  `ERROR: 已有一台引擎在运行，请先点「停止引擎」。`
+- **状态**：已执行并验证

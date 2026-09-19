@@ -51,10 +51,10 @@
 | 资源查找层 | `FindFile(doesntmatter, g00)` → `g00/doesntmatter.g00`，可用 fd 打开 |
 | 帧呈现 | CPU 合成 → 帧缓冲 → JNI → GL 纹理 → 屏幕，截图确认 |
 | 图像解码 | 320x240 BMP 经 `GRPCONV` 解码并正确合成（通道序已修正） |
-| 音频链路 | NWA 解码 → 混音 → AAudio → 蓝牙输出，峰值与源一致（用户已确认听到） |
+| 音频链路 | NWA 解码 → 混音 → AAudio → 蓝牙输出；脚手架验证阶段峰值与源一致（用户确认听到） |
 | 真实游戏加载 | Kud Wafter：37 KB `GAMEEXE.INI`、3.5 MB `SEEN.TXT`、TOC 62 个场景、`REGNAME=KEY\クドわふたー` |
 | **真实游戏渲染** | 标题画面完整呈现（蓝天村庄背景 + START/LOAD/CONFIG/EXIT + 标题 logo），真机截图确认 |
-| **游戏自行请求音频** | 日志 `play channel=30 file=BGM/BGM14.nwa`（标题曲），非脚手架触发 |
+| **游戏自行驱动 BGM** | 日志 `play channel=30 file=BGM/BGM14.nwa`；此后每 300 帧上报一次 `rlvm-audio runtime: active_channels=1 peak_in_window=…`，持续 70 秒以上不停 |
 | 诊断可见性 | 上游 `cout`/`cerr` 全部进入 logcat；未实现操作码与被吞掉的异常都可读 |
 
 ## 4. 已知缺口
@@ -137,6 +137,9 @@ rlvm-audio: play channel=30 file=BGM/BGM14.nwa loop=1 volume=165   ← 游戏自
    `#SEEN_START` 到正文这段是否真的不依赖它们。
 5. **引擎生命周期**：目前只有「跑一段」，没有启动/暂停/恢复/退出。
 
+> 已完成：引擎默认不限时运行、可随时停止、重复启动被拒绝；
+> 游戏自行请求的 BGM 在整段运行期间持续输出。
+
 ## 6. 工程事实速查
 
 ### 目录
@@ -180,7 +183,10 @@ rlvm-release-0.14/                工作区根（同时也是 git 仓库根）
 
 ### 界面与日志
 
-应用有三个按钮：选择游戏目录 / 运行 SAF 引擎 / 运行应用目录（诊断）。
+应用有四个按钮：选择游戏目录 / 运行 SAF 引擎 / 运行应用目录（诊断）/ 停止引擎。
+**引擎默认不限时运行**（停在标题或正文上，BGM 才会持续），由「停止引擎」按钮收尾；
+同时只允许一台引擎运行，重复点击会被拒绝。自动化测试要在报告里拿到结果时，
+用诊断文件设 `time_budget_ms`。
 日志标签：`rlvm-native`、`rlvm-audio`、`rlvm-gl`、`rlvm-font`、`rlvm-graphics`，
 以及**上游诊断输出** `rlvm-stdout` / `rlvm-stderr`（见下方诊断文件）。
 可用 `uiautomator dump` 取控件 bounds 后 `input tap` 自动点击，无需人工。
@@ -225,6 +231,8 @@ frame_log_every=120
 | **surface 未实现 `GetPattern` 会导致整屏全黑** | 对象、脚本、图像加载全部正常，blit 上万次，写入的像素却 100% 是黑的 | 源矩形来自 `GetPattern`，基类默认返回 0×0 矩形；必须实现 GRP type-2 区域表（D-015） |
 | PowerShell 的 `>` 重定向会损坏 `adb exec-out screencap` 的 PNG | 图片打不开（`invalid or unsupported image data`） | 用 `adb shell screencap -p /sdcard/x.png` + `adb pull` |
 | 只看「最终帧非黑像素数」无法定位渲染问题 | 分不清「没画」「画了但透明」「画了确实是黑的」 | 加合成计数（写入像素/非黑像素）+ 上游 `Refresh(ostream*)` 图形栈转储 |
+| **脚手架验证代码会破坏真实行为** | 之前为验证音频链路主动 `BgmPlay("BGM01")` + `BgmStop()`：真机表现是「开头能听到一点，随后被测试音乐打断，然后彻底没声音」 | 游戏能自行驱动后立刻删掉这段；证据改为运行期周期上报，不做任何主动干预 |
+| 不限时运行需要「喊停 + 防重入」 | 默认持续运行后，重复点「运行」会起第二台引擎，两台共用 AudioEngine/帧缓冲互相踩踏 | 加 `requestStop()` 标志 + `RunGuard` 唯一运行权，重复点击返回明确错误 |
 
 ## 8. Android 后端代码结构
 

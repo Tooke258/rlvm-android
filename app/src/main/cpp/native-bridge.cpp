@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <chrono>
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -76,10 +77,36 @@ int g_frame_log_every = 1;
 std::mutex g_diag_mutex;
 std::string g_diag_dir;
 
+// 「停止引擎」请求。由 UI 线程置位，引擎线程在每轮循环开头检查。
+// 应用默认持续运行（见 DiagOptions::time_budget_ms 的 0 = 不限时），
+// 因此必须有一个从外部喊停的通道。
+std::atomic<bool> g_stop_requested{false};
+
+// 是否已有一台引擎在跑。默认不限时运行后，重复点「运行」很容易起第二台，
+// 两台引擎共用同一个 AudioEngine 与帧缓冲会互相踩踏，所以直接拒绝并存。
+std::atomic<bool> g_run_active{false};
+
+/** 作用域内的「唯一运行者」守卫；未取得时 acquired() 为 false。 */
+class RunGuard {
+ public:
+  RunGuard() : acquired_(!g_run_active.exchange(true)) {}
+  ~RunGuard() {
+    if (acquired_) g_run_active.store(false);
+  }
+  RunGuard(const RunGuard&) = delete;
+  RunGuard& operator=(const RunGuard&) = delete;
+  bool acquired() const { return acquired_; }
+
+ private:
+  bool acquired_;
+};
+
 struct DiagOptions {
   bool trace = false;
   bool dump_graphics = false;
-  int time_budget_ms = 3000;
+  // 0 表示不限时：应用要能一直停在标题/正文上，BGM 才不会「响一下就没了」。
+  // 自动化测试需要在报告里拿到结果时，用 diag 文件设一个有限值。
+  int time_budget_ms = 0;
   int max_instructions = 0;  // 0 表示沿用调用方传入的值
   int frame_log_every = 1;
 };
@@ -389,16 +416,23 @@ void RunEngineOn(System& system,
   const unsigned int started = system.event().GetTicks();
   // 只统计本次运行造成的合成量，先清零。
   TakeGraphicsBlitStats();
+  g_stop_requested.store(false);
   int executed = 0;
   int frames_presented = 0;
   std::string stop_reason = "instruction budget exhausted";
 
   while (executed < max_instructions) {
+    if (g_stop_requested.load()) {
+      stop_reason = "stop requested";
+      break;
+    }
     if (machine.halted()) {
       stop_reason = "machine halted";
       break;
     }
-    if (system.event().GetTicks() - started > time_budget_ms) {
+    // time_budget_ms == 0 表示不限时：应用要能一直停在标题/正文上。
+    if (time_budget_ms > 0 &&
+        system.event().GetTicks() - started > time_budget_ms) {
       stop_reason = "time budget exhausted";
       break;
     }
@@ -415,6 +449,18 @@ void RunEngineOn(System& system,
                           "progress: frames=%d instructions=%d elapsed=%ums",
                           frames_presented, executed,
                           system.event().GetTicks() - started);
+    }
+
+    // 音频在运行期的周期性证据：active_channels>0 表示游戏自己点的 BGM 还在播；
+    // peak 取「本窗口内」的最大值，所以每报一次就清零，避免看成一个累计数。
+    if (frames_presented % 300 == 0) {
+      rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
+      const rlvm_android::AudioEngine::Stats audio_stats = audio.GetStats();
+      __android_log_print(ANDROID_LOG_INFO, "rlvm-audio",
+                          "runtime: active_channels=%d peak_in_window=%d frames=%llu",
+                          audio_stats.active_channels, audio_stats.peak_amplitude,
+                          audio_stats.frames_rendered);
+      audio.ResetPeak();
     }
 
 
@@ -450,31 +496,25 @@ void RunEngineOn(System& system,
     report += "graphics tree dump:\n" + tree.str();
   }
 
-  // 音频连线验证：主动让 SoundSystem 播放游戏自己的 BGM，确认
-  // AndroidSoundSystem -> AudioEngine -> AAudio 这条链路真的出声。
-  // 为什么需要主动触发：引擎跑的这几秒里游戏还没走到播放 BGM 的指令
-  //（首屏卡在文字显示上，而文字渲染尚未实现），否则这段是无从验证的。
-  // 待游戏能自行驱动 BGM 之后，这段可以删除。
-  {
-    rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
-    audio.ResetPeak();
-    system.sound().BgmPlay("BGM01", true);
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-    const rlvm_android::AudioEngine::Stats stats =
-        audio.GetStats();
-    report += "audio after BgmPlay(BGM01): callbacks=" +
-              std::to_string(stats.callbacks) +
-              " frames=" + std::to_string(stats.frames_rendered) +
-              " peak=" + std::to_string(stats.peak_amplitude) +
-              " active_channels=" + std::to_string(stats.active_channels) + "\n";
-    system.sound().BgmStop();
-  }
+  // 注意：这里**不再**主动播 BGM01。那段脚手架验证代码会在游戏自己
+  // 请求标题曲之后抢走通道，再 BgmStop() 把游戏音乐停掉——真机上表现就是
+  //「开头能听到一点，随后被测试音乐打断，然后彻底没声音」。
+  // 现在音频完全由游戏脚本驱动（日志里可见 play channel=30 file=BGM/BGM14.nwa）。
+  // 音频链路的证据改为运行期周期上报：见下方 progress 日志里的 audio 行。
 }
 
 jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
                     jint max_instructions) {
   namespace fs = boost::filesystem;
   std::string report;
+
+  // 默认不限时运行，重复点击会起第二台引擎；这里拒绝并存。
+  RunGuard guard;
+  if (!guard.acquired()) {
+    report += "ERROR: 已有一台引擎在运行，请先点「停止引擎」。\n";
+    LogReport(kLogTag, "run report", report);
+    return NewSafeJavaString(env, report);
+  }
 
   try {
     const std::string dir = JStringToUtf8(env, jdir);
@@ -518,6 +558,14 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
  */
 jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
   std::string report;
+
+  // 同上：先拿到唯一运行权，再动 SAF 后端与引擎。
+  RunGuard guard;
+  if (!guard.acquired()) {
+    report += "ERROR: 已有一台引擎在运行，请先点「停止引擎」。\n";
+    LogReport(kLogTag, "saf run report", report);
+    return NewSafeJavaString(env, report);
+  }
 
   try {
     std::shared_ptr<rlvm_android::SafBackend> backend = rlvm_android::GetSafBackend();
@@ -645,6 +693,17 @@ void SetDiagnosticsDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
                       g_diag_dir.c_str());
 }
 
+/**
+ * 请求停止当前正在运行的引擎。
+ *
+ * 应用默认不限时运行（要能一直停在标题/正文上），所以必须有一个从 UI 喊停的通道：
+ * 只置一个标志，引擎线程在下一轮循环开头看到后正常收尾（走完报告流程）。
+ */
+void RequestStop(JNIEnv* /*env*/, jobject /*thiz*/) {
+  g_stop_requested.store(true);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "stop requested");
+}
+
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
 jint GetFrameSize(JNIEnv* /*env*/, jobject /*thiz*/) {
   std::lock_guard<std::mutex> lock(g_frame_mutex);
@@ -682,6 +741,7 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(SetSafBackendFromJava)},
     {"setDiagnosticsDir", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetDiagnosticsDir)},
+    {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},

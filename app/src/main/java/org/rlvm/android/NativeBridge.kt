@@ -51,6 +51,14 @@ object NativeBridge {
     external fun setDiagnosticsDir(dir: String)
 
     /**
+     * 请求停止当前正在运行的引擎。
+     *
+     * 引擎默认不限时运行（为了能一直停在标题/正文上），这个方法只置标志，
+     * 引擎线程会在下一轮循环开头正常收尾并返回报告。
+     */
+    external fun requestStop()
+
+    /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */
