@@ -5,4 +5,6 @@
     <string name="run_saf">运行 SAF 引擎</string>
     <string name="run_app_dir">运行应用目录</string>
     <string name="stop_engine">停止引擎</string>
+    <string name="toggle_orientation">横屏/竖屏</string>
+    <string name="cycle_fit">画面适配</string>
 </resources>

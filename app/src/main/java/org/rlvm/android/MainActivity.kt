@@ -2,13 +2,18 @@ package org.rlvm.android
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.opengl.GLSurfaceView
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -29,6 +34,8 @@ class MainActivity : Activity() {
         const val REQUEST_PICK_TREE = 1001
         const val PREFS = "rlvm"
         const val KEY_TREE_URI = "saf_tree_uri"
+        const val KEY_LANDSCAPE = "landscape"
+        const val KEY_FIT_MODE = "fit_mode"
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
         // 指令上限也放宽到实际达不到的值，由「停止引擎」按钮负责收尾。
         const val MAX_INSTRUCTIONS = Int.MAX_VALUE
@@ -79,9 +86,35 @@ class MainActivity : Activity() {
                 log("已请求停止引擎。")
             }
         }
+        // 横竖屏切换：选择会持久化，重启后保持。
+        val orientationButton = Button(this).apply {
+            text = getString(R.string.toggle_orientation)
+            setOnClickListener { toggleOrientation() }
+        }
+        // 画面适配：循环切换（适配黑边 → 左右贴边 → 上下贴边 → 拉伸铺满）。
+        val fitButton = Button(this).apply {
+            text = getString(R.string.cycle_fit)
+            setOnClickListener {
+                val mode = renderer.cycleFitMode()
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_FIT_MODE, mode.name).apply()
+                log("画面适配：${fitModeLabel(mode)}")
+            }
+        }
 
         // 画面区：native 在引擎线程上合成帧，这里只负责显示。
         renderer = RlvmRenderer()
+        // 恢复上次选择：横竖屏 + 画面适配方式。
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        requestedOrientation = if (prefs.getBoolean(KEY_LANDSCAPE, false)) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        renderer.fitMode = RlvmRenderer.FitMode.valueOf(
+            prefs.getString(KEY_FIT_MODE, RlvmRenderer.FitMode.FIT.name)
+                ?: RlvmRenderer.FitMode.FIT.name
+        )
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
@@ -96,12 +129,26 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 addView(
                     LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.HORIZONTAL
+                        orientation = LinearLayout.VERTICAL
                         gravity = Gravity.CENTER
-                        addView(pickButton)
-                        addView(safButton)
-                        addView(pathButton)
-                        addView(stopButton)
+                        // 按钮变多了：拆成两行，避免被挤到屏幕外（横向滚动会让
+                        // 用户看不到后面的按钮）。
+                        addView(
+                            LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                addView(pickButton)
+                                addView(safButton)
+                                addView(stopButton)
+                            }
+                        )
+                        addView(
+                            LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                addView(pathButton)
+                                addView(orientationButton)
+                                addView(fitButton)
+                            }
+                        )
                     }
                 )
                 addView(
@@ -133,6 +180,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::glView.isInitialized) glView.onResume()
+        applySystemUi()
     }
 
     override fun onPause() {
@@ -225,6 +273,58 @@ class MainActivity : Activity() {
 
     private fun background(block: () -> Unit) {
         thread(name = "rlvm-task") { block() }
+    }
+
+    /** 当前是否横屏（按实际配置判断，避免与持久化的期望值不一致）。 */
+    private fun isLandscapeNow(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /**
+     * 横竖屏切换并持久化。
+     *
+     * 注意用 LANDSCAPE / PORTRAIT 而不是 SENSOR：明确指定方向才能让"按钮切换"
+     * 与系统自动旋转不打架。想要跟随重力感应时，把 UNSPECIFIED 作为第三种状态。
+     */
+    private fun toggleOrientation() {
+        val toLandscape = !isLandscapeNow()
+        requestedOrientation = if (toLandscape) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_LANDSCAPE, toLandscape).apply()
+        log(if (toLandscape) "已切到横屏（隐藏状态栏）。" else "已切到竖屏。")
+    }
+
+    /**
+     * 横屏时隐藏系统状态栏（沉浸式），竖屏恢复。
+     *
+     * 用 BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE：从边缘下滑仍能临时唤出状态栏，
+     * 避免用户被困在全屏里。
+     */
+    private fun applySystemUi() {
+        val controller = window.insetsController ?: return
+        if (isLandscapeNow()) {
+            controller.hide(WindowInsets.Type.statusBars())
+            controller.systemBarsBehavior =
+                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsets.Type.statusBars())
+        }
+    }
+
+    private fun fitModeLabel(mode: RlvmRenderer.FitMode): String = when (mode) {
+        RlvmRenderer.FitMode.FIT -> "适配（黑边）"
+        RlvmRenderer.FitMode.FILL_WIDTH -> "左右贴边"
+        RlvmRenderer.FitMode.FILL_HEIGHT -> "上下贴边"
+        RlvmRenderer.FitMode.STRETCH -> "拉伸铺满"
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 横竖屏切换后重新应用沉浸式设置。
+        applySystemUi()
     }
 
     /**

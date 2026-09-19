@@ -39,6 +39,32 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     private var frameWidth = 0
     private var frameHeight = 0
     private var uploadCount = 0
+
+    /**
+     * 画面适配方式。用户可在界面上循环切换，选择会持久化。
+     *
+     * 四边形的顶点是 NDC（-1..1）乘上 (scaleX, scaleY)：scale=1 表示铺满该方向。
+     * 因此：
+     *   FIT         —— 完整显示、短边留黑（默认，即原来的行为）
+     *   FILL_WIDTH  —— 左右贴边（铺满宽度，纵向超出部分被裁掉或留黑）
+     *   FILL_HEIGHT —— 上下贴边（铺满高度，横向超出部分被裁掉或留黑）
+     *   STRETCH     —— 直接拉伸铺满（不保持宽高比）
+     */
+    enum class FitMode { FIT, FILL_WIDTH, FILL_HEIGHT, STRETCH }
+
+    // 会被 UI 线程写入、GL 线程读取。
+    @Volatile
+    var fitMode: FitMode = FitMode.FIT
+
+    fun cycleFitMode(): FitMode {
+        fitMode = when (fitMode) {
+            FitMode.FIT -> FitMode.FILL_WIDTH
+            FitMode.FILL_WIDTH -> FitMode.FILL_HEIGHT
+            FitMode.FILL_HEIGHT -> FitMode.STRETCH
+            FitMode.STRETCH -> FitMode.FIT
+        }
+        return fitMode
+    }
     // 这两个会被 UI 线程读取（触摸坐标换算），GL 线程写入，用 @Volatile 保证可见性。
     @Volatile
     private var surfaceWidth = 1
@@ -54,12 +80,19 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     private fun fitScale(): Pair<Float, Float> {
         val frameAspect = frameWidth.toFloat() / frameHeight.toFloat()
         val surfaceAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
-        return if (surfaceAspect > frameAspect) {
-            // 视图比画面宽：左右留黑边，画面占满高度。
-            Pair(frameAspect / surfaceAspect, 1f)
-        } else {
-            // 视图比画面高：上下留黑边，画面占满宽度。
-            Pair(1f, surfaceAspect / frameAspect)
+        return when (fitMode) {
+            FitMode.STRETCH -> Pair(1f, 1f)
+            // 铺满宽度：左右贴边，纵向按比例放大（超出部分被视口裁掉）。
+            FitMode.FILL_WIDTH -> Pair(1f, frameAspect / surfaceAspect)
+            // 铺满高度：上下贴边。
+            FitMode.FILL_HEIGHT -> Pair(surfaceAspect / frameAspect, 1f)
+            FitMode.FIT -> if (surfaceAspect > frameAspect) {
+                // 视图比画面宽：左右留黑边，画面占满高度。
+                Pair(frameAspect / surfaceAspect, 1f)
+            } else {
+                // 视图比画面高：上下留黑边，画面占满宽度。
+                Pair(1f, surfaceAspect / frameAspect)
+            }
         }
     }
 
