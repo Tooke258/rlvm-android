@@ -55,7 +55,8 @@ rlBabel 是关键：RealLive 允许游戏调用外部 DLL，补丁借此改变�
 | `SEEN.TXT` + `Gameexe.ini` 经 SAF 读取 | 已实现（fd + mmap / 整体读入） |
 | `SEEN####.TXT` 场景覆盖 | **已实现并验证**（路径后端与 SAF 后端结果一致） |
 | rlBabel 补丁 | 代码在编译范围内；尚未用真实补丁实测 |
-| 图像/音频归档经 SAF | 未实现，仍走路径式访问 |
+| 游戏资源查找层（`#FOLDNAME` + 目录枚举 + 扩展名匹配） | **已实现并验证**：抽象为 `GameFileSystem`，普通路径后端保持上游行为，SAF 后端以相对路径为不透明标识 |
+| 图像/音频归档经 SAF | 查找层已就绪；**加载器**待阶段 3/4 实现（我们尚无 Android 图形/音频后端） |
 | 字体注入（`#__GAMEFONT` / 自选字体） | 未实现，依赖 FreeType 接入 |
 | 存档读写经 SAF | 未实现 |
 | 大小写不敏感的文件名解析 | **已实现并验证**：路径后端用上游 `CorrectPathCase()`，SAF 后端在 `SafFileSystem` 内逐级解析（精确匹配优先，失败后列目录做 ignoreCase 比对，结果带缓存） |

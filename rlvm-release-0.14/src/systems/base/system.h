@@ -47,6 +47,12 @@ class Gameexe;
 class GameexeInterpretObject;
 class Platform;
 
+// Android 移植新增：游戏资源文件的查找后端（普通路径 / SAF）。
+// 这里只做前向声明，头文件本身不依赖任何 Android 类型。
+namespace rlvm_android {
+class GameFileSystem;
+}
+
 // Syscom Constants
 //
 // Associations between syscom integer values and their names.
@@ -298,9 +304,10 @@ class System {
   // #FOLDNAME part of the Gameexe.ini file.
   void BuildFileSystemCache();
 
-  // Recursese on |directory| and adds all filetypes that we can read to our
+  // Recursese on |rel_directory| and adds all filetypes that we can read to our
   // FileSystemCache.
-  void AddDirectoryToCache(const boost::filesystem::path& directory);
+  void AddDirectoryToCache(rlvm_android::GameFileSystem& file_system,
+                           const std::string& rel_directory);
 
   // The visibility status for all syscom entries
   int syscom_status_[NUM_SYSCOM_ENTRIES];

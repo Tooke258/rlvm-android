@@ -21,6 +21,7 @@
 #include "libreallive/archive.h"
 #include "libreallive/gameexe.h"
 #include "android/android_system.h"
+#include "android/game_file_system.h"
 #include "android/jni_saf_backend.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
@@ -85,8 +86,14 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
     report += "files:\n";
     for (fs::directory_iterator it(root); it != fs::directory_iterator(); ++it) {
       const fs::path& p = it->path();
-      report += "  " + p.filename().string() + "  " +
-                std::to_string(fs::file_size(p)) + " bytes\n";
+      // 目录条目上调用 file_size 在 Android 上会抛「Function not implemented」，
+      // 因此只对普通文件取大小。
+      if (fs::is_directory(p)) {
+        report += "  " + p.filename().string() + "/  <dir>\n";
+      } else {
+        report += "  " + p.filename().string() + "  " +
+                  std::to_string(fs::file_size(p)) + " bytes\n";
+      }
     }
 
     // --- Gameexe.ini ---
@@ -159,12 +166,11 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
  * 装配 AndroidSystem + RLMachine 并执行字节码。
  * 「普通路径」与「SAF」两个入口共用这段逻辑，差异只在 Archive 怎么打开。
  */
-void RunEngineOn(Gameexe& gameexe,
+void RunEngineOn(System& system,
+                 Gameexe& gameexe,
                  libreallive::Archive& archive,
                  int max_instructions,
                  std::string& report) {
-  AndroidSystem system(gameexe);
-
   RLMachine machine(system, archive);
   AddAllModules(machine);
   AddGameHacks(machine);
@@ -210,9 +216,15 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     }
 
     Gameexe gameexe(gameexe_path);
+    // 上游 RLVMInstance 会写入 __GAMEPATH；资源查找层需要它。
+    gameexe("__GAMEPATH") = dir;
+    rlvm_android::SetGameFileSystem(
+        rlvm_android::MakePosixGameFileSystem(dir));
+
     libreallive::Archive archive(seen_path.string(),
                                  gameexe("REGNAME").ToString(""));
-    RunEngineOn(gameexe, archive, max_instructions, report);
+    AndroidSystem system(gameexe);
+    RunEngineOn(system, gameexe, archive, max_instructions, report);
     report += "RUN OK\n";
   } catch (const std::exception& e) {
     report += std::string("EXCEPTION: ") + e.what() + "\n";
@@ -255,6 +267,30 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
               std::to_string(gameexe_text.size()) + " bytes\n";
     std::istringstream gameexe_stream(gameexe_text);
     Gameexe gameexe(gameexe_stream);
+    // SAF 下没有真实路径；__GAMEPATH 只在退化为普通路径后端时才会被使用。
+    gameexe("__GAMEPATH") = std::string("saf:/");
+    rlvm_android::SetGameFileSystem(rlvm_android::MakeSafGameFileSystem());
+    AndroidSystem system(gameexe);
+
+    // 资源查找层探针：走上游 System::FindFile 的完整链路
+    //（读 #FOLDNAME -> 枚举目录 -> 扩展名匹配 -> 生成文件标识）。
+    // 目标文件 g00/doesntmatter.g00 来自上游自带测试数据 test/Gameroot。
+    {
+      const boost::filesystem::path found =
+          system.FindFile("doesntmatter", std::vector<std::string>{"g00"});
+      if (found.empty()) {
+        report += "FindFile(doesntmatter, g00) -> <not found>\n";
+      } else {
+        report += "FindFile(doesntmatter, g00) -> \"" + found.string() + "\"\n";
+        std::shared_ptr<rlvm_android::GameFileSystem> vfs =
+            rlvm_android::GetGameFileSystem();
+        const int lookup_fd = vfs ? vfs->OpenFd(found.string()) : -1;
+        report += std::string("  open via file system -> ") +
+                  (lookup_fd >= 0 ? "fd=" + std::to_string(lookup_fd) : "FAILED") +
+                  "\n";
+        if (lookup_fd >= 0) close(lookup_fd);
+      }
+    }
 
     const int fd = backend->OpenFd("Seen.txt");
     if (fd < 0) {
@@ -300,7 +336,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       report += "Seen via SAF: TOC entries=" + std::to_string(scenarios) +
                 "; indices=[" + indices + "]\n";
 
-      RunEngineOn(gameexe, archive, max_instructions, report);
+      RunEngineOn(system, gameexe, archive, max_instructions, report);
     }
     report += "RUN OK\n";
   } catch (const std::exception& e) {

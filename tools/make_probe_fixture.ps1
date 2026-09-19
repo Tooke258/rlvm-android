@@ -77,9 +77,21 @@ $scenarioBytes = New-Object byte[] $sliceLength
 # "#KEY=" (empty) is NOT enough.
 $extraKeys = @(
     '#DISKMARK="none"'    # read unconditionally by AddGameHacks(); "none" matches no hack
+    '#FOLDNAME.000="g00"' # System::BuildFileSystemCache only scans subdirs listed here
 )
 
 Add-Content -LiteralPath (Join-Path $OutDir 'Gameexe.ini') -Value $extraKeys -Encoding utf8
+
+# Fixture for the game-file lookup layer. Taken from upstream test data
+# test/Gameroot/g00/doesntmatter.g00 so no commercial content is involved.
+$gameRootSrc = Join-Path $upstreamTest 'Gameroot\g00\doesntmatter.g00'
+if (Test-Path $gameRootSrc) {
+    $g00Dir = Join-Path $OutDir 'g00'
+    New-Item -ItemType Directory -Force -Path $g00Dir | Out-Null
+    Copy-Item -LiteralPath $gameRootSrc -Destination (Join-Path $g00Dir 'doesntmatter.g00') -Force
+} else {
+    Write-Host "NOTE: $gameRootSrc not found, skipping g00 lookup fixture"
+}
 
 Write-Host "Probe fixture assembled at $OutDir"
 Get-ChildItem $OutDir | ForEach-Object { "  {0,-14} {1} bytes" -f $_.Name, $_.Length }

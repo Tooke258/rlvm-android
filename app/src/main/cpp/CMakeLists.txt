@@ -351,6 +351,7 @@ add_library(rlvm SHARED
     # Android 平台后端（替代上游的 SDLSystem）
     android/android_graphics.cpp
     android/android_system.cpp
+    android/game_file_system.cpp
     android/jni_saf_backend.cpp
     android/saf_file_system.cpp
     # SDL 音频转换的最小兼容层：供 vendor/xclannad/wavfile.cc 使用

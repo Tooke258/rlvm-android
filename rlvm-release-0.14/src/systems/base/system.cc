@@ -40,6 +40,7 @@
 #include <utility>
 #include <vector>
 
+#include "android/game_file_system.h"
 #include "libreallive/gameexe.h"
 #include "long_operations/load_game_long_operation.h"
 #include "machine/long_operation.h"
@@ -459,39 +460,50 @@ void System::BuildFileSystemCache() {
     }
   }
 
-  fs::path gamepath(gexe("__GAMEPATH").ToString());
-  fs::directory_iterator dir_end;
-  for (fs::directory_iterator dir(gamepath); dir != dir_end; ++dir) {
-    if (fs::is_directory(dir->status())) {
-      std::string lowername = dir->path().filename().string();
-      to_lower(lowername);
-      if (find(valid_directories.begin(), valid_directories.end(), lowername) !=
-          valid_directories.end()) {
-        AddDirectoryToCache(dir->path());
-      }
+  // Android 移植：目录枚举改由游戏文件系统后端提供。
+  // 未显式设置后端时，退化为以 __GAMEPATH 为根的普通路径实现——与上游行为一致。
+  std::shared_ptr<rlvm_android::GameFileSystem> file_system =
+      rlvm_android::GetGameFileSystem();
+  if (!file_system)
+    file_system = rlvm_android::MakePosixGameFileSystem(
+        gexe("__GAMEPATH").ToString());
+  if (!file_system)
+    return;
+
+  for (const std::string& name : file_system->ListDirectory("")) {
+    std::string lowername = name;
+    to_lower(lowername);
+    if (find(valid_directories.begin(), valid_directories.end(), lowername) !=
+        valid_directories.end()) {
+      AddDirectoryToCache(*file_system, name);
     }
   }
 }
 
-void System::AddDirectoryToCache(const fs::path& directory) {
-  fs::directory_iterator dir_end;
-  for (fs::directory_iterator dir(directory); dir != dir_end; ++dir) {
-    if (fs::is_directory(dir->status())) {
-      AddDirectoryToCache(dir->path());
-    } else {
-      std::string extension = dir->path().extension().string();
-      if (extension.size() > 1 && extension[0] == '.')
-        extension = extension.substr(1);
-      to_lower(extension);
+void System::AddDirectoryToCache(rlvm_android::GameFileSystem& file_system,
+                                 const std::string& rel_directory) {
+  for (const std::string& entry : file_system.ListDirectory(rel_directory)) {
+    const std::string rel =
+        rel_directory.empty() ? entry : rel_directory + "/" + entry;
+    if (file_system.IsDirectory(rel)) {
+      AddDirectoryToCache(file_system, rel);
+      continue;
+    }
 
-      if (find(ALL_FILETYPES.begin(), ALL_FILETYPES.end(), extension) !=
-          ALL_FILETYPES.end()) {
-        std::string stem = dir->path().stem().string();
-        to_lower(stem);
+    // 与上游逐字一致的扩展名/主名规则，只是路径改为对单个文件名做解析。
+    const fs::path entry_path(entry);
+    std::string extension = entry_path.extension().string();
+    if (extension.size() > 1 && extension[0] == '.')
+      extension = extension.substr(1);
+    to_lower(extension);
 
-        filesystem_cache_.insert(
-            make_pair(stem, make_pair(extension, dir->path())));
-      }
+    if (find(ALL_FILETYPES.begin(), ALL_FILETYPES.end(), extension) !=
+        ALL_FILETYPES.end()) {
+      std::string stem = entry_path.stem().string();
+      to_lower(stem);
+
+      filesystem_cache_.insert(make_pair(
+          stem, make_pair(extension, fs::path(file_system.MakeId(rel)))));
     }
   }
 }

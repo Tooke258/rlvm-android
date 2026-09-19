@@ -98,6 +98,7 @@ $fx="$repo\rlvm-release-0.14\test"
 | 2026-09-19 | SAF 文件访问（T2.2） | 通过：SAF 目录列举、Gameexe.ini 整体读入、SEEN.TXT 经 fd + mmap 打开并解析出同样的 TOC |
 | 2026-09-19 | `SEEN####.TXT` 场景覆盖（补丁机制） | 通过：两条后端 TOC 均变为 `[1,2]`，覆盖文件内容也被正确解析 |
 | 2026-09-19 | 大小写不敏感解析 | 通过：夹具改为全小写（`gameexe.ini`/`seen.txt`/`seen0002.txt`）后，两条后端仍能按标准名找到文件 |
+| 2026-09-19 | 游戏资源查找层（T2.2） | 通过：SAF 下 `FindFile(doesntmatter, g00)` 返回 `g00/doesntmatter.g00`，并可用 fd 打开；普通路径无回归 |
 
 ## 6. SAF 测试流程
 
