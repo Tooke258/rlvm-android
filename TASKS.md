@@ -27,7 +27,7 @@
 | ID | 任务 | 输出 | 验收 | 状态 |
 | --- | --- | --- | --- | --- |
 | T2.1 | JNI 接口设计 | `NativeBridge.kt`、`native-bridge.cpp` | 方法可被调用，无动态查找 | TODO（骨架已建立 RegisterNatives 模式） |
-| T2.2 | `VirtualFileSystem` / AndroidFileSystem（SAF） | `android-fs.cpp/.h` | 能读取 `SEEN.txt` | TODO |
+| T2.2 | SAF 文件访问（`android-fs`） | `android/saf_file_system.*`、`jni_saf_backend.*`、`SafFileSystem.kt` | 能读取 `SEEN.txt` | **DONE**：SAF 下读 Gameexe.ini + 以 fd 打开 SEEN.TXT（mmap），引擎跑出与普通路径一致的结果 |
 | T2.3 | 触摸事件映射 | Kotlin 触摸监听 + JNI | 游戏内光标可移动、点击 | TODO |
 | T2.4 | 引擎生命周期 | JNI + Kotlin 封装 | 能启动、暂停、恢复、退出 | 部分完成：引擎已在真机上装配并执行字节码（6 条指令 + 文本长操作），暂停/恢复/退出待补 |
 
@@ -35,7 +35,7 @@
 
 | ID | 任务 | 输出 | 验收 | 状态 |
 | --- | --- | --- | --- | --- |
-| T3.1 | SAF 目录选择器 | `DirectoryPicker.kt` | 重启后仍可访问目录 | TODO |
+| T3.1 | SAF 目录选择器 | `MainActivity` 内的选择器 | 重启后仍可访问目录 | **DONE**：ACTION_OPEN_DOCUMENT_TREE + takePersistableUriPermission + SharedPreferences（与 T2.2 一并落地） |
 | T3.2 | 游戏库与设置 UI（**在此引入 Compose + Material 3**） | `MainScreen.kt`、`GameViewModel.kt` | 界面可交互 | TODO |
 | T3.3 | GLSurfaceView 集成 | `GameScreen.kt` | 游戏画面能显示 | TODO |
 

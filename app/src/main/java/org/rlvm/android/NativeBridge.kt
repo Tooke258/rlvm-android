@@ -35,4 +35,16 @@ object NativeBridge {
      * 属于重 I/O + 计算操作，必须在后台线程调用。
      */
     external fun runScenario(gameDir: String, maxInstructions: Int): String
+
+    /**
+     * 安装 SAF 后端。之后 [runScenarioSaf] 就能通过用户授权的目录树访问文件，
+     * 全程不需要任何存储权限。
+     */
+    external fun setSafBackend(backend: SafFileSystem)
+
+    /**
+     * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
+     * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
+     */
+    external fun runScenarioSaf(maxInstructions: Int): String
 }

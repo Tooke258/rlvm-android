@@ -121,9 +121,14 @@ Gameexe::Gameexe(const fs::path& gameexefile) : data_(), cdata_() {
         << ")";
     throw libreallive::Error(oss.str());
   }
+  Parse(ifs);
+}
 
+Gameexe::Gameexe(std::istream& in) : data_(), cdata_() { Parse(in); }
+
+void Gameexe::Parse(std::istream& in) {
   std::string line;
-  while (std::getline(ifs, line)) {
+  while (std::getline(in, line)) {
     parseLine(line);
   }
 }

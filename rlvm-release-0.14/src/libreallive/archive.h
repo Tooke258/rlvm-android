@@ -58,6 +58,10 @@ class Archive {
   // Creates an interface to a SEEN.TXT file. Uses |regname| to look up
   // per-game xor key for newer games.
   Archive(const string& filename, const string& regname);
+  // Android 移植新增：从只读 fd 打开 SEEN 归档（SAF 路径）。
+  // display_name 仅用于错误信息。不执行基于目录扫描的 ReadOverrides()——
+  // SAF 下没有可供 boost::filesystem 遍历的目录。
+  Archive(int fd, const string& display_name, const string& regname);
   ~Archive();
 
   typedef std::map<int, FilePos>::const_iterator const_iterator;
@@ -78,6 +82,9 @@ class Archive {
   void ReadTOC();
 
   void ReadOverrides();
+
+  // 选择按游戏区分的二级 xor 密钥，两个构造函数共用。
+  void SelectSecondLevelXorKey(const string& regname);
 
   scenarios_t scenarios_;
   accessed_t accessed_;

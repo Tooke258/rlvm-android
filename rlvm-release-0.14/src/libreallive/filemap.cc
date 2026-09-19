@@ -126,6 +126,44 @@ Mapping::Mapping(string filename, Mode mode, off_t min_size)
   mopen();
 }
 
+// Android 移植新增：见头文件说明。
+Mapping::Mapping(int fd, off_t length)
+    : fp(INVALID_HANDLE_VALUE),
+      mem(NULL),
+      mapped(false),
+      len(0),
+      fn_("<saf>"),
+      mode_(Read),
+      msz_(0) {
+  if (fd < 0)
+    throw Error("Invalid file descriptor");
+
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+    throw Error("Could not stat file descriptor");
+
+  len = (length > 0) ? static_cast<size_t>(length)
+                     : static_cast<size_t>(st.st_size);
+  if (len == 0)
+    throw Error("Cannot map empty file");
+
+  mem = mmap(0, len, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (mem == MAP_FAILED) {
+    // 某些 SAF 提供方不支持 mmap，退化为一次性读入。
+    mapped = false;
+    mem = (void*)(new char[len]);
+    size_t offset = 0;
+    while (offset < len) {
+      const ssize_t n = pread(fd, (char*)mem + offset, len - offset, offset);
+      if (n <= 0)
+        break;
+      offset += static_cast<size_t>(n);
+    }
+  } else {
+    mapped = true;
+  }
+}
+
 Mapping::~Mapping() { mclose(); }
 
 }  // namespace libreallive

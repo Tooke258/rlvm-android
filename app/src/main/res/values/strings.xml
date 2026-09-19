@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">RLVM</string>
+    <string name="pick_directory">选择游戏目录</string>
+    <string name="run_saf">运行 SAF 引擎</string>
+    <string name="run_app_dir">运行应用目录</string>
 </resources>

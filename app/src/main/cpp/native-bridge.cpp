@@ -8,7 +8,10 @@
 #include <android/log.h>
 
 #include <exception>
+#include <sstream>
 #include <string>
+
+#include <unistd.h>
 
 // Boost 1.92 起 path.hpp / operations.hpp 不再传递包含 directory.hpp，必须显式引入。
 #include <boost/filesystem/directory.hpp>
@@ -18,6 +21,8 @@
 #include "libreallive/archive.h"
 #include "libreallive/gameexe.h"
 #include "android/android_system.h"
+#include "android/jni_saf_backend.h"
+#include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
 #include "modules/modules.h"
@@ -147,6 +152,43 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
  * 这是 T2.4（引擎生命周期）的第一步——只跑不控。启动/暂停/恢复/退出
  * 的完整生命周期要等 AndroidSystem 接入渲染与事件源之后再补。
  */
+/**
+ * 装配 AndroidSystem + RLMachine 并执行字节码。
+ * 「普通路径」与「SAF」两个入口共用这段逻辑，差异只在 Archive 怎么打开。
+ */
+void RunEngineOn(Gameexe& gameexe,
+                 libreallive::Archive& archive,
+                 int max_instructions,
+                 std::string& report) {
+  AndroidSystem system(gameexe);
+
+  RLMachine machine(system, archive);
+  AddAllModules(machine);
+  AddGameHacks(machine);
+  machine.SetHaltOnException(false);
+
+  report += "engine assembled (regname=\"" + gameexe("REGNAME").ToString("") + "\")\n";
+
+  int executed = 0;
+  std::string stop_reason = "instruction budget exhausted";
+  while (executed < max_instructions) {
+    if (machine.halted()) {
+      stop_reason = "machine halted";
+      break;
+    }
+    machine.ExecuteNextInstruction();
+    ++executed;
+    if (machine.CurrentLongOperation()) {
+      stop_reason = "entered long operation";
+      break;
+    }
+  }
+
+  report += "instructions executed = " + std::to_string(executed) + "\n";
+  report += "stop reason = " + stop_reason + "\n";
+  report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
+}
+
 jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
                     jint max_instructions) {
   namespace fs = boost::filesystem;
@@ -164,36 +206,9 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     }
 
     Gameexe gameexe(gameexe_path);
-    AndroidSystem system(gameexe);
-
-    const std::string regname = gameexe("REGNAME").ToString("");
-    libreallive::Archive archive(seen_path.string(), regname);
-
-    RLMachine machine(system, archive);
-    AddAllModules(machine);
-    AddGameHacks(machine);
-    machine.SetHaltOnException(false);
-
-    report += "engine assembled (regname=\"" + regname + "\")\n";
-
-    int executed = 0;
-    std::string stop_reason = "instruction budget exhausted";
-    while (executed < max_instructions) {
-      if (machine.halted()) {
-        stop_reason = "machine halted";
-        break;
-      }
-      machine.ExecuteNextInstruction();
-      ++executed;
-      if (machine.CurrentLongOperation()) {
-        stop_reason = "entered long operation";
-        break;
-      }
-    }
-
-    report += "instructions executed = " + std::to_string(executed) + "\n";
-    report += "stop reason = " + stop_reason + "\n";
-    report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
+    libreallive::Archive archive(seen_path.string(),
+                                 gameexe("REGNAME").ToString(""));
+    RunEngineOn(gameexe, archive, max_instructions, report);
     report += "RUN OK\n";
   } catch (const std::exception& e) {
     report += std::string("EXCEPTION: ") + e.what() + "\n";
@@ -205,6 +220,82 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
   return env->NewStringUTF(report.c_str());
 }
 
+/**
+ * SAF 版本：全部文件都经由用户在系统选择器中授权的目录树访问，
+ * 不拼接任何 File 路径（task.md 硬性要求）。
+ *
+ * Gameexe.ini 很小，整体读入后走 istream 构造；
+ * SEEN.TXT 走 fd + mmap，避免把整个场景归档复制一遍。
+ */
+jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
+  std::string report;
+
+  try {
+    std::shared_ptr<rlvm_android::SafBackend> backend = rlvm_android::GetSafBackend();
+    if (!backend) {
+      report += "ERROR: no SAF backend installed\n";
+      return env->NewStringUTF(report.c_str());
+    }
+
+    report += "SAF root listing:\n";
+    for (const std::string& name : backend->ListDirectory("")) {
+      report += "  " + name + "\n";
+    }
+
+    std::string gameexe_text;
+    if (!rlvm_android::SafReadAll("Gameexe.ini", gameexe_text)) {
+      report += "ERROR: cannot read Gameexe.ini via SAF\n";
+      return env->NewStringUTF(report.c_str());
+    }
+    report += "Gameexe.ini read via SAF: " +
+              std::to_string(gameexe_text.size()) + " bytes\n";
+    std::istringstream gameexe_stream(gameexe_text);
+    Gameexe gameexe(gameexe_stream);
+
+    const int fd = backend->OpenFd("Seen.txt");
+    if (fd < 0) {
+      report += "ERROR: cannot open Seen.txt via SAF\n";
+      return env->NewStringUTF(report.c_str());
+    }
+    report += "Seen.txt opened via SAF fd=" + std::to_string(fd) + "\n";
+
+    {
+      // Archive 内部完成 mmap，之后即可关闭 fd（映射仍然有效）。
+      libreallive::Archive archive(fd, "saf:/Seen.txt",
+                                   gameexe("REGNAME").ToString(""));
+      close(fd);
+
+      int scenarios = 0;
+      std::string indices;
+      for (libreallive::Archive::const_iterator it = archive.begin();
+           it != archive.end(); ++it) {
+        ++scenarios;
+        if (scenarios <= 8) {
+          if (!indices.empty()) indices += ",";
+          indices += std::to_string(it->first);
+        }
+      }
+      report += "Seen via SAF: TOC entries=" + std::to_string(scenarios) +
+                "; indices=[" + indices + "]\n";
+
+      RunEngineOn(gameexe, archive, max_instructions, report);
+    }
+    report += "RUN OK\n";
+  } catch (const std::exception& e) {
+    report += std::string("EXCEPTION: ") + e.what() + "\n";
+  } catch (...) {
+    report += "EXCEPTION: unknown\n";
+  }
+
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "saf run report:\n%s", report.c_str());
+  return env->NewStringUTF(report.c_str());
+}
+
+/** 由 Kotlin 侧在取得 SAF 目录授权后调用，安装 SAF 后端。 */
+void SetSafBackendFromJava(JNIEnv* env, jobject /*thiz*/, jobject backend) {
+  rlvm_android::InstallJniSafBackend(env, backend);
+}
+
 const JNINativeMethod kNativeMethods[] = {
     {"versionString", "()Ljava/lang/String;", reinterpret_cast<void*>(VersionString)},
     {"probeAbi", "()I", reinterpret_cast<void*>(ProbeAbi)},
@@ -212,6 +303,10 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(ProbeGameDir)},
     {"runScenario", "(Ljava/lang/String;I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenario)},
+    {"setSafBackend", "(Lorg/rlvm/android/SafFileSystem;)V",
+     reinterpret_cast<void*>(SetSafBackendFromJava)},
+    {"runScenarioSaf", "(I)Ljava/lang/String;",
+     reinterpret_cast<void*>(RunScenarioSaf)},
 };
 
 /** 必须与 Kotlin 侧 org.rlvm.android.NativeBridge 完全一致。 */
@@ -238,6 +333,9 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
     __android_log_print(ANDROID_LOG_ERROR, kLogTag, "RegisterNatives failed");
     return JNI_ERR;
   }
+
+  // 保存 JavaVM：SAF 后端需要从 native 回调 Kotlin。
+  rlvm_android::SetJavaVm(vm);
 
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "native bridge registered");
   return JNI_VERSION_1_6;

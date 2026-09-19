@@ -94,6 +94,29 @@ $fx="$repo\rlvm-release-0.14\test"
 | 时间 | 验证内容 | 结果 |
 | --- | --- | --- |
 | 2026-09-19 | JNI 桥接 + RLVM 解析链路（T1.4） | 通过：Gameexe 解析、SEEN TOC（1 个场景，索引 1）、Scenario 构造（含解压）、无崩溃 |
+| 2026-09-19 | 引擎装配 + 执行字节码（T2.4） | 通过：AndroidSystem 顶替 SDLSystem，执行 6 条指令后进入文本长操作，无崩溃 |
+| 2026-09-19 | SAF 文件访问（T2.2） | 通过：SAF 目录列举、Gameexe.ini 整体读入、SEEN.TXT 经 fd + mmap 打开并解析出同样的 TOC |
+
+## 6. SAF 测试流程
+
+SAF 的目录授权**必须由用户在系统选择器中完成一次**，无法用 adb 或代码绕过——这是 SAF 的设计。
+
+```powershell
+# 1) 把夹具放到用户可见、选择器够得到的目录
+& $adb -s $s shell mkdir -p /sdcard/Download/rlvm-probe
+& $adb -s $s push "$repo\build\probe-fixture\Gameexe.ini" /sdcard/Download/rlvm-probe/Gameexe.ini
+& $adb -s $s push "$repo\build\probe-fixture\Seen.txt"    /sdcard/Download/rlvm-probe/Seen.txt
+
+# 2) 安装启动，然后在设备上点「选择游戏目录」并选 Downloads/rlvm-probe
+& $adb -s $s install -r "$repo\app\build\outputs\apk\debug\app-debug.apk"
+& $adb -s $s shell am start -n org.rlvm.android/.MainActivity
+
+# 3) 读取结果（应用会自动跑一次）
+& $adb -s $s logcat -d -s rlvm-native:V '*:S'
+```
+
+授权经 `takePersistableUriPermission` 持久化，之后点「运行 SAF 引擎」即可重复执行，无需再次选择。
+「运行应用目录」按钮走普通路径，用于不依赖用户操作的自动化迭代。
 
 ## 6. 已知限制
 

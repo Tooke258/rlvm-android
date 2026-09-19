@@ -52,6 +52,11 @@ enum Mode { Read, Write };
 class Mapping {
  public:
   Mapping(string filename, Mode mode, off_t min_size = 0);
+  // Android 移植新增：从已有的只读文件描述符映射。
+  // SAF（Storage Access Framework）只提供 fd，不提供可用的文件系统路径，
+  // 因此读取 SEEN.TXT 必须走这条路。此构造**不接管** fd 的所有权，
+  // 由调用方负责关闭。length 为 0 时通过 fstat 取得文件大小。
+  Mapping(int fd, off_t length);
   ~Mapping();
 
   // Return a pointer to the internal memory.

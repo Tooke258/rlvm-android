@@ -149,8 +149,14 @@ class GameexeInterpretObject {
 class Gameexe {
  public:
   explicit Gameexe(const boost::filesystem::path& filename);
+  // Android 移植新增：从输入流解析。SAF 下没有可用的文件系统路径，
+  // 而 Gameexe.ini 很小（几百字节到几十 KB），直接读入内存后走这个入口。
+  explicit Gameexe(std::istream& in);
   Gameexe();
   ~Gameexe();
+
+  // 解析流中的全部 Gameexe.ini 行，两个构造函数共用。
+  void Parse(std::istream& in);
 
   // Parses an individual Gameexe.ini line.
   void parseLine(const std::string& line);

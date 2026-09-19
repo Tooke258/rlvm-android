@@ -59,7 +59,21 @@ Archive::Archive(const std::string& filename, const std::string& regname)
       regname_(regname) {
   ReadTOC();
   ReadOverrides();
+  SelectSecondLevelXorKey(regname);
+}
 
+Archive::Archive(int fd, const std::string& display_name,
+                 const std::string& regname)
+    : name_(display_name),
+      info_(fd, 0),
+      second_level_xor_key_(NULL),
+      regname_(regname) {
+  ReadTOC();
+  // 刻意不调用 ReadOverrides()：SAF 下没有真实目录可以枚举。
+  SelectSecondLevelXorKey(regname);
+}
+
+void Archive::SelectSecondLevelXorKey(const std::string& regname) {
   if (regname == "KEY\\CLANNAD_FV") {
     second_level_xor_key_ =
         libreallive::compression::clannad_full_voice_xor_mask;
