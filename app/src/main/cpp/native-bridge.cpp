@@ -87,6 +87,22 @@ std::atomic<bool> g_stop_requested{false};
 // 两台引擎共用同一个 AudioEngine 与帧缓冲会互相踩踏，所以直接拒绝并存。
 std::atomic<bool> g_run_active{false};
 
+/**
+ * 平台钩子实现：把「游戏文件标识」换成只读 fd。
+ *
+ * 语音归档（KOE/NWK/OVK/koepac）沿用上游的 fopen/ifstream 按路径读文件，
+ * 这在 SAF 下必然失败（没有真实路径）。上游在 utilities/file.h 里留了钩子，
+ * 这里实现它：普通路径后端返回真实 fd，SAF 后端由 Kotlin 侧的 ContentResolver
+ * 打开同一个文档，两者对调用方没有区别。
+ */
+int OpenGameFileFdHookImpl(const char* file_id) {
+  if (file_id == nullptr) return -1;
+  std::shared_ptr<rlvm_android::GameFileSystem> files =
+      rlvm_android::GetGameFileSystem();
+  if (!files) return -1;
+  return files->OpenFd(file_id);
+}
+
 // 当前正在运行的 AndroidSystem。UI 线程的触摸事件需要它才能找到事件系统；
 // 引擎停止后清空，避免触到已析构的对象。
 std::atomic<AndroidSystem*> g_current_system{nullptr};
@@ -891,6 +907,9 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
   // 尽早接管 stdout / stderr：上游 RLVM 的诊断信息全走这两个流，
   // 而 Android 应用默认把它们丢进 /dev/null。晚一步装就会漏掉早期输出。
   rlvm_android::InstallLogRedirect();
+
+  // 安装"游戏文件标识 → fd"钩子：语音归档在 SAF 下靠它读文件（见上面说明）。
+  SetOpenGameFileFdHook(&OpenGameFileFdHookImpl);
 
   JNIEnv* env = nullptr;
   if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {

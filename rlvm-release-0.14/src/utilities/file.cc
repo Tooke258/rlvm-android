@@ -156,3 +156,22 @@ bool LoadFileData(const boost::filesystem::path& path,
 
   return !ifs.good();
 }
+
+// -----------------------------------------------------------------------
+// Android/SAF 移植新增：游戏文件 fd 钩子（见 file.h 的说明）。
+// -----------------------------------------------------------------------
+
+namespace {
+
+OpenGameFileFdHook g_open_game_file_fd_hook = NULL;
+
+}  // namespace
+
+void SetOpenGameFileFdHook(OpenGameFileFdHook hook) {
+  g_open_game_file_fd_hook = hook;
+}
+
+int OpenGameFileFd(const std::string& file_id) {
+  if (g_open_game_file_fd_hook == NULL) return -1;
+  return g_open_game_file_fd_hook(file_id.c_str());
+}

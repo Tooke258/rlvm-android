@@ -65,6 +65,7 @@
 #include <sstream>
 
 #include "utilities/exception.h"
+#include "utilities/file.h"
 #include "xclannad/endian.hpp"
 
 using std::ifstream;
@@ -114,14 +115,14 @@ std::string oggErrorCodeToString(int code) {
 }  // namespace
 
 OVKVoiceSample::OVKVoiceSample(fs::path file)
-    : stream_(std::fopen(file.native().c_str(), "rb")), offset_(0), length_(0) {
+    : stream_(OpenVoiceArchiveFile(file)), offset_(0), length_(0) {
   std::fseek(stream_, 0, SEEK_END);
   length_ = ftell(stream_);
   std::fseek(stream_, 0, SEEK_SET);
 }
 
 OVKVoiceSample::OVKVoiceSample(fs::path file, int offset, int length)
-    : stream_(std::fopen(file.native().c_str(), "rb")),
+    : stream_(OpenVoiceArchiveFile(file)),
       offset_(offset),
       length_(length) {}
 

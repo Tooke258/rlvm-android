@@ -49,4 +49,14 @@ bool LoadFileData(const boost::filesystem::path& path,
                   std::unique_ptr<char[]>& fileData,
                   int& fileSize);
 
+// Android/SAF 移植新增：按"游戏文件标识"打开只读 fd 的钩子。
+//
+// 普通路径后端下标识就是路径，直接 fopen 即可；而 SAF 下标识是不透明的，
+// 只有 Kotlin 侧（ContentResolver）能把它换成 fd。语音归档（KOE/NWK/OVK/koepac）
+// 目前用 fopen/ifstream 按真实路径读文件，在 SAF 下必然失败，因此提供这个钩子：
+// 平台层安装实现，未安装时返回 -1，调用方自行回退到普通路径。
+typedef int (*OpenGameFileFdHook)(const char* file_id);
+void SetOpenGameFileFdHook(OpenGameFileFdHook hook);
+int OpenGameFileFd(const std::string& file_id);
+
 #endif  // SRC_UTILITIES_FILE_H_

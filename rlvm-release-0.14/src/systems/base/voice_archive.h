@@ -29,12 +29,20 @@
 
 #include <boost/filesystem/path.hpp>
 
+#include <cstdio>
 #include <memory>
 #include <vector>
 
 class VoiceArchive;
 
 const int WAV_HEADER_SIZE = 0x2c;
+
+// Android/SAF 移植新增：统一的语音归档打开入口。
+//
+// 普通路径下等价于 fopen(file, "rb")；SAF 下不存在真实路径，先经
+// OpenGameFileFd() 钩子把"游戏文件标识"换成 fd，再 fdopen。失败返回 NULL。
+// 语音归档的表读取与样本解码都改用这个入口。
+FILE* OpenVoiceArchiveFile(const boost::filesystem::path& file);
 
 // A Reference to an individual voice sample in a voice archive (independent of
 // the voice archive type).

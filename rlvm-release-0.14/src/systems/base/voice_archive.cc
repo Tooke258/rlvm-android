@@ -29,11 +29,15 @@
 #include <boost/filesystem/fstream.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 
+#include <unistd.h>
+
 #include "utilities/exception.h"
+#include "utilities/file.h"
 #include "xclannad/endian.hpp"
 
 namespace fs = boost::filesystem;
@@ -84,11 +88,22 @@ VoiceArchive::VoiceArchive(int file_number) : file_number_(file_number) {}
 
 VoiceArchive::~VoiceArchive() {}
 
+FILE* OpenVoiceArchiveFile(const boost::filesystem::path& file) {
+  // 先试平台钩子（SAF 下唯一可行的方式）；钩子没装或失败则回退到普通路径。
+  const int fd = OpenGameFileFd(file.string());
+  if (fd >= 0) {
+    FILE* stream = fdopen(fd, "rb");
+    if (stream != NULL) return stream;
+    close(fd);
+  }
+  return std::fopen(file.native().c_str(), "rb");
+}
+
 void VoiceArchive::ReadVisualArtsTable(boost::filesystem::path file,
                                        int entry_length,
                                        std::vector<Entry>& entries) {
-  fs::ifstream ifs(file, fs::ifstream::in | fs::ifstream::binary);
-  if (!ifs) {
+  FILE* stream = OpenVoiceArchiveFile(file);
+  if (stream == NULL) {
     std::ostringstream oss;
     oss << "Could not open file \"" << file << "\".";
     throw rlvm::Exception(oss.str());
@@ -96,17 +111,23 @@ void VoiceArchive::ReadVisualArtsTable(boost::filesystem::path file,
 
   // Copied from koedec.
   char head[0x20];
-  ifs.read(head, 4);
+  if (std::fread(head, 4, 1, stream) != 1) {
+    std::fclose(stream);
+    std::ostringstream oss;
+    oss << "Truncated table in \"" << file << "\".";
+    throw rlvm::Exception(oss.str());
+  }
   int table_len = read_little_endian_int(head);
   entries.reserve(table_len);
 
   for (int i = 0; i < table_len; ++i) {
-    ifs.read(head, entry_length);
+    if (std::fread(head, entry_length, 1, stream) != 1) break;
     int length = read_little_endian_int(head);
     int offset = read_little_endian_int(head + 4);
     int koe_num = read_little_endian_int(head + 8);
     entries.push_back(Entry(koe_num, length, offset));
   }
+  std::fclose(stream);
 
   std::sort(entries.begin(), entries.end());
 }

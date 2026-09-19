@@ -628,6 +628,10 @@ void AndroidSoundSystem::KoeStop() {
 }
 
 void AndroidSoundSystem::KoePlayImpl(int id) {
+  // 进门先记一条：用来区分"游戏根本没请求语音"与"请求了但被开关/查找拦下"。
+  __android_log_print(ANDROID_LOG_INFO, kAudioTag,
+                      "koe: request id=%d enabled=%d playing=%d", id,
+                      is_koe_enabled(), KoePlaying() ? 1 : 0);
   if (!is_koe_enabled()) return;
 
   std::shared_ptr<VoiceSample> sample = voice_cache_.Find(id);

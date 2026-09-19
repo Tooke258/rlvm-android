@@ -149,7 +149,7 @@ int8_t koe_ad_trans_tbl[256] = {
 class KOEPACVoiceSample : public VoiceSample {
  public:
   KOEPACVoiceSample(fs::path file, int offset, int length, int rate)
-      : stream_(std::fopen(file.native().c_str(), "rb")),
+      : stream_(OpenVoiceArchiveFile(file)),
         offset_(offset),
         length_(length),
         rate_(rate) {}
