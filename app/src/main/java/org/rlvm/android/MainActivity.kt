@@ -136,6 +136,9 @@ class MainActivity : Activity() {
         // 游戏画面应当占满屏幕；控制项与日志收进可滑出的侧栏，由小球开关。
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
+        // 球与侧栏的尺寸要在创建视图之前算好：球的拖动/贴边逻辑会用到它们。
+        val ballSize = dp(52)
+        panelWidth = (resources.displayMetrics.widthPixels * 0.72f).toInt()
 
         fun buttonRow(vararg views: android.view.View) = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -165,8 +168,14 @@ class MainActivity : Activity() {
             )
         }
 
-        // 悬浮球：可上下拖动（免得挡住游戏 UI），点击则展开/收起侧栏。
+        // 悬浮球：可拖动（免得挡住游戏 UI），点击则展开/收起侧栏。
+        // 拖动有两条规则：
+        //   限位——球必须完整留在屏幕内，不允许被拖出去；
+        //   贴边——松手后就近吸附到左/右边缘（悬浮球的标准交互）。
+        var dragStartX = 0f
         var dragStartY = 0f
+        var dragStartTx = 0f
+        var dragStartTy = 0f
         var dragged = false
         ball = TextView(this).apply {
             text = "≡"
@@ -179,23 +188,49 @@ class MainActivity : Activity() {
                 setStroke(dp(2), 0x88FFFFFF.toInt())
             }
             setOnTouchListener { v, event ->
+                val parentView = v.parent as? ViewGroup
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        dragStartX = event.rawX
                         dragStartY = event.rawY
+                        dragStartTx = v.translationX
+                        dragStartTy = v.translationY
                         dragged = false
                         true
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        val dx = event.rawX - dragStartX
                         val dy = event.rawY - dragStartY
-                        if (Math.abs(dy) > dp(6)) dragged = true
+                        if (Math.abs(dx) > dp(6) || Math.abs(dy) > dp(6)) dragged = true
                         if (dragged) {
-                            v.translationY += dy
-                            dragStartY = event.rawY
+                            // 拖动范围按"球完整留在父容器内"计算：
+                            // 水平方向从贴左到贴右，垂直方向以居中为基准上下对称。
+                            val margin = dp(6)
+                            val spanX = (parentView?.width ?: 0) - ballSize - 2 * margin
+                            val spanY = ((parentView?.height ?: 0) / 2f) -
+                                ballSize / 2f - margin
+                            v.translationX = (dragStartTx + dx).coerceIn(-spanX.toFloat(), 0f)
+                            v.translationY = (dragStartTy + dy)
+                                .coerceIn(-spanY, spanY)
                         }
                         true
                     }
                     MotionEvent.ACTION_UP -> {
-                        if (!dragged) togglePanel()
+                        if (!dragged) {
+                            togglePanel()
+                        } else {
+                            // 贴边：按球的中心落在左半还是右半，吸附到对应边缘。
+                            val margin = dp(6)
+                            val parentWidth = parentView?.width ?: 0
+                            val baseLeft = parentWidth - ballSize - margin
+                            val centerX = baseLeft + v.translationX + ballSize / 2f
+                            val snapTx = if (centerX > parentWidth / 2f) {
+                                0f
+                            } else {
+                                -(parentWidth - ballSize - 2 * margin).toFloat()
+                            }
+                            v.animate().translationX(snapTx).setDuration(150).start()
+                        }
                         true
                     }
                     else -> false
@@ -203,8 +238,6 @@ class MainActivity : Activity() {
             }
         }
 
-        panelWidth = (resources.displayMetrics.widthPixels * 0.72f).toInt()
-        val ballSize = dp(52)
         val root = FrameLayout(this)
         root.addView(glView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
