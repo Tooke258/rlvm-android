@@ -6,11 +6,15 @@
 # the translation only exists in process memory, stored as decompressed scene
 # bytecode with GBK text inlined.
 #
-# Verified textout structure:
-#   start: 29 40 ?? 05 22 22
+# Verified textout structure. There are (at least) TWO variants, so the anchor
+# is the marker they share - 05 22 22 - not the opcode that precedes it:
+#   character line: FF 01 00 00 00 29 40 ?? 05 22 22 ...
+#   narration:      00 00 00 0A ?? 0E 40 ?? 05 22 22 ...
 #   end:   22 23 00
-#   text:  bytes between start+6 and end, with the 0x22 separators removed,
-#          decoded as GBK.
+#   text:  bytes between the marker and the end, with the 0x22 separators
+#          removed, decoded as GBK. Format inside is
+#            81 79 22 <speaker> 22 81 7A 22 A1B8 <line> A1B9
+#          i.e. speaker and line are delimited, which post-processing splits.
 #
 # Strict filter (needed because "contains a CJK char" is almost no constraint:
 # GBK covers most byte pairs, so statistical matching matches garbage):
@@ -81,9 +85,9 @@ public class CnScan2{
    }
    var sb=new StringBuilder();
    for(int i=0;i<len-8;i++){
-    if(buf[i]==0x29&&buf[i+1]==0x40&&buf[i+3]==0x05&&buf[i+4]==0x22&&buf[i+5]==0x22){
+    if(buf[i]==0x05&&buf[i+1]==0x22&&buf[i+2]==0x22){
      System.Threading.Interlocked.Increment(ref candidates);
-     int st=i+6,en=st;
+     int st=i+3,en=st;
      while(en<len-3){ if(buf[en]==0x22&&buf[en+1]==0x23&&buf[en+2]==0x00) break; en++; }
      if(en>st&&en<len-1){
       sb.Length=0;
