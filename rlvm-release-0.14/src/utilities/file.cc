@@ -36,6 +36,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+
+#include <unistd.h>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -174,4 +176,36 @@ void SetOpenGameFileFdHook(OpenGameFileFdHook hook) {
 int OpenGameFileFd(const std::string& file_id) {
   if (g_open_game_file_fd_hook == NULL) return -1;
   return g_open_game_file_fd_hook(file_id.c_str());
+}
+
+OpenGameFileWriteFdHook g_open_game_file_write_fd_hook = NULL;
+
+void SetOpenGameFileWriteFdHook(OpenGameFileWriteFdHook hook) {
+  g_open_game_file_write_fd_hook = hook;
+}
+
+int OpenGameFileWriteFd(const std::string& file_id) {
+  if (g_open_game_file_write_fd_hook == NULL) return -1;
+  return g_open_game_file_write_fd_hook(file_id.c_str());
+}
+
+void WriteGameFile(const boost::filesystem::path& path, const std::string& data) {
+  // SAF 下没有真实路径，只能靠平台钩子；普通路径后端没有钩子，直接写文件。
+  const int fd = OpenGameFileWriteFd(path.string());
+  if (fd >= 0) {
+    size_t written = 0;
+    while (written < data.size()) {
+      const ssize_t n = write(fd, data.data() + written, data.size() - written);
+      if (n <= 0) break;
+      written += static_cast<size_t>(n);
+    }
+    close(fd);
+    if (written == data.size()) return;
+  }
+
+  boost::filesystem::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file) {
+    throw rlvm::Exception("Could not open file for writing: " + path.string());
+  }
+  file.write(data.data(), static_cast<std::streamsize>(data.size()));
 }

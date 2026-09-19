@@ -38,6 +38,8 @@
 #include <boost/iostreams/filter/zlib.hpp>
 #include <fstream>
 #include <sstream>
+
+#include "utilities/file.h"
 #include <iostream>
 #include <exception>
 #include <stdexcept>
@@ -89,10 +91,10 @@ namespace Serialization {
 
 void saveGameForSlot(RLMachine& machine, int slot) {
   fs::path path = buildSaveGameFilename(machine, slot);
-  fs::ofstream file(path, std::ios::binary);
-  checkInFileOpened(file, path);
-
-  saveGameTo(file, machine);
+  // 同上：先在内存里生成压缩后的存档，再经统一入口落盘。
+  std::ostringstream buffer(std::ios::binary);
+  saveGameTo(buffer, machine);
+  WriteGameFile(path, buffer.str());
 }
 
 void saveGameTo(std::ostream& oss, RLMachine& machine) {

@@ -39,6 +39,10 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
+
+#include <sstream>
+
+#include "utilities/file.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -72,12 +76,11 @@ fs::path buildGlobalMemoryFilename(RLMachine& machine) {
 
 void saveGlobalMemory(RLMachine& machine) {
   fs::path home = buildGlobalMemoryFilename(machine);
-  fs::ofstream file(home, std::ios::binary);
-  if (!file) {
-    throw rlvm::Exception(_("Could not open global memory file."));
-  }
-
-  saveGlobalMemoryTo(file, machine);
+  // 先序列化到内存，再经统一入口落盘：SAF 下没有真实路径，必须走平台钩子
+  //（见 utilities/file.h 的 WriteGameFile）。
+  std::ostringstream buffer(std::ios::binary);
+  saveGlobalMemoryTo(buffer, machine);
+  WriteGameFile(home, buffer.str());
 }
 
 void saveGlobalMemoryTo(std::ostream& oss, RLMachine& machine) {

@@ -59,4 +59,14 @@ typedef int (*OpenGameFileFdHook)(const char* file_id);
 void SetOpenGameFileFdHook(OpenGameFileFdHook hook);
 int OpenGameFileFd(const std::string& file_id);
 
+// Android/SAF 移植新增：写入变体。按"游戏文件标识"创建（或截断）文件并返回
+// 可写 fd；未安装钩子或无此能力时返回 -1，调用方回退到普通路径。
+typedef int (*OpenGameFileWriteFdHook)(const char* file_id);
+void SetOpenGameFileWriteFdHook(OpenGameFileWriteFdHook hook);
+int OpenGameFileWriteFd(const std::string& file_id);
+
+// 把一段数据写到"游戏文件"：优先走写钩子（SAF 下唯一可行），失败则回退到
+// 普通 ofstream。存档与全局数据（Config）都经这里落盘。
+void WriteGameFile(const boost::filesystem::path& path, const std::string& data);
+
 #endif  // SRC_UTILITIES_FILE_H_
