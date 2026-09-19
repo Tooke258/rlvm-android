@@ -10,7 +10,9 @@
 
 #include "android/android_graphics.h"
 #include "android/audio_engine.h"
+#include "android/font_engine.h"
 #include "android/game_file_system.h"
+#include "utf8cpp/utf8.h"
 #include "libreallive/gameexe.h"
 #include "machine/rlmachine.h"
 #include "systems/base/colour.h"
@@ -23,6 +25,19 @@ unsigned int NowMillis() {
   using namespace std::chrono;
   return static_cast<unsigned int>(
       duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+/** 取 UTF-8 串的第一个码点。 */
+bool FirstCodepoint(const std::string& text, uint32_t& codepoint) {
+  if (text.empty()) return false;
+  std::string::const_iterator it = text.begin();
+  const std::string::const_iterator end = text.end();
+  try {
+    codepoint = utf8::next(it, end);
+  } catch (...) {
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -80,6 +95,13 @@ AndroidTextSystem::AndroidTextSystem(System& system, Gameexe& gexe)
 
 std::shared_ptr<TextWindow> AndroidTextSystem::GetTextWindow(
     int text_window_number) {
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                        "GetTextWindow called (first window=%d)",
+                        text_window_number);
+  }
   WindowMap::iterator it = text_window_.find(text_window_number);
   if (it != text_window_.end()) return it->second;
 
@@ -89,20 +111,55 @@ std::shared_ptr<TextWindow> AndroidTextSystem::GetTextWindow(
   return window;
 }
 
-Size AndroidTextSystem::RenderGlyphOnto(const std::string& /*current*/,
-                                        int /*font_size*/,
-                                        bool /*italic*/,
-                                        const RGBColour& /*font_colour*/,
-                                        const RGBColour* /*shadow_colour*/,
-                                        int /*insertion_point_x*/,
-                                        int /*insertion_point_y*/,
-                                        const std::shared_ptr<Surface>& /*destination*/) {
-  return Size(0, 0);
+Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
+                                        int font_size,
+                                        bool italic,
+                                        const RGBColour& font_colour,
+                                        const RGBColour* shadow_colour,
+                                        int insertion_point_x,
+                                        int insertion_point_y,
+                                        const std::shared_ptr<Surface>& destination) {
+  // current 是 UTF-8 字符串（通常一个字符）。取第一个码点交给字体引擎。
+  uint32_t codepoint = 0;
+  if (!FirstCodepoint(current, codepoint)) return Size(0, 0);
+
+  static int rendered = 0;
+  if (++rendered <= 5) {
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                        "RenderGlyphOnto #%d codepoint=U+%04X size=%d at (%d,%d)",
+                        rendered, codepoint, font_size, insertion_point_x,
+                        insertion_point_y);
+  }
+
+  rlvm_android::FontEngine& fonts = rlvm_android::FontEngine::Instance();
+  // 上游只用了斜体（TTF_STYLE_ITALIC），不合成加粗，这里保持一致。
+  const rlvm_android::GlyphBitmap* glyph =
+      fonts.Rasterize(codepoint, font_size, italic, false);
+  if (glyph == nullptr) return Size(0, 0);
+
+  AndroidSurface* target = dynamic_cast<AndroidSurface*>(destination.get());
+  if (target == nullptr) return Size(0, 0);
+
+  // 与上游 SDLTextSystem 相同的做法：阴影先画在 (+2, +2)，再把字形画在原点。
+  if (shadow_colour != nullptr && font_shadow() != 0) {
+    target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height,
+                          insertion_point_x + 2, insertion_point_y + 2,
+                          *shadow_colour);
+  }
+  target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height,
+                        insertion_point_x, insertion_point_y, font_colour);
+
+  return Size(glyph->width, glyph->height);
 }
 
 int AndroidTextSystem::GetCharWidth(int size, uint16_t codepoint) {
-  // 占位宽度：等宽近似。真正的度量在接入 FreeType 后替换。
-  return (codepoint < 0x80) ? size / 2 : size;
+  static int measured = 0;
+  if (++measured <= 5) {
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                        "GetCharWidth #%d codepoint=U+%04X size=%d", measured,
+                        codepoint, size);
+  }
+  return rlvm_android::FontEngine::Instance().Advance(codepoint, size);
 }
 
 // ---------------------------------------------------------------------------

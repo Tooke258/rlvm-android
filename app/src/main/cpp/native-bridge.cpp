@@ -120,6 +120,26 @@ jstring NewSafeJavaString(JNIEnv* env, const std::string& text) {
 }
 
 /**
+ * 逐行输出报告。
+ *
+ * 必须逐行：logcat 对单条消息有长度上限（约 1000 字符），把几千字的报告塞进一次
+ * __android_log_print 会让后半部分静默消失——实测中这会被误判成「运行卡住了」。
+ */
+void LogReport(const char* tag, const char* title, const std::string& report) {
+  __android_log_print(ANDROID_LOG_INFO, tag, "%s:", title);
+  std::string::size_type begin = 0;
+  while (begin <= report.size()) {
+    std::string::size_type end = report.find('\n', begin);
+    if (end == std::string::npos) end = report.size();
+    if (end > begin) {
+      __android_log_print(ANDROID_LOG_INFO, tag, "%.*s", static_cast<int>(end - begin),
+                          report.c_str() + begin);
+    }
+    begin = end + 1;
+  }
+}
+
+/**
  * 供日志与报告显示用：把可能是 Shift-JIS 的游戏字符串转成 UTF-8。
  * 只在字符串不是合法 UTF-8 时才转换，因此 ASCII 与我们自己的文本原样保留。
  */
@@ -239,7 +259,7 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
     report += "EXCEPTION: unknown\n";
   }
 
-  __android_log_print(ANDROID_LOG_INFO, kLogTag, "probe report:\n%s", report.c_str());
+  LogReport(kLogTag, "probe report", report);
   return NewSafeJavaString(env, report);
 }
 
@@ -259,10 +279,20 @@ void RunEngineOn(System& system,
                  libreallive::Archive& archive,
                  int max_instructions,
                  std::string& report) {
+  // 分步日志：真机上「跑很久却没有任何输出」时，用它定位卡在哪一步。
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: constructing RLMachine");
   RLMachine machine(system, archive);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddAllModules");
   AddAllModules(machine);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddGameHacks");
   AddGameHacks(machine);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: machine ready");
+  // 与上游 RLVMInstance 一致：遇到指令异常时跳过该指令继续执行，
+  // 而不是把整台机器标记为 halted。
   machine.SetHaltOnException(false);
+  // 打印未实现的操作码与指令异常：上游默认把它们吞掉，
+  // 在 Android 上 std::cerr 又看不到，于是表现为「跑了很多指令却什么都没发生」。
+  machine.SetPrintUndefinedOpcodes(true);
 
   // REGNAME 是 CP932 编码的游戏数据，显示前先转成 UTF-8——
   // 否则报告本身含有非法 UTF-8 字节。
@@ -295,6 +325,15 @@ void RunEngineOn(System& system,
       CaptureFrame(*graphics);
       ++frames_presented;
     }
+
+    // 进度日志：定位「跑很久但没有输出」这类问题。
+    if (frames_presented % 60 == 0) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                          "progress: frames=%d instructions=%d elapsed=%ums",
+                          frames_presented, executed,
+                          system.event().GetTicks() - started);
+    }
+
 
     // 上游在遇到长操作时只跳出**内层**时间片（把控制权让给这一帧），
     // 外层循环继续推进——长操作本身由后续的 ExecuteNextInstruction 轮询。
@@ -370,7 +409,7 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     report += "EXCEPTION: unknown\n";
   }
 
-  __android_log_print(ANDROID_LOG_INFO, kLogTag, "run report:\n%s", report.c_str());
+  LogReport(kLogTag, "run report", report);
   return NewSafeJavaString(env, report);
 }
 
@@ -468,11 +507,13 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       for (libreallive::Archive::const_iterator it = archive.begin();
            it != archive.end(); ++it) {
         ++scenarios;
-        if (scenarios <= 8) {
+        // 只列前 16 个：报告要逐行打印，索引全列会让开头几行淹没在噪声里。
+        if (scenarios <= 16) {
           if (!indices.empty()) indices += ",";
           indices += std::to_string(it->first);
         }
       }
+      if (scenarios > 16) indices += ",...";
       report += "Seen via SAF: TOC entries=" + std::to_string(scenarios) +
                 "; indices=[" + indices + "]\n";
 
@@ -486,7 +527,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
     report += "EXCEPTION: unknown\n";
   }
 
-  __android_log_print(ANDROID_LOG_INFO, kLogTag, "saf run report:\n%s", report.c_str());
+  LogReport(kLogTag, "saf run report", report);
   return NewSafeJavaString(env, report);
 }
 

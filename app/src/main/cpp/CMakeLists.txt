@@ -126,6 +126,51 @@ target_include_directories(vorbis PUBLIC "${VORBIS_SOURCE_DIR}/include")
 target_link_libraries(vorbis PUBLIC ogg)
 
 # ===========================================================================
+# FreeType：文字渲染。上游经 SDL_ttf 使用 FreeType，本移植直接调用它。
+#
+# 采用「单文件模块」编译法（每个模块的 X.c 会 #include 该模块的其他源文件），
+# 因此只需列出十几个文件，不必搬 FreeType 自己的构建系统。
+# ===========================================================================
+set(FREETYPE_SOURCE_DIR "${THIRD_PARTY_DIR}/freetype-VER-2-13-3")
+if(NOT EXISTS "${FREETYPE_SOURCE_DIR}/include/freetype/config/ftconfig.h")
+    message(FATAL_ERROR "找不到 FreeType 源码: ${FREETYPE_SOURCE_DIR}")
+endif()
+message(STATUS "freetype    : ${FREETYPE_SOURCE_DIR}")
+
+add_library(freetype STATIC
+    "${FREETYPE_SOURCE_DIR}/src/base/ftbase.c"
+    "${FREETYPE_SOURCE_DIR}/src/base/ftinit.c"
+    "${FREETYPE_SOURCE_DIR}/src/base/ftsystem.c"
+    "${FREETYPE_SOURCE_DIR}/src/base/ftdebug.c"
+    "${FREETYPE_SOURCE_DIR}/src/base/ftglyph.c"
+    "${FREETYPE_SOURCE_DIR}/src/base/ftbitmap.c"
+    "${FREETYPE_SOURCE_DIR}/src/base/ftsynth.c"
+    # 可变字体（TrueType GX）支持会引用 FT_Set_Named_Instance，它在 ftmm.c 里。
+    "${FREETYPE_SOURCE_DIR}/src/base/ftmm.c"
+    "${FREETYPE_SOURCE_DIR}/src/autofit/autofit.c"
+    "${FREETYPE_SOURCE_DIR}/src/truetype/truetype.c"
+    "${FREETYPE_SOURCE_DIR}/src/cff/cff.c"
+    "${FREETYPE_SOURCE_DIR}/src/sfnt/sfnt.c"
+    "${FREETYPE_SOURCE_DIR}/src/psaux/psaux.c"
+    "${FREETYPE_SOURCE_DIR}/src/psnames/psnames.c"
+    "${FREETYPE_SOURCE_DIR}/src/pshinter/pshinter.c"
+    "${FREETYPE_SOURCE_DIR}/src/smooth/smooth.c"
+    "${FREETYPE_SOURCE_DIR}/src/raster/raster.c"
+    "${FREETYPE_SOURCE_DIR}/src/gzip/ftgzip.c"
+)
+target_include_directories(freetype PUBLIC "${FREETYPE_SOURCE_DIR}/include")
+target_include_directories(freetype PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/compat/freetype")
+target_compile_definitions(freetype PRIVATE
+    FT2_BUILD_LIBRARY
+    # 用模块表以外的默认值：只启用上面列出的模块。
+    "FT_CONFIG_MODULES_H=<ftmodule_android.h>"
+    # 用 NDK 自带的 zlib（WOFF 压缩字体需要），避免再编一份内置 zlib。
+    FT_CONFIG_OPTION_SYSTEM_ZLIB
+)
+# 按名字链接：NDK sysroot 里就有 libz.so，此时 z_lib 变量尚未由 find_library 定义。
+target_link_libraries(freetype PUBLIC z)
+
+# ===========================================================================
 # Boost：直接从源码编译所需库，绕开 b2 构建系统
 # ===========================================================================
 set(_bsrc "${BOOST_SOURCE_DIR}/libs")
@@ -352,6 +397,7 @@ add_library(rlvm SHARED
     android/android_graphics.cpp
     android/android_system.cpp
     android/audio_engine.cpp
+    android/font_engine.cpp
     android/game_file_system.cpp
     android/jni_saf_backend.cpp
     android/saf_file_system.cpp
@@ -395,6 +441,7 @@ find_library(aaudio_lib aaudio)
 
 target_link_libraries(rlvm
     vorbis                      # 语音解码（OVK/KOE Ogg Vorbis）；ogg 由其 PUBLIC 传递
+    freetype                    # 文字渲染
     ${log_lib}
     ${android_lib}
     ${z_lib}

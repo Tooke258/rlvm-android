@@ -78,6 +78,15 @@ class AndroidSurface : public Surface {
   // 图像解码器（xclannad 的 GRPCONV）输出的正是这个布局。
   void SetPixelsFromRGBA(const void* rgba);
 
+  // 把一个 8 位灰度覆盖度位图（字形）以给定颜色混合到 (x, y)。
+  // 用于文字渲染；刻意不依赖 font_engine，保持图形层独立。
+  void BlendCoverage(const uint8_t* coverage,
+                     int width,
+                     int height,
+                     int x,
+                     int y,
+                     const RGBColour& colour);
+
   const uint32_t* pixels() const { return pixels_.data(); }
 
  private:

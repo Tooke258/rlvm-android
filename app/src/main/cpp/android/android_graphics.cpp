@@ -73,6 +73,34 @@ void AndroidSurface::SetPixelsFromRGBA(const void* rgba) {
   std::memcpy(pixels_.data(), rgba, bytes);
 }
 
+void AndroidSurface::BlendCoverage(const uint8_t* coverage,
+                                   int width,
+                                   int height,
+                                   int x,
+                                   int y,
+                                   const RGBColour& colour) {
+  if (coverage == nullptr || width <= 0 || height <= 0) return;
+
+  for (int row = 0; row < height; ++row) {
+    const int py = y + row;
+    if (py < 0 || py >= size_.height()) continue;
+    for (int column = 0; column < width; ++column) {
+      const int px = x + column;
+      if (px < 0 || px >= size_.width()) continue;
+
+      const int alpha = coverage[static_cast<size_t>(row) * width + column];
+      if (alpha == 0) continue;
+
+      uint32_t& pixel = pixels_[static_cast<size_t>(py) * size_.width() + px];
+      const int inverse = 255 - alpha;
+      pixel = PackRGBA((colour.r() * alpha + RedOf(pixel) * inverse) / 255,
+                       (colour.g() * alpha + GreenOf(pixel) * inverse) / 255,
+                       (colour.b() * alpha + BlueOf(pixel) * inverse) / 255,
+                       Clamp255(AlphaOf(pixel) + alpha));
+    }
+  }
+}
+
 Size AndroidSurface::GetSize() const { return size_; }
 
 void AndroidSurface::Fill(const RGBAColour& colour) {
