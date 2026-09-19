@@ -11,6 +11,34 @@
 - **不是**：不含任何游戏本体、语音包、图片或脚本。它只读取你自己合法拥有的游戏
   目录，通过 Android 的 SAF（Storage Access Framework）授权访问。
 
+## 支持的游戏
+
+下表**照抄自上游 RLVM 的 README**，是上游在桌面平台（Linux/macOS）的验证结果。
+本移植复用了它的引擎实现，理论上具备同样的兼容性，但**目前只在真机上验证过
+Kud Wafter**（标题→正文、语音、BGM、存档、Config 均正常）。
+
+| Japanese Edition Games | Status | English Fan Patch Status |
+| ---------------------- | ------ | ------------------------ |
+| Kanon Standard Edition | OK     | NDT's patch              |
+| Air Standard Edition   | OK     | (None)                   |
+| CLANNAD                | OK     | (Not supported)          |
+| CLANNAD (Full Voice)   | OK     | Licensed                 |
+| Planetarian CD         | OK     | Licensed                 |
+| Tomoyo After           | OK     | (None)                   |
+| Little Busters         | OK     | (Untested)               |
+| Kud Wafter             | OK     | (None)                   |
+
+| US Edition Games | Status    |
+| ---------------- | --------- |
+| Planetarian      | Works     |
+
+其他作品**可能**可以运行——上游的实现已经足够完整，但上表只列出实际验证过的；
+本移植尚未逐个验证。语音支持 KOE / NWK / OVK 归档，以及遵循
+`<packnumber>/z<packnumber><sampleid>.ogg` 约定的 ogg 语音补丁。
+
+遇到问题请把日志标签 `rlvm-stdout` / `rlvm-stderr` 的内容一并附上（上游把未实现的
+操作码与指令异常都打到这两个流，本移植已把它们接到 logcat）。
+
 ## 许可证（重要）
 
 RLVM 以 **GNU GPLv3（或更新版本）** 发布，本移植同样如此：见 `LICENSE`
