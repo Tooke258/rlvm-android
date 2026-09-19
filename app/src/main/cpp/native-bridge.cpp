@@ -21,6 +21,9 @@
 
 #include <unistd.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
 // Boost 1.92 起 path.hpp / operations.hpp 不再传递包含 directory.hpp，必须显式引入。
 #include <boost/filesystem/directory.hpp>
 #include <boost/filesystem/operations.hpp>
@@ -98,8 +101,13 @@ std::atomic<bool> g_run_active{false};
 std::string NormalizeGameFileId(const char* file_id) {
   std::string id(file_id);
   const std::string prefix = "saf:";
-  if (id.compare(0, prefix.size(), prefix) == 0) id.erase(0, prefix.size());
-  while (!id.empty() && id[0] == '/') id.erase(0, 1);
+  // 只有确实带 saf: 前缀时才剥掉它**以及**紧随其后的斜杠；普通绝对路径
+  //（例如 HOME 下的存档路径 /storage/...）必须原样保留开头的斜杠，
+  // 否则会被当成 SAF 相对路径——上一版就是这样把存档写错了地方。
+  if (id.compare(0, prefix.size(), prefix) == 0) {
+    id.erase(0, prefix.size());
+    while (!id.empty() && id[0] == '/') id.erase(0, 1);
+  }
   return id;
 }
 
@@ -113,10 +121,13 @@ std::string NormalizeGameFileId(const char* file_id) {
  */
 int OpenGameFileFdHookImpl(const char* file_id) {
   if (file_id == nullptr) return -1;
+  const std::string id = NormalizeGameFileId(file_id);
+  // 绝对路径（例如 HOME 指向的应用目录）：直接走 posix，不属于 SAF 树。
+  if (!id.empty() && id[0] == '/') return ::open(id.c_str(), O_RDONLY);
   std::shared_ptr<rlvm_android::GameFileSystem> files =
       rlvm_android::GetGameFileSystem();
   if (!files) return -1;
-  return files->OpenFd(NormalizeGameFileId(file_id));
+  return files->OpenFd(id);
 }
 
 /** 写入变体：存档与全局数据（Config）经这里落盘，SAF 下由 Kotlin 建文档。 */
@@ -126,6 +137,16 @@ int OpenGameFileWriteFdHookImpl(const char* file_id) {
       rlvm_android::GetGameFileSystem();
   if (!files) return -1;
   const std::string id = NormalizeGameFileId(file_id);
+  // 绝对路径：存档/全局数据可能落在 HOME（应用外部目录）下，那里是真实路径，
+  // 不需要也不能走 SAF。父目录不存在时先创建。
+  if (!id.empty() && id[0] == '/') {
+    const size_t slash = id.find_last_of('/');
+    if (slash != std::string::npos) ::mkdir(id.substr(0, slash).c_str(), 0755);
+    const int posix_fd = ::open(id.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    __android_log_print(posix_fd >= 0 ? ANDROID_LOG_INFO : ANDROID_LOG_WARN, kLogTag,
+                        "write open (posix): %s (fd=%d)", id.c_str(), posix_fd);
+    return posix_fd;
+  }
   const int fd = files->OpenWriteFd(id);
   if (fd >= 0) {
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "write open: %s (fd=%d)", id.c_str(), fd);
@@ -851,6 +872,15 @@ void SetDiagnosticsDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
   g_diag_dir = JStringToUtf8(env, jdir);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "diagnostics dir = %s",
                       g_diag_dir.c_str());
+  // 上游 System::GetHomeDirectory() 依赖 HOME/HOMEDRIVE/USERPROFILE，而 Android
+  // 一个都没有——缺它会在"计算存档目录"时抛
+  // "Could not find location of home directory."，存档与 Config 全部失败。
+  // 这里给进程补一个可写的 HOME（应用外部文件目录），存档即可持久保存，
+  // 且用户能在文件管理器里看到。
+  if (!g_diag_dir.empty()) {
+    setenv("HOME", g_diag_dir.c_str(), 1);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "HOME=%s", g_diag_dir.c_str());
+  }
 }
 
 /**
