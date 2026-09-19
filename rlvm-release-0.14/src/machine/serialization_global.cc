@@ -68,7 +68,10 @@ namespace Serialization {
 //   bug in its implementation of vectors of primitive types which made
 //   archives not-backwards (or forwards) compatible. Thankfully, the save
 //   games themselves don't use that feature.
-const int CURRENT_GLOBAL_VERSION = 3;
+// 4：Android 移植追加了 config 菜单的三个配置项（CursorMono /
+// ReduceDistortion / SoundQuality）。载入端的判断是"版本严格相等"，所以
+// 版本 3 的旧文件会被优雅跳过（上游本来就是这个设计），只是那三项取默认值。
+const int CURRENT_GLOBAL_VERSION = 4;
 
 fs::path buildGlobalMemoryFilename(RLMachine& machine) {
   return machine.system().GameSaveDirectory() / "global.sav.gz";
@@ -97,7 +100,10 @@ void saveGlobalMemoryTo(std::ostream& oss, RLMachine& machine) {
      << const_cast<const GraphicsSystemGlobals&>(sys.graphics().globals())
      << const_cast<const EventSystemGlobals&>(sys.event().globals())
      << const_cast<const TextSystemGlobals&>(sys.text().globals())
-     << const_cast<const SoundSystemGlobals&>(sys.sound().globals());
+     << const_cast<const SoundSystemGlobals&>(sys.sound().globals())
+     // Android 移植新增：本作 config 菜单的三个配置项（放在最后，旧版本
+     // 因版本不等会整块跳过，不会读到它们）。
+     << sys.cursor_mono() << sys.reduce_distortion() << sys.sound_quality();
 }
 
 void loadGlobalMemory(RLMachine& machine) {
@@ -159,6 +165,13 @@ void loadGlobalMemoryFrom(std::istream& iss, RLMachine& machine) {
   if (version == CURRENT_GLOBAL_VERSION) {
     ia >> sys.globals() >> sys.graphics().globals() >> sys.event().globals() >>
         sys.text().globals() >> sys.sound().globals();
+
+    // Android 移植新增的三个 config 配置项（见上面的版本说明）。
+    int cursor_mono = 0, reduce_distortion = 0, sound_quality = 0;
+    ia >> cursor_mono >> reduce_distortion >> sound_quality;
+    sys.set_cursor_mono(cursor_mono);
+    sys.set_reduce_distortion(reduce_distortion);
+    sys.set_sound_quality(sound_quality);
 
     // Restore options which may have System specific implementations. (This
     // will probably expand as more of RealLive is implemented).

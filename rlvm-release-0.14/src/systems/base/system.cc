@@ -116,7 +116,11 @@ class MenuReseter : public LongOperation {
 // -----------------------------------------------------------------------
 
 SystemGlobals::SystemGlobals()
-    : confirm_save_load_(true), low_priority_(false) {}
+    : confirm_save_load_(true),
+      low_priority_(false),
+      cursor_mono_(0),
+      reduce_distortion_(0),
+      sound_quality_(0) {}
 
 // -----------------------------------------------------------------------
 // System
@@ -416,12 +420,12 @@ int g_sound_quality = 0;
 
 }  // namespace
 
-int System::cursor_mono() const { return g_cursor_mono; }
-void System::set_cursor_mono(const int in) { g_cursor_mono = in; }
-int System::reduce_distortion() const { return g_reduce_distortion; }
-void System::set_reduce_distortion(const int in) { g_reduce_distortion = in; }
-int System::sound_quality() const { return g_sound_quality; }
-void System::set_sound_quality(const int in) { g_sound_quality = in; }
+int System::cursor_mono() const { return globals_.cursor_mono_; }
+void System::set_cursor_mono(const int in) { globals_.cursor_mono_ = in; }
+int System::reduce_distortion() const { return globals_.reduce_distortion_; }
+void System::set_reduce_distortion(const int in) { globals_.reduce_distortion_ = in; }
+int System::sound_quality() const { return globals_.sound_quality_; }
+void System::set_sound_quality(const int in) { globals_.sound_quality_ = in; }
 
 boost::filesystem::path System::GetHomeDirectory() {
   std::string drive, home;

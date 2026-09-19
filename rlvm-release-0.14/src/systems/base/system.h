@@ -121,6 +121,13 @@ struct SystemGlobals {
   // it's relevant to anything.
   bool low_priority_;
 
+  // Android 移植新增：本作 config 菜单的三个配置项。放进这里是为了随
+  // global.sav.gz 持久化（上游把它们整体标成了 unsupported，导致菜单读到的
+  // 永远是默认值，改完再进就丢）。
+  int cursor_mono_;
+  int reduce_distortion_;
+  int sound_quality_;
+
   // boost::serialization support
   template <class Archive>
   void serialize(Archive& ar, const unsigned int version) {
@@ -128,10 +135,14 @@ struct SystemGlobals {
 
     if (version > 0)
       ar& low_priority_;
+
+    // 版本 1 的旧全局数据没有这三个字段，跳过即可（保持向后兼容）。
+    if (version > 1)
+      ar& cursor_mono_& reduce_distortion_& sound_quality_;
   }
 };
 
-BOOST_CLASS_VERSION(SystemGlobals, 1)
+BOOST_CLASS_VERSION(SystemGlobals, 2)
 
 // The system class provides a generalized interface to all the
 // components that make up a local system that may need to be
