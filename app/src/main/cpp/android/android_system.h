@@ -1,0 +1,152 @@
+// Android 平台后端（T2.4）。
+//
+// 用 AndroidSystem 顶替上游硬编码在 RLVMInstance::Run() 里的 SDLSystem。
+// 本阶段的目标是让引擎能在真机上完成**初始化并执行字节码**，因此四个子系统中：
+//   - EventSystem：时间与休眠是真实实现（主循环需要它计时），鼠标/键盘暂时是桩；
+//   - TextSystem：文字排版依赖 FreeType，属于阶段 4，当前是桩；
+//   - SoundSystem：AAudio 后端属于阶段 4（T4.1），当前全部是桩。
+// 这样内存类脚本可以完整执行，而渲染/音频/文字各自的实现留到对应阶段。
+
+#ifndef RLVM_APP_SRC_MAIN_CPP_ANDROID_ANDROID_SYSTEM_H_
+#define RLVM_APP_SRC_MAIN_CPP_ANDROID_ANDROID_SYSTEM_H_
+
+#include <memory>
+#include <string>
+
+#include "systems/base/event_system.h"
+#include "systems/base/sound_system.h"
+#include "systems/base/system.h"
+#include "systems/base/text_system.h"
+#include "systems/base/text_window.h"
+
+class AndroidGraphicsSystem;
+class Gameexe;
+class RLMachine;
+
+class AndroidEventSystem : public EventSystem {
+ public:
+  explicit AndroidEventSystem(Gameexe& gexe);
+  ~AndroidEventSystem() override = default;
+
+  void ExecuteEventSystem(RLMachine& machine) override;
+  unsigned int GetTicks() const override;
+  void Wait(unsigned int milliseconds) const override;
+  bool ShiftPressed() const override;
+  bool CtrlPressed() const override;
+  Point GetCursorPos() override;
+  void GetCursorPos(Point& position, int& button1, int& button2) override;
+  void FlushMouseClicks() override;
+  unsigned int TimeOfLastMouseMove() override;
+  void InjectMouseMovement(RLMachine& machine, const Point& loc) override;
+  void InjectMouseDown(RLMachine& machine) override;
+  void InjectMouseUp(RLMachine& machine) override;
+
+ private:
+  unsigned int last_mouse_move_ticks_;
+};
+
+class AndroidTextSystem : public TextSystem {
+ public:
+  AndroidTextSystem(System& system, Gameexe& gexe);
+  ~AndroidTextSystem() override = default;
+
+  std::shared_ptr<TextWindow> GetTextWindow(int text_window_number) override;
+
+  Size RenderGlyphOnto(const std::string& current,
+                       int font_size,
+                       bool italic,
+                       const RGBColour& font_colour,
+                       const RGBColour* shadow_colour,
+                       int insertion_point_x,
+                       int insertion_point_y,
+                       const std::shared_ptr<Surface>& destination) override;
+
+  int GetCharWidth(int size, uint16_t codepoint) override;
+};
+
+// 文字窗口。真正的字形光栅化要等 FreeType 接入（阶段 4），
+// 但窗口对象本身必须存在——引擎的文本输出路径会解引用它，
+// 早期返回 nullptr 曾导致真机上 TextPage::CharacterImpl 空指针崩溃。
+class AndroidTextWindow : public TextWindow {
+ public:
+  AndroidTextWindow(System& system, int window_num);
+  ~AndroidTextWindow() override = default;
+
+  std::shared_ptr<Surface> GetTextSurface() override;
+  std::shared_ptr<Surface> GetNameSurface() override;
+  void RenderNameInBox(const std::string& utf8str) override;
+  void DisplayRubyText(const std::string& utf8str) override;
+  void AddSelectionItem(const std::string& utf8str, int selection_id) override;
+  void ClearWin() override;
+
+ private:
+  std::shared_ptr<Surface> text_surface_;
+  std::shared_ptr<Surface> name_surface_;
+};
+
+// 阶段 4（T4.1）用 AAudio 实现真正的音频后端，这里先全部留桩。
+class AndroidSoundSystem : public SoundSystem {
+ public:
+  explicit AndroidSoundSystem(System& system);
+  ~AndroidSoundSystem() override = default;
+
+  int BgmStatus() const override;
+  void BgmPlay(const std::string& bgm_name, bool loop) override;
+  void BgmPlay(const std::string& bgm_name, bool loop, int fade_in_ms) override;
+  void BgmPlay(const std::string& bgm_name,
+               bool loop,
+               int fade_in_ms,
+               int fade_out_ms) override;
+  void BgmStop() override;
+  void BgmPause() override;
+  void BgmUnPause() override;
+  void BgmFadeOut(int fade_out_ms) override;
+  std::string GetBgmName() const override;
+  bool BgmLooping() const override;
+
+  void WavPlay(const std::string& wav_file, bool loop) override;
+  void WavPlay(const std::string& wav_file, bool loop, const int channel) override;
+  void WavPlay(const std::string& wav_file,
+               bool loop,
+               const int channel,
+               const int fadein_ms) override;
+  bool WavPlaying(const int channel) override;
+  void WavStop(const int channel) override;
+  void WavStopAll() override;
+  void WavFadeOut(const int channel, const int fadetime) override;
+
+  void PlaySe(const int se_num) override;
+  bool HasSe(const int se_num) override;
+
+  bool KoePlaying() const override;
+  void KoeStop() override;
+
+ protected:
+  void KoePlayImpl(int id) override;
+};
+
+class AndroidSystem : public System {
+ public:
+  explicit AndroidSystem(Gameexe& gameexe);
+  ~AndroidSystem() override;
+
+  void Run(RLMachine& machine) override;
+  GraphicsSystem& graphics() override;
+  EventSystem& event() override;
+  Gameexe& gameexe() override;
+  TextSystem& text() override;
+  SoundSystem& sound() override;
+
+ private:
+  // 注意：必须声明在四个子系统之前。C++ 的成员初始化顺序由**声明顺序**决定，
+  // 而子系统的构造函数会经由 System::gameexe() 取这个引用；
+  // 若声明在后面，构造子系统时它尚未初始化（曾因此在真机上 SIGSEGV）。
+  Gameexe& gameexe_;
+
+  std::unique_ptr<AndroidGraphicsSystem> graphics_;
+  std::unique_ptr<AndroidEventSystem> event_system_;
+  std::unique_ptr<AndroidTextSystem> text_system_;
+  std::unique_ptr<AndroidSoundSystem> sound_system_;
+};
+
+#endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_ANDROID_SYSTEM_H_

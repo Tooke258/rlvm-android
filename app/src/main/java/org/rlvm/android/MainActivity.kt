@@ -40,8 +40,13 @@ class MainActivity : Activity() {
         // 引擎探针需要读文件，放到后台线程执行，结果回主线程更新。
         val probeDir = File(getExternalFilesDir(null), "probe")
         thread(name = "rlvm-probe") {
-            val report = runCatching { NativeBridge.probeGameDir(probeDir.absolutePath) }
-                .getOrElse { "probe failed: ${it.stackTraceToString()}" }
+            val report = runCatching {
+                buildString {
+                    appendLine(NativeBridge.probeGameDir(probeDir.absolutePath))
+                    appendLine("--- runScenario ---")
+                    append(NativeBridge.runScenario(probeDir.absolutePath, 200000))
+                }
+            }.getOrElse { "probe failed: ${it.stackTraceToString()}" }
             runOnUiThread { label.text = "$abi\n\n$report" }
         }
     }

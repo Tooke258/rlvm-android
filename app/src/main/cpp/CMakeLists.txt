@@ -348,6 +348,9 @@ endforeach()
 # ===========================================================================
 add_library(rlvm SHARED
     native-bridge.cpp
+    # Android 平台后端（替代上游的 SDLSystem）
+    android/android_graphics.cpp
+    android/android_system.cpp
     # SDL 音频转换的最小兼容层：供 vendor/xclannad/wavfile.cc 使用
     compat/sdl_shim/sdl_audio_compat.cpp
     ${BOOST_COMPILED_SOURCES}
@@ -355,6 +358,7 @@ add_library(rlvm SHARED
 )
 
 target_include_directories(rlvm PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"                 # "android/xxx.h" 这类本项目内部引用
     "${RLVM_SOURCE_DIR}/src"      # "libreallive/xxx.h" 这类引用
     "${RLVM_SOURCE_DIR}/vendor"   # "utf8cpp/xxx.h"、"lru_cache.hpp" 等
     "${BOOST_SOURCE_DIR}"

@@ -27,4 +27,12 @@ object NativeBridge {
      * 属于 I/O 操作，必须在后台线程调用。
      */
     external fun probeGameDir(gameDir: String): String
+
+    /**
+     * 装配 AndroidSystem + RLMachine 并执行字节码，最多 [maxInstructions] 条指令。
+     *
+     * 返回可读报告（执行条数、停止原因、是否停机），异常同样写进报告。
+     * 属于重 I/O + 计算操作，必须在后台线程调用。
+     */
+    external fun runScenario(gameDir: String, maxInstructions: Int): String
 }

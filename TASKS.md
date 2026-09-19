@@ -29,7 +29,7 @@
 | T2.1 | JNI 接口设计 | `NativeBridge.kt`、`native-bridge.cpp` | 方法可被调用，无动态查找 | TODO（骨架已建立 RegisterNatives 模式） |
 | T2.2 | `VirtualFileSystem` / AndroidFileSystem（SAF） | `android-fs.cpp/.h` | 能读取 `SEEN.txt` | TODO |
 | T2.3 | 触摸事件映射 | Kotlin 触摸监听 + JNI | 游戏内光标可移动、点击 | TODO |
-| T2.4 | 引擎生命周期 | JNI + Kotlin 封装 | 能启动、暂停、恢复、退出 | TODO |
+| T2.4 | 引擎生命周期 | JNI + Kotlin 封装 | 能启动、暂停、恢复、退出 | 部分完成：引擎已在真机上装配并执行字节码（6 条指令 + 文本长操作），暂停/恢复/退出待补 |
 
 ## 阶段 3：Compose UI 与 SAF
 

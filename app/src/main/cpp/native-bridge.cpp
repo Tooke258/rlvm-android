@@ -17,6 +17,10 @@
 
 #include "libreallive/archive.h"
 #include "libreallive/gameexe.h"
+#include "android/android_system.h"
+#include "machine/game_hacks.h"
+#include "machine/rlmachine.h"
+#include "modules/modules.h"
 
 namespace {
 
@@ -136,11 +140,78 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
   return env->NewStringUTF(report.c_str());
 }
 
+/**
+ * 在真机上真正跑起引擎：装配 AndroidSystem + RLMachine + 全部指令模块，
+ * 然后执行字节码，直到停机、进入长操作或耗尽指令预算。
+ *
+ * 这是 T2.4（引擎生命周期）的第一步——只跑不控。启动/暂停/恢复/退出
+ * 的完整生命周期要等 AndroidSystem 接入渲染与事件源之后再补。
+ */
+jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
+                    jint max_instructions) {
+  namespace fs = boost::filesystem;
+  std::string report;
+
+  try {
+    const std::string dir = JStringToUtf8(env, jdir);
+    const fs::path root(dir);
+    const fs::path gameexe_path = root / "Gameexe.ini";
+    const fs::path seen_path = root / "Seen.txt";
+
+    if (!fs::exists(gameexe_path) || !fs::exists(seen_path)) {
+      report += "ERROR: Gameexe.ini or Seen.txt missing\n";
+      return env->NewStringUTF(report.c_str());
+    }
+
+    Gameexe gameexe(gameexe_path);
+    AndroidSystem system(gameexe);
+
+    const std::string regname = gameexe("REGNAME").ToString("");
+    libreallive::Archive archive(seen_path.string(), regname);
+
+    RLMachine machine(system, archive);
+    AddAllModules(machine);
+    AddGameHacks(machine);
+    machine.SetHaltOnException(false);
+
+    report += "engine assembled (regname=\"" + regname + "\")\n";
+
+    int executed = 0;
+    std::string stop_reason = "instruction budget exhausted";
+    while (executed < max_instructions) {
+      if (machine.halted()) {
+        stop_reason = "machine halted";
+        break;
+      }
+      machine.ExecuteNextInstruction();
+      ++executed;
+      if (machine.CurrentLongOperation()) {
+        stop_reason = "entered long operation";
+        break;
+      }
+    }
+
+    report += "instructions executed = " + std::to_string(executed) + "\n";
+    report += "stop reason = " + stop_reason + "\n";
+    report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
+    report += "RUN OK\n";
+  } catch (const std::exception& e) {
+    report += std::string("EXCEPTION: ") + e.what() + "\n";
+  } catch (...) {
+    report += "EXCEPTION: unknown\n";
+  }
+
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "run report:\n%s", report.c_str());
+  return env->NewStringUTF(report.c_str());
+}
+
 const JNINativeMethod kNativeMethods[] = {
     {"versionString", "()Ljava/lang/String;", reinterpret_cast<void*>(VersionString)},
     {"probeAbi", "()I", reinterpret_cast<void*>(ProbeAbi)},
     {"probeGameDir", "(Ljava/lang/String;)Ljava/lang/String;",
      reinterpret_cast<void*>(ProbeGameDir)},
+    {"runScenario", "(Ljava/lang/String;I)Ljava/lang/String;",
+     reinterpret_cast<void*>(RunScenario)},
 };
 
 /** 必须与 Kotlin 侧 org.rlvm.android.NativeBridge 完全一致。 */
