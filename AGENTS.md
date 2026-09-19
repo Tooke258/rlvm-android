@@ -1,7 +1,8 @@
 # AGENTS.md — rlvm-android 项目级指令
 
 > 本文是 Agent 每次启动后的第一读物。建议阅读顺序：
-> `AGENTS.md` → `TASKS.md` → `dev-log/` 最近日志 → `docs/DECISIONS.md` → `docs/ARCHITECTURE.md`
+> `AGENTS.md` → **`docs/PROGRESS.md`（进度交接，先读这个）** → `TASKS.md` →
+> `dev-log/` 最近日志 → `docs/DECISIONS.md` → `docs/ARCHITECTURE.md`
 
 ## 1. 项目目标
 
