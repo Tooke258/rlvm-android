@@ -91,6 +91,50 @@ class SafFileSystem(private val context: Context, private val treeUri: Uri) {
         }
     }
 
+    /**
+     * 创建（或截断）relPath 对应的文件，返回可写 fd；失败返回 -1。
+     *
+     * 存档与全局数据（Config）走这条：SAF 下没有真实路径，只能由
+     * ContentResolver 建文档。父目录不存在时逐级创建——游戏首次存档时
+     * SAVEDATA/ 可能还不存在。
+     */
+    fun createFd(relPath: String): Int {
+        val parts = relPath.split('/').filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return -1
+        return try {
+            var parentId = treeDocumentId
+            for (i in 0 until parts.size - 1) {
+                parentId = ensureDirectory(parentId, parts[i]) ?: return -1
+            }
+            val name = parts.last()
+            val docId = findChildId(parentId, name) ?: run {
+                val created = DocumentsContract.createDocument(
+                    resolver, buildDocumentUri(parentId),
+                    "application/octet-stream", name
+                ) ?: return -1
+                DocumentsContract.getDocumentId(created)
+            }
+            val pfd = resolver.openFileDescriptor(buildDocumentUri(docId), "rw") ?: return -1
+            pfd.detachFd()
+        } catch (e: Exception) {
+            -1
+        }
+    }
+
+    /** 取子目录的文档 id，不存在则创建。 */
+    private fun ensureDirectory(parentId: String, name: String): String? {
+        findChildId(parentId, name)?.let { return it }
+        return try {
+            val uri = DocumentsContract.createDocument(
+                resolver, buildDocumentUri(parentId),
+                DocumentsContract.Document.MIME_TYPE_DIR, name
+            ) ?: return null
+            DocumentsContract.getDocumentId(uri)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     // -- 路径解析 -----------------------------------------------------------
 
     private fun buildDocumentUri(documentId: String): Uri =

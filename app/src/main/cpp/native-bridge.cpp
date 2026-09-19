@@ -103,6 +103,21 @@ int OpenGameFileFdHookImpl(const char* file_id) {
   return files->OpenFd(file_id);
 }
 
+/** 写入变体：存档与全局数据（Config）经这里落盘，SAF 下由 Kotlin 建文档。 */
+int OpenGameFileWriteFdHookImpl(const char* file_id) {
+  if (file_id == nullptr) return -1;
+  std::shared_ptr<rlvm_android::GameFileSystem> files =
+      rlvm_android::GetGameFileSystem();
+  if (!files) return -1;
+  const int fd = files->OpenWriteFd(file_id);
+  if (fd >= 0) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "write open: %s (fd=%d)", file_id, fd);
+  } else {
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "write open failed: %s", file_id);
+  }
+  return fd;
+}
+
 // 当前正在运行的 AndroidSystem。UI 线程的触摸事件需要它才能找到事件系统；
 // 引擎停止后清空，避免触到已析构的对象。
 std::atomic<AndroidSystem*> g_current_system{nullptr};
@@ -910,6 +925,8 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
 
   // 安装"游戏文件标识 → fd"钩子：语音归档在 SAF 下靠它读文件（见上面说明）。
   SetOpenGameFileFdHook(&OpenGameFileFdHookImpl);
+  // 写入变体：存档 / Config 落盘（SAF 下由 Kotlin 侧建文档）。
+  SetOpenGameFileWriteFdHook(&OpenGameFileWriteFdHookImpl);
 
   JNIEnv* env = nullptr;
   if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {

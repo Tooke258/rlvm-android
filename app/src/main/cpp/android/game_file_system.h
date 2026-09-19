@@ -39,6 +39,10 @@ class GameFileSystem {
 
   // 打开文件用于读取，返回只读 fd，调用方负责 close()。失败返回 -1。
   virtual int OpenFd(const std::string& rel_path) = 0;
+
+  // 创建（或截断）文件用于写入，返回可写 fd，调用方负责 close()。失败返回 -1。
+  // 存档与全局数据（Config）需要它。SAF 下由 ContentResolver 建文档。
+  virtual int OpenWriteFd(const std::string& rel_path) = 0;
 };
 
 void SetGameFileSystem(std::shared_ptr<GameFileSystem> file_system);

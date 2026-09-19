@@ -1,6 +1,7 @@
 #include "android/game_file_system.h"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <vector>
@@ -45,6 +46,16 @@ class PosixGameFileSystem : public GameFileSystem {
     return ::open(Resolve(rel_path).c_str(), O_RDONLY);
   }
 
+  int OpenWriteFd(const std::string& rel_path) override {
+    const std::string path = Resolve(rel_path).string();
+    // 父目录不存在时先创建（首次存档时 SAVEDATA/ 可能还不存在）。
+    const size_t slash = path.find_last_of('/');
+    if (slash != std::string::npos) {
+      ::mkdir(path.substr(0, slash).c_str(), 0755);
+    }
+    return ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  }
+
  private:
   boost::filesystem::path Resolve(const std::string& rel_path) const {
     if (rel_path.empty()) return boost::filesystem::path(root_);
@@ -83,6 +94,10 @@ class SafGameFileSystem : public GameFileSystem {
 
   int OpenFd(const std::string& rel_path) override {
     return backend_->OpenFd(rel_path);
+  }
+
+  int OpenWriteFd(const std::string& rel_path) override {
+    return backend_->CreateFd(rel_path);
   }
 
  private:

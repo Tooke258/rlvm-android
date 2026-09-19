@@ -60,6 +60,7 @@ class JniSafBackend : public SafBackend {
     m_list_ =
         env->GetMethodID(cls, "listDirectory", "(Ljava/lang/String;)[Ljava/lang/String;");
     m_open_fd_ = env->GetMethodID(cls, "openFd", "(Ljava/lang/String;)I");
+    m_create_fd_ = env->GetMethodID(cls, "createFd", "(Ljava/lang/String;)I");
   }
 
   ~JniSafBackend() override {
@@ -158,6 +159,21 @@ class JniSafBackend : public SafBackend {
     return static_cast<int>(fd);
   }
 
+  int CreateFd(const std::string& rel_path) override {
+    ScopedEnv scoped;
+    JNIEnv* env = scoped.get();
+    if (env == nullptr) return -1;
+    jstring arg = env->NewStringUTF(rel_path.c_str());
+    const jint fd = env->CallIntMethod(object_, m_create_fd_, arg);
+    if (env->ExceptionCheck()) {
+      ClearJavaException(env);
+      env->DeleteLocalRef(arg);
+      return -1;
+    }
+    env->DeleteLocalRef(arg);
+    return static_cast<int>(fd);
+  }
+
  private:
   jobject object_;
   jmethodID m_exists_ = nullptr;
@@ -165,6 +181,7 @@ class JniSafBackend : public SafBackend {
   jmethodID m_size_ = nullptr;
   jmethodID m_list_ = nullptr;
   jmethodID m_open_fd_ = nullptr;
+  jmethodID m_create_fd_ = nullptr;
 };
 
 std::shared_ptr<JniSafBackend> g_jni_backend;
