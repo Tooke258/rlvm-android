@@ -73,6 +73,7 @@ class WavFileSource : public AudioSource {
 
  private:
   std::unique_ptr<WAVFILE> file_;
+  bool first_read_logged_ = false;  // 起播噪点诊断：只打印一次头部样本
 };
 
 /**

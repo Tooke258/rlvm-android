@@ -158,6 +158,24 @@ size_t WavFileSource::ReadFrames(int16_t* out, size_t frames) {
   // WAVFILE::Read 返回实际读到的块数（即帧数）。
   const int got =
       file_->Read(reinterpret_cast<char*>(out), 4, static_cast<int>(frames));
+
+  // 起播噪点诊断：只在每个音源的第一次读取时打印头部样本。
+  // BGM/音效都是 NWA（xclannad 的自定义压缩），人声是 OGG——如果噪声来自
+  // NWA 解码器的首块状态，这里应当能看到头部数值明显跳变。
+  if (!first_read_logged_ && got > 0) {
+    first_read_logged_ = true;
+    int head_peak = 0;
+    const int probe = got < 8 ? got : 8;
+    for (int i = 0; i < probe * 2; ++i) {
+      const int magnitude = out[i] < 0 ? -static_cast<int>(out[i])
+                                       : static_cast<int>(out[i]);
+      if (magnitude > head_peak) head_peak = magnitude;
+    }
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "source head: %d,%d %d,%d %d,%d %d,%d peak=%d (frames=%d)",
+                        out[0], out[1], out[2], out[3], out[4], out[5], out[6],
+                        out[7], head_peak, got);
+  }
   return got > 0 ? static_cast<size_t>(got) : 0;
 }
 
@@ -170,6 +188,60 @@ bool WavFileSource::Rewind() {
 // ---------------------------------------------------------------------------
 // 内存 WAV 音源（KOE 语音）
 // ---------------------------------------------------------------------------
+
+/**
+ * 丢弃音源开头的若干帧。
+ *
+ * 为什么需要：xclannad 的 NWA 解码器在**首个数据块**输出的是未预热的垃圾
+ * 样本（实测 BGM 头部为 18770,17990 / 4948,8 / 16727,17750 / 28006,8308，
+ * 数值剧烈跳变，完全不是波形）。我们读到什么就播什么，于是每次 BGM/音效
+ * 起播都有一声噪点；人声是 OGG（libvorbis），没有这个问题——这与用户
+ * "BGM/音效有起播噪点、人声没有"的观察完全一致。
+ *
+ * 只在**第一次**播放时丢弃：循环回到开头时不再丢，否则每个循环末尾都会
+ * 缺一小段、产生周期性咔哒。
+ */
+class SkipFramesSource : public AudioSource {
+ public:
+  SkipFramesSource(std::unique_ptr<AudioSource> inner, size_t skip)
+      : inner_(std::move(inner)), skip_(skip), remaining_(skip) {}
+  ~SkipFramesSource() override = default;
+
+  size_t ReadFrames(int16_t* out, size_t frames) override {
+    if (remaining_ > 0) {
+      int16_t scratch[2048 * kAudioChannels];
+      while (remaining_ > 0) {
+        const size_t want =
+            remaining_ < 2048 ? remaining_ : static_cast<size_t>(2048);
+        const size_t got = inner_->ReadFrames(scratch, want);
+        if (got == 0) {
+          remaining_ = 0;
+          break;
+        }
+        remaining_ -= got;
+      }
+    }
+    const size_t got = inner_->ReadFrames(out, frames);
+    if (!logged_ && got > 0) {
+      logged_ = true;
+      __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                          "after skip(%zu): %d,%d %d,%d %d,%d %d,%d", skip_, out[0],
+                          out[1], out[2], out[3], out[4], out[5], out[6], out[7]);
+    }
+    return got;
+  }
+
+  bool Rewind() override {
+    remaining_ = 0;  // 只在首次播放时跳过，循环回到开头不再跳
+    return inner_->Rewind();
+  }
+
+ private:
+  std::unique_ptr<AudioSource> inner_;
+  size_t skip_;
+  size_t remaining_;
+  bool logged_ = false;
+};
 
 namespace {
 
@@ -622,6 +694,12 @@ std::unique_ptr<AudioSource> AudioEngine::OpenSource(int fd,
     return nullptr;
   }
   std::unique_ptr<AudioSource> source(new WavFileSource(converted));
+
+  // NWA：丢掉解码器未预热的首块垃圾帧（见 SkipFramesSource 的说明）。
+  // 64 帧 ≈ 1.45ms @44.1kHz：足以盖住预热数据，又短到听不出内容缺失。
+  if (extension == "nwa") {
+    source.reset(new SkipFramesSource(std::move(source), 64));
+  }
 
   // 源速率 != 目标速率时补上重采样（44.1kHz 的 BGM 是主要场景；22.05kHz 的
   // 音效/语音同理，之前也是被当 48kHz 播放）。
