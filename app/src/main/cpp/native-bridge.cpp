@@ -88,6 +88,22 @@ std::atomic<bool> g_stop_requested{false};
 std::atomic<bool> g_run_active{false};
 
 /**
+ * 规整"游戏文件标识"。
+ *
+ * SAF 模式下我们把 gameexe 的 __GAMEPATH 设成了 "saf:/"，而引擎会用它拼出
+ * 存档/全局数据的完整路径（例如 "saf://SAVEDATA/save001.sav"）。这个前缀对
+ * SAF 后端没有意义——它要的是相对路径（"SAVEDATA/save001.sav"）。
+ * 不剥掉就会去"创建名为 saf: 的目录"从而失败，表现正是"存档/Config 不保留"。
+ */
+std::string NormalizeGameFileId(const char* file_id) {
+  std::string id(file_id);
+  const std::string prefix = "saf:";
+  if (id.compare(0, prefix.size(), prefix) == 0) id.erase(0, prefix.size());
+  while (!id.empty() && id[0] == '/') id.erase(0, 1);
+  return id;
+}
+
+/**
  * 平台钩子实现：把「游戏文件标识」换成只读 fd。
  *
  * 语音归档（KOE/NWK/OVK/koepac）沿用上游的 fopen/ifstream 按路径读文件，
@@ -100,7 +116,7 @@ int OpenGameFileFdHookImpl(const char* file_id) {
   std::shared_ptr<rlvm_android::GameFileSystem> files =
       rlvm_android::GetGameFileSystem();
   if (!files) return -1;
-  return files->OpenFd(file_id);
+  return files->OpenFd(NormalizeGameFileId(file_id));
 }
 
 /** 写入变体：存档与全局数据（Config）经这里落盘，SAF 下由 Kotlin 建文档。 */
@@ -109,11 +125,12 @@ int OpenGameFileWriteFdHookImpl(const char* file_id) {
   std::shared_ptr<rlvm_android::GameFileSystem> files =
       rlvm_android::GetGameFileSystem();
   if (!files) return -1;
-  const int fd = files->OpenWriteFd(file_id);
+  const std::string id = NormalizeGameFileId(file_id);
+  const int fd = files->OpenWriteFd(id);
   if (fd >= 0) {
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "write open: %s (fd=%d)", file_id, fd);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "write open: %s (fd=%d)", id.c_str(), fd);
   } else {
-    __android_log_print(ANDROID_LOG_WARN, kLogTag, "write open failed: %s", file_id);
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "write open failed: %s", id.c_str());
   }
   return fd;
 }
