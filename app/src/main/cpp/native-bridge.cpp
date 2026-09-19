@@ -130,6 +130,8 @@ struct DiagOptions {
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
   bool blit_stats = false;
+  // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
+  bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
   // 不同 RealLive 作品的脚本约定不一致，因此做成设备侧可调。
   int touch_button = 1;
@@ -170,6 +172,8 @@ DiagOptions LoadDiagOptions() {
       options.audio_selftest = (number != 0);
     } else if (key == "blit_stats") {
       options.blit_stats = (number != 0);
+    } else if (key == "export_jp_text") {
+      options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
       if (number > 0) options.time_budget_ms = number;
     } else if (key == "max_instructions") {

@@ -19,6 +19,9 @@
 # 合成统计（逐像素累加，默认关闭以免拖慢渲染）。
 # blit_stats=1
 
+# 汉化用：导出 SEEN.TXT 每个场景的文本串，供与中文译文对齐（见 docs/LOCALIZATION.md）。
+# export_jp_text=1
+
 # 单次运行的执行时间片（毫秒），缺省 3000。
 # time_budget_ms=8000
 
