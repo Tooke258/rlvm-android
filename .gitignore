@@ -1,0 +1,41 @@
+# ---- Codex / agent scratch ----
+tmp-toolcheck/
+__probe.tmp
+__codex_write_probe.tmp
+
+# ---- Gradle / Android build output ----
+.gradle/
+.kotlin/
+build/
+*/build/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.hprof
+*.iml
+.idea/
+
+# ---- CMake / native build output ----
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+.ninja_deps
+.ninja_log
+build.ninja
+
+# ---- Local verification scratch ----
+tools/_smoke/*.so
+tools/_smoke/*.o
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
