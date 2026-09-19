@@ -316,35 +316,54 @@ std::shared_ptr<Surface> AndroidTextWindow::GetNameSurface() {
  * 光栅化进 name_surface_ 即可——之前这里是空实现，名字因此从未出现。
  */
 void AndroidTextWindow::RenderNameInBox(const std::string& utf8str) {
-  std::shared_ptr<Surface> surface = GetNameSurface();
-  AndroidSurface* target = dynamic_cast<AndroidSurface*>(surface.get());
-  if (target == nullptr) return;
-
-  target->Fill(RGBAColour(0, 0, 0, 0));
-
-  // 名字用当前字形颜色（与正文同一套默认色/颜色表逻辑）。
-  int x = 0;
+  rlvm_android::FontEngine& fonts = rlvm_android::FontEngine::Instance();
   const int size = font_size_in_pixels();
+
+  // 第一遍：拆码点并量尺寸。
+  struct Item {
+    const rlvm_android::GlyphBitmap* glyph;
+    int x;
+  };
+  std::vector<Item> items;
+  int pen_x = 0;
+  int line_height = size;
   for (size_t i = 0; i < utf8str.size();) {
-    // 取一个 UTF-8 码点。
     uint32_t codepoint = static_cast<unsigned char>(utf8str[i]);
     size_t length = 1;
     if (codepoint >= 0xF0) { length = 4; codepoint &= 0x07; }
     else if (codepoint >= 0xE0) { length = 3; codepoint &= 0x0F; }
     else if (codepoint >= 0xC0) { length = 2; codepoint &= 0x1F; }
     for (size_t k = 1; k < length && i + k < utf8str.size(); ++k) {
-      codepoint = (codepoint << 6) | (static_cast<unsigned char>(utf8str[i + k]) & 0x3F);
+      codepoint = (codepoint << 6) |
+                  (static_cast<unsigned char>(utf8str[i + k]) & 0x3F);
     }
     i += length;
-    if (length > 1 && length > utf8str.size()) break;
 
-    rlvm_android::FontEngine& fonts = rlvm_android::FontEngine::Instance();
     const rlvm_android::GlyphBitmap* glyph =
         fonts.Rasterize(codepoint, size, false, false);
     if (glyph == nullptr) continue;
-    target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height, x,
-                          0, font_colour_);
-    x += glyph->advance;
+    if (glyph->ascent + glyph->descent > line_height) {
+      line_height = glyph->ascent + glyph->descent;
+    }
+    items.push_back(Item{glyph, pen_x});
+    pen_x += glyph->advance;
+  }
+
+  // 关键：名字表面必须**按名字自身尺寸**分配。名字框的插入点是用
+  // name_surface->GetSize() 算出来的，拿整屏 800x600 去算会被推到屏幕外，
+  // 表现就是「名字永远不出现」。
+  const int width = std::max(1, pen_x);
+  name_surface_ = system().graphics().BuildSurface(Size(width, line_height));
+  AndroidSurface* target = dynamic_cast<AndroidSurface*>(name_surface_.get());
+  if (target == nullptr) return;
+  target->Fill(RGBAColour(0, 0, 0, 0));
+
+  const int baseline = items.empty() ? 0 : items.front().glyph->ascent;
+  for (const Item& item : items) {
+    const int origin_x = item.x + item.glyph->bearing_x;
+    const int origin_y = baseline - item.glyph->bearing_y;
+    target->BlendCoverage(item.glyph->coverage.data(), item.glyph->width,
+                          item.glyph->height, origin_x, origin_y, font_colour_);
   }
 }
 
