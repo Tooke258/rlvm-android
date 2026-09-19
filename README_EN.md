@@ -121,6 +121,19 @@ runs without any signing material.
 3. Tap "run SAF engine". The screen shows only the game plus a floating ball on
    the right edge; tap the ball to open the control panel and the log.
 
+Touch controls (the equivalents of a mouse):
+
+| Gesture | Acts as | Purpose |
+| --- | --- | --- |
+| Tap | **Left button** | Advance dialogue, pick menu items |
+| **Long press** | **Right button** | Open the in-game menu (save / load / config / quit) |
+| Drag | Mouse movement | Move the cursor (hover highlighting, button hit tests) |
+| Floating ball | - | Show/hide the control panel and log; draggable, snaps to an edge |
+
+> RealLive opens the in-game menu on a right click. Android has no right button,
+> so a long press (400ms threshold) stands in for it. That is also how you quit a
+> game normally - otherwise the only way out is killing the process.
+
 Saves and settings live in the app's external files directory, under
 `.rlvm/<REGNAME>/` (**not** inside the game directory - the PC releases of
 RealLive use a native save format that is not interchangeable with RLVM's):
