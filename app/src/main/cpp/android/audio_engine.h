@@ -118,6 +118,18 @@ class ResamplingSource : public AudioSource {
  */
 std::string ResamplerSelfTest();
 
+/**
+ * 从内存里的**完整 WAV** 构造音源（KOE 语音走这条）。
+ *
+ * 上游 `VoiceSample::Decode()` 返回的就是内存中的 RIFF WAV：xclannad 的
+ * OVKVoiceSample/NWKVoiceSample 用 Ogg Vorbis 解码出 PCM 后，再调用
+ * `VoiceSample::MakeWavHeader` 把 WAV 头拼在缓冲区开头。所以这里只需要把这块
+ * 内存包成 FILE*（fmemopen），就能复用与文件路径完全相同的解码 + 重采样链路。
+ *
+ * 调用方可以在返回后立刻释放自己的缓冲：音源内部复制了一份。
+ */
+std::unique_ptr<AudioSource> OpenMemoryWavSource(const void* data, size_t length);
+
 class AudioEngine {
  public:
   static AudioEngine& Instance();

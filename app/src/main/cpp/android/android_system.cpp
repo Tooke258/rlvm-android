@@ -18,6 +18,7 @@
 #include "machine/rlmachine.h"
 #include "systems/base/colour.h"
 #include "systems/base/platform.h"
+#include "systems/base/voice_archive.h"
 
 namespace {
 
@@ -412,8 +413,14 @@ int AndroidSoundSystem::CurrentBgmVolume() {
 }
 
 void AndroidSoundSystem::ApplyChannelVolume(int channel) {
-  const int system_volume = (channel == kBgmEngineChannel) ? bgm_volume_mod()
-                                                           : pcm_volume_mod();
+  // 与 SDL 后端一致：BGM 用 bgm_volume_mod，语音通道用 KoeVolume_mod，
+  // 其余（WAV/SE）用 pcm_volume_mod。
+  int system_volume = pcm_volume_mod();
+  if (channel == kBgmEngineChannel) {
+    system_volume = bgm_volume_mod();
+  } else if (channel == KOE_CHANNEL) {
+    system_volume = GetKoeVolume_mod();
+  }
   rlvm_android::AudioEngine::Instance().SetVolume(
       channel, compute_channel_volume(GetChannelVolume(channel), system_volume));
 }
@@ -606,18 +613,71 @@ void AndroidSoundSystem::SetSeVolumeMod(const int in) {
   SoundSystem::SetSeVolumeMod(in);
 }
 
-// -- 语音（尚未实现）--------------------------------------------------------
+// -- 语音（KOE）-------------------------------------------------------------
+//
+// 上游把"找到语音样本 + 解码"放在 voice_cache_ 与各个 VoiceArchive（KOE/NWK/OVK）
+// 里，平台侧只负责把解出来的 PCM 播出来。SDL 后端用 Mix_Chunk 播；我们则把
+// Decode() 返回的内存 WAV 交给 AudioEngine 的 KOE 通道。
 
-bool AndroidSoundSystem::KoePlaying() const { return false; }
+bool AndroidSoundSystem::KoePlaying() const {
+  return rlvm_android::AudioEngine::Instance().IsPlaying(KOE_CHANNEL);
+}
 
 void AndroidSoundSystem::KoeStop() {
   rlvm_android::AudioEngine::Instance().Stop(KOE_CHANNEL);
 }
 
-void AndroidSoundSystem::KoePlayImpl(int /*id*/) {
-  // 语音解码要先把 KOE / NWK / OVK 语音包链路接上（voice_cache 目前仍走
-  // 上游基于路径的读取）。这里先记录，避免静默。
-  __android_log_print(ANDROID_LOG_INFO, kAudioTag, "koe playback not implemented");
+void AndroidSoundSystem::KoePlayImpl(int id) {
+  if (!is_koe_enabled()) return;
+
+  std::shared_ptr<VoiceSample> sample = voice_cache_.Find(id);
+  if (!sample) {
+    // 上游这里会抛 std::runtime_error；若照抛，异常会在指令层被吞掉，
+    // 表现为"语音莫名其妙没有"，很难排查。这里明确记一条。
+    __android_log_print(ANDROID_LOG_WARN, kAudioTag, "koe: no sample for id=%d", id);
+    return;
+  }
+
+  int length = 0;
+  char* data = nullptr;
+  try {
+    data = sample->Decode(&length);
+  } catch (const std::exception& e) {
+    __android_log_print(ANDROID_LOG_WARN, kAudioTag, "koe: decode failed id=%d: %s",
+                        id, e.what());
+    return;
+  }
+  if (data == nullptr || length <= 0) {
+    delete[] data;
+    return;
+  }
+
+  rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
+  if (!audio.Start()) {
+    __android_log_print(ANDROID_LOG_ERROR, kAudioTag, "audio start failed: %s",
+                        audio.LastError().c_str());
+    delete[] data;
+    return;
+  }
+
+  // OpenMemoryWavSource 内部会复制一份，所以原始缓冲可以立刻释放
+  //（Decode() 返回的是 new char[]，见 ovk_voice_sample.cc）。
+  std::unique_ptr<rlvm_android::AudioSource> source =
+      rlvm_android::OpenMemoryWavSource(data, static_cast<size_t>(length));
+  delete[] data;
+  if (!source) {
+    __android_log_print(ANDROID_LOG_WARN, kAudioTag, "koe: source build failed id=%d",
+                        id);
+    return;
+  }
+
+  // 音量与 SDL 后端一致：语音通道用 KoeVolume_mod。
+  const int volume =
+      compute_channel_volume(GetChannelVolume(KOE_CHANNEL), GetKoeVolume_mod());
+  __android_log_print(ANDROID_LOG_INFO, kAudioTag, "koe: play id=%d volume=%d", id,
+                      volume);
+  audio.Play(KOE_CHANNEL, std::move(source), false,
+             std::max(0, std::min(255, volume)));
 }
 
 // ---------------------------------------------------------------------------

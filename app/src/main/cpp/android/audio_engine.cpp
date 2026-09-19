@@ -120,6 +120,68 @@ bool WavFileSource::Rewind() {
 }
 
 // ---------------------------------------------------------------------------
+// 内存 WAV 音源（KOE 语音）
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/**
+ * 持有内存缓冲的 WAV 音源。
+ *
+ * 成员声明顺序很重要：buffer_ 必须先声明，inner_ 后声明——这样析构时
+ * inner_（含 fmemopen 出来的 FILE*）先被销毁，随后才释放它读取的那块内存。
+ */
+class MemoryWavSource : public AudioSource {
+ public:
+  MemoryWavSource(std::vector<char> buffer, std::unique_ptr<AudioSource> inner)
+      : buffer_(std::move(buffer)), inner_(std::move(inner)) {}
+  ~MemoryWavSource() override = default;
+
+  size_t ReadFrames(int16_t* out, size_t frames) override {
+    return inner_ ? inner_->ReadFrames(out, frames) : 0;
+  }
+  bool Rewind() override { return inner_ ? inner_->Rewind() : false; }
+
+ private:
+  std::vector<char> buffer_;
+  std::unique_ptr<AudioSource> inner_;
+};
+
+}  // namespace
+
+std::unique_ptr<AudioSource> OpenMemoryWavSource(const void* data, size_t length) {
+  if (data == nullptr || length < 64) return nullptr;
+
+  std::vector<char> buffer(static_cast<const char*>(data),
+                           static_cast<const char*>(data) + length);
+  FILE* file = fmemopen(buffer.data(), buffer.size(), "rb");
+  if (file == nullptr) {
+    __android_log_print(ANDROID_LOG_WARN, kLogTag, "fmemopen failed for koe");
+    return nullptr;
+  }
+
+  WAVFILE* reader = new WAVFILE_Stream(file, static_cast<int>(buffer.size()));
+  const int source_rate = static_cast<int>(reader->wavinfo.SamplingRate);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "koe source: rate=%d channels=%d bits=%d bytes=%zu",
+                      source_rate, reader->wavinfo.Channels,
+                      reader->wavinfo.DataBits, buffer.size());
+
+  WAVFILE* converted = WAVFILE::MakeConverter(reader);
+  if (converted == nullptr) {
+    delete reader;
+    return nullptr;
+  }
+
+  std::unique_ptr<AudioSource> source(new WavFileSource(converted));
+  if (source_rate > 0 && source_rate != WAVFILE::freq) {
+    source.reset(new ResamplingSource(std::move(source), source_rate, WAVFILE::freq));
+  }
+  return std::unique_ptr<AudioSource>(
+      new MemoryWavSource(std::move(buffer), std::move(source)));
+}
+
+// ---------------------------------------------------------------------------
 // ResamplingSource
 // ---------------------------------------------------------------------------
 
