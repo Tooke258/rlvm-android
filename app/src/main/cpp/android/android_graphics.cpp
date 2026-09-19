@@ -1,9 +1,19 @@
 #include "android/android_graphics.h"
 
 #include <algorithm>
+#include <cstring>
+#include <memory>
+#include <vector>
 
+#include <unistd.h>
+
+#include "android/game_file_system.h"
 #include "systems/base/colour.h"
+#include "systems/base/system.h"
+#include "systems/base/system_error.h"
+#include "utilities/exception.h"
 #include "utilities/graphics.h"
+#include "xclannad/file.h"
 
 namespace {
 
@@ -55,6 +65,12 @@ void AndroidSurface::Resize(const Size& size) {
 
 bool AndroidSurface::Contains(int x, int y) const {
   return x >= 0 && y >= 0 && x < size_.width() && y < size_.height();
+}
+
+void AndroidSurface::SetPixelsFromRGBA(const void* rgba) {
+  const size_t bytes = pixels_.size() * sizeof(uint32_t);
+  if (rgba == nullptr || bytes == 0) return;
+  std::memcpy(pixels_.data(), rgba, bytes);
 }
 
 Size AndroidSurface::GetSize() const { return size_; }
@@ -277,9 +293,91 @@ ColourFilter* AndroidGraphicsSystem::BuildColourFiller() {
 }
 
 std::shared_ptr<const Surface> AndroidGraphicsSystem::LoadSurfaceFromFile(
-    const std::string& /*short_filename*/) {
-  // 图像文件（GRP/GAN/ANM/HIK）的解码与缓存属于 T3.3/T4.2 的工作。
-  return std::shared_ptr<const Surface>();
+    const std::string& short_filename) {
+  // 1) 用上游的查找层按 basename + 候选扩展名定位文件。
+  //    返回的是不透明文件标识（普通路径后端下是真实路径，SAF 下是相对路径）。
+  const boost::filesystem::path file_id =
+      system().FindFile(short_filename, IMAGE_FILETYPES);
+  if (file_id.empty()) {
+    throw rlvm::Exception("Could not find image file \"" + short_filename + "\".");
+  }
+
+  std::shared_ptr<rlvm_android::GameFileSystem> file_system =
+      rlvm_android::GetGameFileSystem();
+  if (!file_system) {
+    throw rlvm::Exception("No game file system is installed.");
+  }
+
+  // 2) 整份读入内存。图像解码器是缓冲区接口（GRPCONV::AssignConverter），
+  //    本来就不按路径读文件，因此这里用 fd 读取即可，SAF 下同样成立。
+  const int fd = file_system->OpenFd(file_id.string());
+  if (fd < 0) {
+    throw rlvm::Exception("Could not open image file: " + file_id.string());
+  }
+  std::vector<char> data;
+  char chunk[16 * 1024];
+  for (;;) {
+    const ssize_t n = read(fd, chunk, sizeof(chunk));
+    if (n <= 0) break;
+    data.insert(data.end(), chunk, chunk + n);
+  }
+  close(fd);
+  if (data.size() < 10) {
+    throw rlvm::Exception("Image file is too small: " + file_id.string());
+  }
+
+  // 3) 交给 xclannad 的解码器。AssignConverter 按**内容**分发（PDT / BMP / G00），
+  //    与扩展名无关；PNG 与 JPEG 需要 libpng/libjpeg，本移植未启用。
+  std::unique_ptr<GRPCONV> converter(
+      GRPCONV::AssignConverter(data.data(), static_cast<int>(data.size()),
+                               short_filename.c_str()));
+  if (converter == NULL) {
+    throw SystemError("Failure in GRPCONV: unsupported image format.");
+  }
+
+  const int width = converter->Width();
+  const int height = converter->Height();
+  if (width <= 0 || height <= 0) {
+    throw SystemError("Failure in GRPCONV: bad image dimensions.");
+  }
+
+  std::vector<uint32_t> pixels(static_cast<size_t>(width) * height, 0u);
+  if (!converter->Read(reinterpret_cast<char*>(pixels.data()))) {
+    throw SystemError("Failure decoding image: " + short_filename);
+  }
+
+  // 通道序转换。xclannad 的解码器输出 BGRA —— 上游据此创建 SDL 表面，掩码为
+  // Rmask=0xff0000 / Gmask=0xff00 / Bmask=0xff / Amask=0xff000000，
+  // 即内存字节序 B,G,R,A。而本移植的 Surface 用 RGBA（byte0=R），
+  // 以便直接以 GL_RGBA / GL_UNSIGNED_BYTE 上传纹理，因此这里交换 R 与 B。
+  for (uint32_t& pixel : pixels) {
+    const uint32_t red = (pixel >> 16) & 0xFFu;
+    const uint32_t blue = pixel & 0xFFu;
+    pixel = (pixel & 0xFF00FF00u) | (blue << 16) | red;
+  }
+
+  // 4) 掩码判定与上游一致：整张图全不透明时不算掩码。
+  bool is_mask = converter->IsMask();
+  if (is_mask) {
+    const size_t count = static_cast<size_t>(width) * height;
+    bool all_opaque = true;
+    for (size_t i = 0; i < count; ++i) {
+      if ((pixels[i] & 0xff000000u) != 0xff000000u) {
+        all_opaque = false;
+        break;
+      }
+    }
+    if (all_opaque) is_mask = false;
+  }
+
+  std::shared_ptr<AndroidSurface> surface =
+      std::make_shared<AndroidSurface>(Size(width, height), this);
+  surface->SetPixelsFromRGBA(pixels.data());
+  surface->SetIsMask(is_mask);
+
+  // 注意：GRP type-2 的区域表（多子图）尚未接入，Surface::GetPattern 仍是基类默认值。
+  // 单图资源不受影响；需要多子图的游戏要等这一步补上。
+  return surface;
 }
 
 void AndroidGraphicsSystem::DrawBringUpPattern() {

@@ -95,3 +95,56 @@ if (Test-Path $gameRootSrc) {
 
 Write-Host "Probe fixture assembled at $OutDir"
 Get-ChildItem $OutDir | ForEach-Object { "  {0,-14} {1} bytes" -f $_.Name, $_.Length }
+
+# ---------------------------------------------------------------------------
+# Image-loading fixture.
+#
+# GRPCONV::AssignConverter dispatches by *content*, not by extension, so a plain
+# 24-bit Windows BMP placed under a name whose extension is in IMAGE_FILETYPES
+# (g00 / pdt) exercises the whole pipeline: FindFile -> OpenFd -> AssignConverter
+# -> BMPCONV -> Surface. Generated here so the repository carries no binary asset.
+# ---------------------------------------------------------------------------
+$bmpWidth = 320
+$bmpHeight = 240
+$rowBytes = $bmpWidth * 3          # 960, already 4-byte aligned
+$pixelBytes = $rowBytes * $bmpHeight
+$fileSize = 54 + $pixelBytes       # 14-byte file header + 40-byte DIB header
+
+$stream = New-Object System.IO.MemoryStream
+$writer = New-Object System.IO.BinaryWriter($stream)
+$writer.Write([byte][char]'B')
+$writer.Write([byte][char]'M')
+$writer.Write([uint32]$fileSize)
+$writer.Write([uint32]0)
+$writer.Write([uint32]54)          # BMPCONV requires bfOffBits == 0x36
+$writer.Write([uint32]40)          # BMPCONV requires biSize == 0x28
+$writer.Write([int32]$bmpWidth)
+$writer.Write([int32]$bmpHeight)
+$writer.Write([uint16]1)           # planes
+$writer.Write([uint16]24)          # bits per pixel
+$writer.Write([uint32]0)           # BI_RGB
+$writer.Write([uint32]$pixelBytes)
+$writer.Write([uint32]2835)
+$writer.Write([uint32]2835)
+$writer.Write([uint32]0)
+$writer.Write([uint32]0)
+
+# Rows are stored bottom-up, pixels are BGR.
+for ($y = $bmpHeight - 1; $y -ge 0; $y--) {
+    for ($x = 0; $x -lt $bmpWidth; $x++) {
+        $on = ((([int]($x / 32)) + ([int]($y / 32))) % 2) -eq 0
+        if ($on) {
+            $writer.Write([byte]32); $writer.Write([byte]32); $writer.Write([byte]224)
+        } else {
+            $writer.Write([byte]224); $writer.Write([byte]128); $writer.Write([byte]32)
+        }
+    }
+}
+$writer.Flush()
+
+$g00Dir = Join-Path $OutDir 'g00'
+New-Item -ItemType Directory -Force -Path $g00Dir | Out-Null
+[System.IO.File]::WriteAllBytes((Join-Path $g00Dir 'test.g00'), $stream.ToArray())
+$writer.Close()
+
+Write-Host "Image fixture: g00\test.g00 ($fileSize bytes, 320x240 BMP content)"

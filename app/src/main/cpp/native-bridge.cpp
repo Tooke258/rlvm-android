@@ -270,6 +270,32 @@ void RunEngineOn(System& system,
   report += "frames presented = " + std::to_string(frames_presented) + "\n";
   report += "stop reason = " + stop_reason + "\n";
   report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
+
+  // 图像加载探针：走完整链路 System::FindFile -> GraphicsSystem::GetSurfaceNamed
+  // -> AndroidGraphicsSystem::LoadSurfaceFromFile（OpenFd + GRPCONV 解码）。
+  // 目标文件 g00/test.g00 由 tools/make_probe_fixture.ps1 生成（BMP 内容，
+  // 因为解码器按内容而非扩展名分发）。
+  if (graphics != nullptr) {
+    try {
+      std::shared_ptr<const Surface> image = system.graphics().GetSurfaceNamed("test");
+      if (!image) {
+        report += "image test -> <not loaded>\n";
+      } else {
+        int r = 0, g = 0, b = 0;
+        image->GetDCPixel(Point(16, 16), r, g, b);
+        report += "image test -> " + std::to_string(image->GetSize().width()) + "x" +
+                  std::to_string(image->GetSize().height()) + "; pixel(16,16)=(" +
+                  std::to_string(r) + "," + std::to_string(g) + "," +
+                  std::to_string(b) + ")\n";
+        // 画到帧缓冲并呈现，截图即可确认解码结果。
+        const Rect full(Point(0, 0), image->GetSize());
+        image->RenderToScreen(full, full, 255);
+        CaptureFrame(*graphics);
+      }
+    } catch (const std::exception& e) {
+      report += std::string("image test EXCEPTION: ") + e.what() + "\n";
+    }
+  }
 }
 
 jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,

@@ -74,6 +74,10 @@ class AndroidSurface : public Surface {
   // 非虚接口：重新分配为指定尺寸并清零。
   void Resize(const Size& size);
 
+  // 用一段 RGBA8888 数据（宽*高*4 字节）替换像素内容。
+  // 图像解码器（xclannad 的 GRPCONV）输出的正是这个布局。
+  void SetPixelsFromRGBA(const void* rgba);
+
   const uint32_t* pixels() const { return pixels_.data(); }
 
  private:
