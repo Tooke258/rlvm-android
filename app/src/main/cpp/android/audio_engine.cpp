@@ -26,6 +26,11 @@ constexpr size_t kChunkFrames = 4096;
 // 回调里用的栈上混音暂存（禁止在回调中分配内存）。
 constexpr int32_t kMixBlockFrames = 1024;
 
+long long NowMillis() {
+  using namespace std::chrono;
+  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 inline int16_t ClampToInt16(int32_t value) {
   if (value > 32767) return 32767;
   if (value < -32768) return -32768;
@@ -122,6 +127,11 @@ struct AudioEngine::Channel {
   std::mutex mutex;
   std::unique_ptr<AudioSource> source;
   std::atomic<int> volume{255};
+  // 音量渐变状态：目标音量、起点音量与起止时刻（毫秒）。
+  // 由引擎线程写入、音频回调读取；都在 8 字节以内的原子量上操作。
+  std::atomic<int> fade_from{255};
+  std::atomic<long long> fade_start_ms{0};
+  std::atomic<long long> fade_end_ms{0};
   std::atomic<bool> playing{false};
   std::atomic<bool> loop{false};
 };
@@ -297,7 +307,30 @@ void AudioEngine::Stop(int channel_index) {
 void AudioEngine::SetVolume(int channel_index, int volume) {
   if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
     return;
-  channels_[channel_index]->volume.store(std::max(0, std::min(255, volume)));
+  Channel& channel = *channels_[channel_index];
+  channel.volume.store(std::max(0, std::min(255, volume)));
+  channel.fade_end_ms.store(0);  // 立即生效
+}
+
+void AudioEngine::FadeVolume(int channel_index,
+                             int target_volume,
+                             int duration_ms) {
+  if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
+    return;
+  Channel& channel = *channels_[channel_index];
+  const int target = std::max(0, std::min(255, target_volume));
+
+  if (duration_ms <= 0) {
+    channel.volume.store(target);
+    channel.fade_end_ms.store(0);
+    return;
+  }
+
+  const long long now = NowMillis();
+  channel.fade_from.store(channel.volume.load());
+  channel.fade_start_ms.store(now);
+  channel.volume.store(target);
+  channel.fade_end_ms.store(now + duration_ms);
 }
 
 bool AudioEngine::IsPlaying(int channel_index) const {
@@ -347,13 +380,31 @@ void AudioEngine::MixInto(int16_t* out,
                           int16_t* scratch,
                           int32_t frames,
                           int* peak) {
+  const long long now = NowMillis();
   for (auto& channel : channels_) {
     if (!channel->playing.load(std::memory_order_relaxed)) continue;
 
     const size_t got = channel->ring->Read(scratch, static_cast<size_t>(frames));
     if (got == 0) continue;
 
-    const int volume = channel->volume.load(std::memory_order_relaxed);
+    // 音量：若有未结束的渐变，按时间线性插值；否则直接用目标值。
+    const int target_volume = channel->volume.load(std::memory_order_relaxed);
+    int volume = target_volume;
+    const long long fade_end = channel->fade_end_ms.load(std::memory_order_relaxed);
+    if (fade_end > 0) {
+      const long long fade_start =
+          channel->fade_start_ms.load(std::memory_order_relaxed);
+      if (now >= fade_end || fade_end <= fade_start) {
+        channel->fade_end_ms.store(0, std::memory_order_relaxed);
+      } else {
+        const int from = channel->fade_from.load(std::memory_order_relaxed);
+        const double progress =
+            static_cast<double>(now - fade_start) / static_cast<double>(fade_end - fade_start);
+        volume = from + static_cast<int>((target_volume - from) * progress);
+        volume = std::max(0, std::min(255, volume));
+      }
+    }
+
     const size_t samples = got * kAudioChannels;
     for (size_t i = 0; i < samples; ++i) {
       const int32_t mixed =

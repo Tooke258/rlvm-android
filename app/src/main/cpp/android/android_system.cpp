@@ -1,9 +1,16 @@
 #include "android/android_system.h"
 
+#include <android/log.h>
+
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <memory>
 #include <thread>
 
 #include "android/android_graphics.h"
+#include "android/audio_engine.h"
+#include "android/game_file_system.h"
 #include "libreallive/gameexe.h"
 #include "machine/rlmachine.h"
 #include "systems/base/colour.h"
@@ -136,40 +143,242 @@ void AndroidTextWindow::ClearWin() {
 }
 
 // ---------------------------------------------------------------------------
-// AndroidSoundSystem（阶段 4 用 AAudio 实现，见 docs/DECISIONS.md D-004）
+// AndroidSoundSystem（AAudio，见 docs/DECISIONS.md D-004）
 // ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr char kAudioTag[] = "rlvm-audio";
+
+// BGM 单独占用一个引擎通道：对应上游用 Mix_HookMusic 维护的独立音乐流。
+// RLVM 自己的通道 0..23（WAV/SE）与 24（KOE）直接一对一映射。
+constexpr int kBgmEngineChannel = 30;
+
+/** 从文件标识里取小写扩展名，用于选择解码器。 */
+std::string ExtensionOf(const std::string& file_id) {
+  const size_t dot = file_id.find_last_of('.');
+  if (dot == std::string::npos || dot + 1 >= file_id.size()) return std::string();
+  std::string extension = file_id.substr(dot + 1);
+  for (char& c : extension) c = static_cast<char>(tolower(c));
+  return extension;
+}
+
+}  // namespace
 
 AndroidSoundSystem::AndroidSoundSystem(System& system) : SoundSystem(system) {}
 
-int AndroidSoundSystem::BgmStatus() const { return 0; }
-void AndroidSoundSystem::BgmPlay(const std::string& /*bgm_name*/, bool /*loop*/) {}
-void AndroidSoundSystem::BgmPlay(const std::string& /*bgm_name*/, bool /*loop*/,
-                                 int /*fade_in_ms*/) {}
-void AndroidSoundSystem::BgmPlay(const std::string& /*bgm_name*/, bool /*loop*/,
-                                 int /*fade_in_ms*/, int /*fade_out_ms*/) {}
-void AndroidSoundSystem::BgmStop() {}
-void AndroidSoundSystem::BgmPause() {}
-void AndroidSoundSystem::BgmUnPause() {}
-void AndroidSoundSystem::BgmFadeOut(int /*fade_out_ms*/) {}
-std::string AndroidSoundSystem::GetBgmName() const { return std::string(); }
-bool AndroidSoundSystem::BgmLooping() const { return false; }
+int AndroidSoundSystem::CurrentBgmVolume() {
+  return compute_channel_volume(bgm_volume_script(), bgm_volume_mod());
+}
 
-void AndroidSoundSystem::WavPlay(const std::string& /*wav_file*/, bool /*loop*/) {}
-void AndroidSoundSystem::WavPlay(const std::string& /*wav_file*/, bool /*loop*/,
-                                 const int /*channel*/) {}
-void AndroidSoundSystem::WavPlay(const std::string& /*wav_file*/, bool /*loop*/,
-                                 const int /*channel*/, const int /*fadein_ms*/) {}
-bool AndroidSoundSystem::WavPlaying(const int /*channel*/) { return false; }
-void AndroidSoundSystem::WavStop(const int /*channel*/) {}
-void AndroidSoundSystem::WavStopAll() {}
-void AndroidSoundSystem::WavFadeOut(const int /*channel*/, const int /*fadetime*/) {}
+void AndroidSoundSystem::ApplyChannelVolume(int channel) {
+  const int system_volume = (channel == kBgmEngineChannel) ? bgm_volume_mod()
+                                                           : pcm_volume_mod();
+  rlvm_android::AudioEngine::Instance().SetVolume(
+      channel, compute_channel_volume(GetChannelVolume(channel), system_volume));
+}
 
-void AndroidSoundSystem::PlaySe(const int /*se_num*/) {}
-bool AndroidSoundSystem::HasSe(const int /*se_num*/) { return false; }
+void AndroidSoundSystem::PlayOnChannel(int engine_channel,
+                                       const std::string& file_name,
+                                       bool loop,
+                                       int volume) {
+  // 与图像加载同样的路径：先经查找层定位（SAF 下是不透明标识），再用 fd 读取。
+  const boost::filesystem::path file_id =
+      system().FindFile(file_name, SOUND_FILETYPES);
+  if (file_id.empty()) {
+    __android_log_print(ANDROID_LOG_WARN, kAudioTag, "audio file not found: %s",
+                        file_name.c_str());
+    return;
+  }
+
+  std::shared_ptr<rlvm_android::GameFileSystem> files =
+      rlvm_android::GetGameFileSystem();
+  if (!files) return;
+
+  rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
+  if (!audio.Start()) {
+    __android_log_print(ANDROID_LOG_ERROR, kAudioTag, "audio start failed: %s",
+                        audio.LastError().c_str());
+    return;
+  }
+
+  const int fd = files->OpenFd(file_id.string());
+  if (fd < 0) return;
+
+  // OpenSource 接管 fd 的所有权（fdopen），失败时由它负责关闭。
+  std::unique_ptr<rlvm_android::AudioSource> source =
+      audio.OpenSource(fd, ExtensionOf(file_id.string()));
+  if (!source) {
+    __android_log_print(ANDROID_LOG_WARN, kAudioTag, "audio decode failed: %s",
+                        file_id.string().c_str());
+    return;
+  }
+
+  __android_log_print(ANDROID_LOG_INFO, kAudioTag,
+                      "play channel=%d file=%s loop=%d volume=%d", engine_channel,
+                      file_id.string().c_str(), loop ? 1 : 0, volume);
+  audio.Play(engine_channel, std::move(source), loop,
+             std::max(0, std::min(255, volume)));
+}
+
+// -- BGM --------------------------------------------------------------------
+
+int AndroidSoundSystem::BgmStatus() const {
+  return rlvm_android::AudioEngine::Instance().IsPlaying(kBgmEngineChannel) ? 1 : 0;
+}
+
+void AndroidSoundSystem::BgmPlay(const std::string& bgm_name, bool loop) {
+  BgmPlay(bgm_name, loop, 0, 0);
+}
+
+void AndroidSoundSystem::BgmPlay(const std::string& bgm_name,
+                                 bool loop,
+                                 int fade_in_ms) {
+  BgmPlay(bgm_name, loop, fade_in_ms, 0);
+}
+
+void AndroidSoundSystem::BgmPlay(const std::string& bgm_name,
+                                 bool loop,
+                                 int fade_in_ms,
+                                 int /*fade_out_ms*/) {
+  rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
+  audio.Stop(kBgmEngineChannel);
+
+  bgm_name_ = bgm_name;
+  bgm_looping_ = loop;
+  bgm_paused_ = false;
+
+  // 淡入：先以 0 音量开始，再渐变到目标音量。
+  PlayOnChannel(kBgmEngineChannel, bgm_name, loop,
+                fade_in_ms > 0 ? 0 : CurrentBgmVolume());
+  if (fade_in_ms > 0) {
+    audio.FadeVolume(kBgmEngineChannel, CurrentBgmVolume(), fade_in_ms);
+  }
+}
+
+void AndroidSoundSystem::BgmStop() {
+  rlvm_android::AudioEngine::Instance().Stop(kBgmEngineChannel);
+  bgm_name_.clear();
+  bgm_looping_ = false;
+  bgm_paused_ = false;
+}
+
+void AndroidSoundSystem::BgmPause() {
+  // 引擎没有真正的暂停：把音量降到 0。流继续解码，所以恢复是无缝的。
+  rlvm_android::AudioEngine::Instance().SetVolume(kBgmEngineChannel, 0);
+  bgm_paused_ = true;
+}
+
+void AndroidSoundSystem::BgmUnPause() {
+  if (!bgm_paused_) return;
+  rlvm_android::AudioEngine::Instance().SetVolume(kBgmEngineChannel,
+                                                  CurrentBgmVolume());
+  bgm_paused_ = false;
+}
+
+void AndroidSoundSystem::BgmFadeOut(int fade_out_ms) {
+  rlvm_android::AudioEngine::Instance().FadeVolume(kBgmEngineChannel, 0,
+                                                   fade_out_ms);
+}
+
+std::string AndroidSoundSystem::GetBgmName() const { return bgm_name_; }
+
+bool AndroidSoundSystem::BgmLooping() const { return bgm_looping_; }
+
+void AndroidSoundSystem::SetBgmVolumeScript(const int level, const int fade_in_ms) {
+  SoundSystem::SetBgmVolumeScript(level, fade_in_ms);
+  rlvm_android::AudioEngine::Instance().FadeVolume(kBgmEngineChannel,
+                                                   CurrentBgmVolume(), fade_in_ms);
+}
+
+void AndroidSoundSystem::SetBgmVolumeMod(const int in) {
+  SoundSystem::SetBgmVolumeMod(in);
+  ApplyChannelVolume(kBgmEngineChannel);
+}
+
+// -- WAV / SE ---------------------------------------------------------------
+
+void AndroidSoundSystem::WavPlay(const std::string& wav_file, bool loop) {
+  WavPlay(wav_file, loop, 0, 0);
+}
+
+void AndroidSoundSystem::WavPlay(const std::string& wav_file,
+                                 bool loop,
+                                 const int channel) {
+  WavPlay(wav_file, loop, channel, 0);
+}
+
+void AndroidSoundSystem::WavPlay(const std::string& wav_file,
+                                 bool loop,
+                                 const int channel,
+                                 const int fadein_ms) {
+  if (channel < 0 || channel >= KOE_CHANNEL) return;
+  const int volume = compute_channel_volume(GetChannelVolume(channel),
+                                            pcm_volume_mod());
+  PlayOnChannel(channel, wav_file, loop, fadein_ms > 0 ? 0 : volume);
+  if (fadein_ms > 0) {
+    rlvm_android::AudioEngine::Instance().FadeVolume(channel, volume, fadein_ms);
+  }
+}
+
+bool AndroidSoundSystem::WavPlaying(const int channel) {
+  return rlvm_android::AudioEngine::Instance().IsPlaying(channel);
+}
+
+void AndroidSoundSystem::WavStop(const int channel) {
+  rlvm_android::AudioEngine::Instance().Stop(channel);
+}
+
+void AndroidSoundSystem::WavStopAll() {
+  for (int channel = 0; channel < KOE_CHANNEL; ++channel) {
+    rlvm_android::AudioEngine::Instance().Stop(channel);
+  }
+}
+
+void AndroidSoundSystem::WavFadeOut(const int channel, const int fadetime) {
+  rlvm_android::AudioEngine::Instance().FadeVolume(channel, 0, fadetime);
+}
+
+void AndroidSoundSystem::PlaySe(const int se_num) {
+  SeTable::const_iterator entry = se_table().find(se_num);
+  if (entry == se_table().end()) return;
+  const int channel = entry->second.second;
+  if (channel < 0 || channel >= KOE_CHANNEL) return;
+  PlayOnChannel(channel, entry->second.first, false,
+                compute_channel_volume(GetChannelVolume(channel), se_volume_mod()));
+}
+
+bool AndroidSoundSystem::HasSe(const int se_num) {
+  return se_table().find(se_num) != se_table().end();
+}
+
+void AndroidSoundSystem::SetChannelVolume(const int channel, const int level) {
+  SoundSystem::SetChannelVolume(channel, level);
+  ApplyChannelVolume(channel);
+}
+
+void AndroidSoundSystem::SetPcmVolumeMod(const int in) {
+  SoundSystem::SetPcmVolumeMod(in);
+  for (int channel = 0; channel < KOE_CHANNEL; ++channel) ApplyChannelVolume(channel);
+}
+
+void AndroidSoundSystem::SetSeVolumeMod(const int in) {
+  SoundSystem::SetSeVolumeMod(in);
+}
+
+// -- 语音（尚未实现）--------------------------------------------------------
 
 bool AndroidSoundSystem::KoePlaying() const { return false; }
-void AndroidSoundSystem::KoeStop() {}
-void AndroidSoundSystem::KoePlayImpl(int /*id*/) {}
+
+void AndroidSoundSystem::KoeStop() {
+  rlvm_android::AudioEngine::Instance().Stop(KOE_CHANNEL);
+}
+
+void AndroidSoundSystem::KoePlayImpl(int /*id*/) {
+  // 语音解码要先把 KOE / NWK / OVK 语音包链路接上（voice_cache 目前仍走
+  // 上游基于路径的读取）。这里先记录，避免静默。
+  __android_log_print(ANDROID_LOG_INFO, kAudioTag, "koe playback not implemented");
+}
 
 // ---------------------------------------------------------------------------
 // AndroidSystem

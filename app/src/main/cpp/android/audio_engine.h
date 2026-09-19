@@ -91,6 +91,9 @@ class AudioEngine {
   void Play(int channel, std::unique_ptr<AudioSource> source, bool loop, int volume);
   void Stop(int channel);
   void SetVolume(int channel, int volume);  // 0..255
+  // 在 duration_ms 内把音量平滑过渡到 target_volume（0..255）。duration 为 0
+  // 表示立即生效。混音在音频回调里按块插值，不需要额外的线程或定时器。
+  void FadeVolume(int channel, int target_volume, int duration_ms);
   bool IsPlaying(int channel) const;
 
   struct Stats {

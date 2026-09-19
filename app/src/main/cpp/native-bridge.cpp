@@ -315,15 +315,24 @@ void RunEngineOn(System& system,
   report += "stop reason = " + stop_reason + "\n";
   report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
 
-  // 音频统计：AndroidSoundSystem 接上 AudioEngine 之后，这里的 peak 就能反映
-  // 游戏是否真的在出声。
+  // 音频连线验证：主动让 SoundSystem 播放游戏自己的 BGM，确认
+  // AndroidSoundSystem -> AudioEngine -> AAudio 这条链路真的出声。
+  // 为什么需要主动触发：引擎跑的这几秒里游戏还没走到播放 BGM 的指令
+  //（首屏卡在文字显示上，而文字渲染尚未实现），否则这段是无从验证的。
+  // 待游戏能自行驱动 BGM 之后，这段可以删除。
   {
+    rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
+    audio.ResetPeak();
+    system.sound().BgmPlay("BGM01", true);
+    std::this_thread::sleep_for(std::chrono::seconds(3));
     const rlvm_android::AudioEngine::Stats stats =
-        rlvm_android::AudioEngine::Instance().GetStats();
-    report += "audio: callbacks=" + std::to_string(stats.callbacks) +
+        audio.GetStats();
+    report += "audio after BgmPlay(BGM01): callbacks=" +
+              std::to_string(stats.callbacks) +
               " frames=" + std::to_string(stats.frames_rendered) +
               " peak=" + std::to_string(stats.peak_amplitude) +
               " active_channels=" + std::to_string(stats.active_channels) + "\n";
+    system.sound().BgmStop();
   }
 }
 

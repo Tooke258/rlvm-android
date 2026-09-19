@@ -84,7 +84,13 @@ class AndroidTextWindow : public TextWindow {
   std::shared_ptr<Surface> name_surface_;
 };
 
-// 阶段 4（T4.1）用 AAudio 实现真正的音频后端，这里先全部留桩。
+// AAudio 音频后端：把引擎的 BGM / WAV / SE 调用接到 AudioEngine 上。
+//
+// 通道映射：RLVM 的通道 0..23 用于 WAV/SE、24 是 KOE 语音，直接一对一映射到
+// AudioEngine 的通道；BGM 单独占用一个引擎通道（对应上游用 Mix_HookMusic 的
+// 独立音乐流）。
+//
+// 尚未实现：KOE 语音——需要先把 KOE/NWK/OVK 语音包的解码链路接上。
 class AndroidSoundSystem : public SoundSystem {
  public:
   explicit AndroidSoundSystem(System& system);
@@ -118,11 +124,30 @@ class AndroidSoundSystem : public SoundSystem {
   void PlaySe(const int se_num) override;
   bool HasSe(const int se_num) override;
 
+  void SetChannelVolume(const int channel, const int level) override;
+  void SetBgmVolumeScript(const int level, const int fade_in_ms) override;
+  void SetBgmVolumeMod(const int in) override;
+  void SetPcmVolumeMod(const int in) override;
+  void SetSeVolumeMod(const int in) override;
+
   bool KoePlaying() const override;
   void KoeStop() override;
 
  protected:
   void KoePlayImpl(int id) override;
+
+ private:
+  // 经游戏文件系统定位并播放；找不到文件或解码失败时安静返回。
+  void PlayOnChannel(int engine_channel,
+                     const std::string& file_name,
+                     bool loop,
+                     int volume);
+  int CurrentBgmVolume();
+  void ApplyChannelVolume(int channel);
+
+  std::string bgm_name_;
+  bool bgm_looping_ = false;
+  bool bgm_paused_ = false;
 };
 
 class AndroidSystem : public System {
