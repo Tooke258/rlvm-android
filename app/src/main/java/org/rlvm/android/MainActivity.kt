@@ -55,6 +55,7 @@ class MainActivity : Activity() {
     // 由右上角的小球（可拖动）展开/收起。
     private lateinit var panel: LinearLayout
     private lateinit var ball: TextView
+    private lateinit var rootView: FrameLayout
     private var panelWidth = 0
     private var panelOpen = false
 
@@ -239,6 +240,7 @@ class MainActivity : Activity() {
         }
 
         val root = FrameLayout(this)
+        rootView = root
         root.addView(glView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // 先加侧栏、后加球：FrameLayout 里后添加的在上层，
@@ -249,11 +251,9 @@ class MainActivity : Activity() {
             ballSize, ballSize, Gravity.END or Gravity.CENTER_VERTICAL)
         ballParams.rightMargin = dp(6)
         root.addView(ball, ballParams)
-        // 初始状态必须明确为「收起」。用 post 在首次布局后再设一次，
-        // 以免个别机型在首次 layout 时把 translation 重置。
+        // 初始状态明确为「收起」：直接 GONE，连布局都不参与。
         panelOpen = false
-        panel.translationX = panelWidth.toFloat()
-        panel.post { if (!panelOpen) panel.translationX = panelWidth.toFloat() }
+        panel.visibility = android.view.View.GONE
         setContentView(root)
 
         log(buildString {
@@ -366,10 +366,15 @@ class MainActivity : Activity() {
     /** 展开/收起右侧栏（滑入滑出，不重建任何视图）。 */
     private fun togglePanel() {
         panelOpen = !panelOpen
-        panel.animate()
-            .translationX(if (panelOpen) 0f else panelWidth.toFloat())
-            .setDuration(180)
-            .start()
+        // 这里**不做** translationX 滑动动画：GLSurfaceView 是 SurfaceView，
+        // 占的是独立 surface 层，用变换动画把普通视图移到它上面时窗口不会重新
+        // 计算那块区域的绘制——真机表现就是"第一次展开时上面一半不渲染，点一下
+        // 才画出来"（已复现并截图确认）。
+        // 用 VISIBLE/GONE 会让视图树重新布局并完整重绘，彻底避免残留区域。
+        panel.visibility =
+            if (panelOpen) android.view.View.VISIBLE else android.view.View.GONE
+        rootView.requestLayout()
+        rootView.invalidate()
     }
 
     /** 当前是否横屏（按实际配置判断，避免与持久化的期望值不一致）。 */
