@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.opengl.GLSurfaceView
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -31,10 +32,16 @@ class MainActivity : Activity() {
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
         // 指令上限也放宽到实际达不到的值，由「停止引擎」按钮负责收尾。
         const val MAX_INSTRUCTIONS = Int.MAX_VALUE
+
+        // 触摸动作码，必须与 native-bridge.cpp 的 kTouch* 常量一致。
+        const val TOUCH_DOWN = 0
+        const val TOUCH_MOVE = 1
+        const val TOUCH_UP = 2
     }
 
     private lateinit var output: TextView
     private lateinit var glView: GLSurfaceView
+    private lateinit var renderer: RlvmRenderer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,10 +81,14 @@ class MainActivity : Activity() {
         }
 
         // 画面区：native 在引擎线程上合成帧，这里只负责显示。
+        renderer = RlvmRenderer()
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
-            setRenderer(RlvmRenderer())
+            setRenderer(renderer)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+            // 触摸输入（T2.3）：把视图坐标换算成游戏帧坐标后交给引擎。
+            // 在 renderer 里注入，引擎线程取走并广播给按钮对象。
+            setOnTouchListener { _, event -> handleTouch(event) }
         }
 
         setContentView(
@@ -214,6 +225,25 @@ class MainActivity : Activity() {
 
     private fun background(block: () -> Unit) {
         thread(name = "rlvm-task") { block() }
+    }
+
+    /**
+     * 把触摸事件换算成游戏帧坐标后投递给引擎。
+     *
+     * 返回 false（落在黑边上）时事件交给系统，避免把黑边内的触摸也当成游戏输入。
+     */
+    private fun handleTouch(event: MotionEvent): Boolean {
+        val action = when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> TOUCH_DOWN
+            MotionEvent.ACTION_MOVE -> TOUCH_MOVE
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> TOUCH_UP
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> return false
+            else -> return false
+        }
+
+        val point = renderer.mapToFrame(event.x, event.y) ?: return false
+        runCatching { NativeBridge.touchEvent(action, point.x, point.y) }
+        return true
     }
 
     private fun log(text: String) {

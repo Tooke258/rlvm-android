@@ -56,19 +56,20 @@
 | **真实游戏渲染** | 标题画面完整呈现（蓝天村庄背景 + START/LOAD/CONFIG/EXIT + 标题 logo），真机截图确认 |
 | **游戏自行驱动 BGM** | 日志 `play channel=30 file=BGM/BGM14.nwa`；此后每 300 帧上报一次 `rlvm-audio runtime: active_channels=1 peak_in_window=…`，持续 70 秒以上不停 |
 | 诊断可见性 | 上游 `cout`/`cerr` 全部进入 logcat；未实现操作码与被吞掉的异常都可读 |
+| **触摸输入（T2.3）** | 真机点标题菜单 START → 进入正文（加载 `ss_mw00*` 正文资源），悬停高亮与光标位置均正确 |
+| **文字系统被调用** | 正文第一句触发 `RenderGlyphOnto`（U+5FC3 心 / U+81D3 臓 / U+304C が …），系统 CJK 字体经 FreeType 光栅化 |
 
 ## 4. 已知缺口
 
 | 缺口 | 说明 |
 | --- | --- |
-| 文字尚未被游戏调用 | `FontEngine` 已实现并链接；本轮跑到标题菜单，正文尚未进入（文字只在正文里出现） |
+| 文字已光栅化但**未上屏** | `TextWindow::Render` 的表框/工具条（Auto/Skip/…）能合成，但字形所在的文本层没出现在画面上；下一步用 `dump_graphics=1` 看文本窗口的 Rect 与可见性 |
 | HIK 渲染未接入 | `hik_renderer_` 为空。Kud Wafter 标题流程没用到 HIK；用到 HIK 的作品仍需补 |
 | KOE 语音未实现 | 需要先把 KOE/NWK/OVK 语音包的解码链路接上 |
 | 通道数不足 | RLVM 只建模 25 个通道，本作用到 channel 30，`SetBgmVolMod` 会抛 `Invalid channel number 30 in channel_volume` 并被跳过 |
 | 若干未实现操作码 | Sys 2055 / 2056 / 300 / 1231 / 3503、Os 120；目前一律「跳过继续」，未见功能受损 |
 | PNG / JPEG 解码 | 解码器存在但被 `#if HAVE_LIBPNG/JPEG` 排除；RealLive 原生格式用不到 |
 | ~~44.1kHz 重采样~~ | **已修复**（D-017）：自建 `ResamplingSource`，44.1kHz→48kHz 线性插值 |
-| 触摸输入 | `EventSystem` 是桩，从不注入点击（很可能是首屏无进展的原因之一） |
 | 存档读写经 SAF | 未实现 |
 | 引擎生命周期 | 只有"跑一段"，没有启动/暂停/恢复/退出 |
 
@@ -127,9 +128,8 @@ rlvm-audio: play channel=30 file=BGM/BGM14.nwa loop=1 volume=165   ← 游戏自
 
 ### 下一步（按价值排序）
 
-1. **触摸输入（T2.3）**：`EventSystem` 仍是桩。现在标题菜单已经画出来且脚本在
-   轮询 `GetCursorPos`，注入点击就能验证「START → 进入正文」这条链路，也是
-   文字系统第一次被真正调用的入口。
+1. **文字上屏**：字形已光栅化、文本窗口表框已合成，但文本层看不见。用
+   `dump_graphics=1` 打印文本窗口的 `Text Area` 矩形与 `is_visible()` 即可定位。
 2. **通道数**：把 `NUM_TOTAL_CHANNELS` 提到本作实际使用范围（30+）或改为按
    `#CHANNEL` 动态分配。注意这属于改动上游语义，需要先记录决策。
 3. ~~**44.1 kHz 重采样**~~：已修复（见 D-017），音调不再偏高。
@@ -138,7 +138,8 @@ rlvm-audio: play channel=30 file=BGM/BGM14.nwa loop=1 volume=165   ← 游戏自
 5. **引擎生命周期**：目前只有「跑一段」，没有启动/暂停/恢复/退出。
 
 > 已完成：引擎默认不限时运行、可随时停止、重复启动被拒绝；
-> 游戏自行请求的 BGM 在整段运行期间持续输出。
+> 游戏自行请求的 BGM 在整段运行期间持续输出；
+> 触摸输入打通（点标题 START 进正文），文字系统首次被调用。
 
 ## 6. 工程事实速查
 

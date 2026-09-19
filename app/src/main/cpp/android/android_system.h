@@ -11,7 +11,9 @@
 #define RLVM_APP_SRC_MAIN_CPP_ANDROID_ANDROID_SYSTEM_H_
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "systems/base/event_system.h"
 #include "systems/base/sound_system.h"
@@ -41,7 +43,32 @@ class AndroidEventSystem : public EventSystem {
   void InjectMouseDown(RLMachine& machine) override;
   void InjectMouseUp(RLMachine& machine) override;
 
+  /**
+   * 由 UI 线程投递一个触摸事件（T2.3）。
+   *
+   * action 取值与 native-bridge 的 kTouch* 常量一致：0=按下 1=移动 2=抬起。
+   * 这里只入队，真正的注入发生在引擎线程的 ExecuteEventSystem 里：
+   * 注入要广播给 EventListener（按钮对象、选择项等），必须在引擎线程上做；
+   * 同时 UI 线程也绝不能被引擎的工作量阻塞。
+   */
+  void PostTouchEvent(int action, const Point& position);
+  void PostTouchEvent(int action, const Point& position, int buttons);
+
  private:
+  /** 按位掩码设置某个鼠标键状态并派发事件（1=左键 2=右键）。 */
+  void ApplyButtonState(RLMachine& machine, int button, int state, int button_mask);
+
+  struct PendingTouch {
+    int action;
+    Point position;
+    int buttons;  // 位掩码：1=左键 2=右键
+  };
+
+  std::mutex queue_mutex_;
+  std::vector<PendingTouch> pending_;
+  Point mouse_pos_;
+  int button1_state_ = 0;
+  int button2_state_ = 0;
   unsigned int last_mouse_move_ticks_;
 };
 

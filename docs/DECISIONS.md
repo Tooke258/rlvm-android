@@ -74,6 +74,31 @@
 
 ---
 
+## D-018 触摸输入：UI 线程入队、引擎线程注入，按下与抬起分帧
+
+- **日期**：2026-09-19
+- **决策**：`MainActivity` 在 `GLSurfaceView` 上收触摸事件，用
+  `RlvmRenderer.mapToFrame()` 把视图坐标换成游戏帧坐标（与画面缩放共用同一套
+  fit 规则，避免坐标对不上），经 `NativeBridge.touchEvent` 投递；
+  native 侧只做入队（`AndroidEventSystem::PostTouchEvent`），真正的注入在引擎线程的
+  `ExecuteEventSystem` 里完成。另加 `touch_button` 诊断开关（位掩码 1=左键 2=右键
+  3=两者，缺省 1）。
+- **理由**：注入必须广播给 `EventListener`（按钮对象、选择肢），只能在引擎线程做；
+  UI 线程也不能被引擎工作量阻塞，所以中间隔一层队列。
+- **关键细节（踩坑）**：**同一帧内「按下+抬起」必须拆到两帧**。第一版把 DOWN/UP 在
+  一次 drain 里连续应用，脚本只看到 `button == 2`（已松开），标题菜单因此毫无反应；
+  拆帧后（抬起推迟到下一次 `ExecuteEventSystem`）左键单击立刻生效。
+  这正是「坐标对了、悬停高亮也对，但点不动」的原因。
+- **语义**：与上游 SDL 后端一致——按下 `button = 1`，抬起 `button = 2`，
+  `FlushClick` 清零；`MouseButtonStateChanged` 的派发沿用 SDL 的写法。
+- **验证**：真机点标题菜单 START → 悬停高亮（START 变橙色）+ 光标画在触点，
+  单击后加载正文资源 `ss_mw00a/b/c/d/e`（`ss_mw00c` 有 128 个子图）并进入正文，
+  底部出现游戏内 HUD（Auto/Skip/Q.Save/Q.Load/Config/Close）。
+  左键单独与左右同按结果一致，因此缺省用左键。
+- **状态**：已执行并验证
+
+---
+
 ## D-017 自建 44.1k→48k 重采样（`ResamplingSource`）
 
 - **日期**：2026-09-19

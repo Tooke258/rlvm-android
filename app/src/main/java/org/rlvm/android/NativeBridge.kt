@@ -59,6 +59,14 @@ object NativeBridge {
     external fun requestStop()
 
     /**
+     * 触摸输入。坐标必须是**游戏帧坐标**（0..帧宽 / 0..帧高），
+     * 由 RlvmRenderer.mapToFrame 从视图坐标换算而来。
+     *
+     * action: 0=按下 1=移动 2=抬起。
+     */
+    external fun touchEvent(action: Int, x: Float, y: Float)
+
+    /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */

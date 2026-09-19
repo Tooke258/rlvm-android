@@ -86,6 +86,18 @@ std::atomic<bool> g_stop_requested{false};
 // 两台引擎共用同一个 AudioEngine 与帧缓冲会互相踩踏，所以直接拒绝并存。
 std::atomic<bool> g_run_active{false};
 
+// 当前正在运行的 AndroidSystem。UI 线程的触摸事件需要它才能找到事件系统；
+// 引擎停止后清空，避免触到已析构的对象。
+std::atomic<AndroidSystem*> g_current_system{nullptr};
+
+// 一次触摸等价于哪个鼠标键（由 diag 的 touch_button 决定，运行期只读）。
+std::atomic<int> g_touch_buttons{1};
+
+// 触摸事件的动作码，必须与 NativeBridge.touchEvent 的调用方一致。
+constexpr int kTouchDown = 0;
+constexpr int kTouchMove = 1;
+constexpr int kTouchUp = 2;
+
 /** 作用域内的「唯一运行者」守卫；未取得时 acquired() 为 false。 */
 class RunGuard {
  public:
@@ -101,10 +113,24 @@ class RunGuard {
   bool acquired_;
 };
 
+/** 让 UI 线程能找到当前引擎的事件系统；离开作用域即断开。 */
+class CurrentSystemGuard {
+ public:
+  explicit CurrentSystemGuard(AndroidSystem* system) {
+    g_current_system.store(system);
+  }
+  ~CurrentSystemGuard() { g_current_system.store(nullptr); }
+  CurrentSystemGuard(const CurrentSystemGuard&) = delete;
+  CurrentSystemGuard& operator=(const CurrentSystemGuard&) = delete;
+};
+
 struct DiagOptions {
   bool trace = false;
   bool dump_graphics = false;
   bool audio_selftest = false;
+  // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
+  // 不同 RealLive 作品的脚本约定不一致，因此做成设备侧可调。
+  int touch_button = 1;
   // 0 表示不限时：应用要能一直停在标题/正文上，BGM 才不会「响一下就没了」。
   // 自动化测试需要在报告里拿到结果时，用 diag 文件设一个有限值。
   int time_budget_ms = 0;
@@ -146,6 +172,8 @@ DiagOptions LoadDiagOptions() {
       if (number > 0) options.max_instructions = number;
     } else if (key == "frame_log_every") {
       if (number > 0) options.frame_log_every = number;
+    } else if (key == "touch_button") {
+      if (number > 0) options.touch_button = number;
     }
   }
   return options;
@@ -382,6 +410,10 @@ void RunEngineOn(System& system,
                  std::string& report) {
   // 分步日志：真机上「跑很久却没有任何输出」时，用它定位卡在哪一步。
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: constructing RLMachine");
+
+  // 触摸输入（T2.3）：把当前系统暴露给 UI 线程，离开 RunEngineOn 时自动断开。
+  CurrentSystemGuard current_system(dynamic_cast<AndroidSystem*>(&system));
+
   RLMachine machine(system, archive);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddAllModules");
   AddAllModules(machine);
@@ -398,6 +430,7 @@ void RunEngineOn(System& system,
   // 设备侧诊断参数（文件不存在时全部取缺省值，行为与之前一致）。
   const DiagOptions diag = LoadDiagOptions();
   g_frame_log_every = diag.frame_log_every;
+  g_touch_buttons.store(diag.touch_button);
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 
@@ -710,6 +743,22 @@ void RequestStop(JNIEnv* /*env*/, jobject /*thiz*/) {
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "stop requested");
 }
 
+/**
+ * 触摸/鼠标输入（T2.3）。
+ *
+ * 坐标已经是**游戏帧坐标**（Kotlin 侧按帧在视图里的实际绘制矩形换算过），
+ * 这里只做入队：真正的注入在引擎线程的 ExecuteEventSystem 里完成。
+ */
+void TouchEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint action, jfloat x, jfloat y) {
+  AndroidSystem* system = g_current_system.load();
+  if (system == nullptr) return;  // 引擎没在跑，忽略
+
+  static_cast<AndroidEventSystem&>(system->event())
+      .PostTouchEvent(static_cast<int>(action),
+                      Point(static_cast<int>(x), static_cast<int>(y)),
+                      g_touch_buttons.load());
+}
+
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
 jint GetFrameSize(JNIEnv* /*env*/, jobject /*thiz*/) {
   std::lock_guard<std::mutex> lock(g_frame_mutex);
@@ -748,6 +797,7 @@ const JNINativeMethod kNativeMethods[] = {
     {"setDiagnosticsDir", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
+    {"touchEvent", "(IFF)V", reinterpret_cast<void*>(TouchEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <thread>
 
@@ -47,10 +48,81 @@ bool FirstCodepoint(const std::string& text, uint32_t& codepoint) {
 // ---------------------------------------------------------------------------
 
 AndroidEventSystem::AndroidEventSystem(Gameexe& gexe)
-    : EventSystem(gexe), last_mouse_move_ticks_(0) {}
+    : EventSystem(gexe),
+      mouse_pos_(Point(0, 0)),
+      last_mouse_move_ticks_(0) {}
 
-void AndroidEventSystem::ExecuteEventSystem(RLMachine& /*machine*/) {
-  // 触摸/按键的注入由 T2.3 实现；当前主循环不需要事件源即可推进。
+void AndroidEventSystem::PostTouchEvent(int action, const Point& position) {
+  PostTouchEvent(action, position, 1);
+}
+
+void AndroidEventSystem::PostTouchEvent(int action,
+                                        const Point& position,
+                                        int buttons) {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  // 引擎没在跑（或已经停止）时事件会堆积；留一个上限，丢掉最旧的。
+  constexpr size_t kMaxPending = 64;
+  if (pending_.size() >= kMaxPending) pending_.erase(pending_.begin());
+  pending_.push_back(PendingTouch{action, position, buttons});
+}
+
+/** 按位掩码设置某个鼠标键的状态，并派发事件（语义与上游 SDL 后端一致）。 */
+void AndroidEventSystem::ApplyButtonState(RLMachine& machine,
+                                          int button,
+                                          int state,
+                                          int button_mask) {
+  if ((button_mask & (button == 1 ? 1 : 2)) == 0) return;
+  if (button == 1) {
+    button1_state_ = state;
+  } else {
+    button2_state_ = state;
+  }
+  DispatchEvent(machine,
+                std::bind(&EventListener::MouseButtonStateChanged,
+                          std::placeholders::_1,
+                          button == 1 ? MOUSE_LEFT : MOUSE_RIGHT, 1));
+}
+
+void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
+  // 把 UI 线程投递的触摸事件注入引擎。
+  //
+  // 语义与上游 SDL 后端一致（sdl_event_system.cc）：
+  //   InjectMouseDown  -> button1 = 1（按住）
+  //   InjectMouseUp    -> button1 = 2（按下并抬起，脚本据此判定「点击完成」）
+  //   FlushMouseClicks -> 清零（脚本用 FlushClick 清除已消费的点击）
+  // 本作标题菜单就是靠 GetCursorPos 的第 3 个返回值 == 2 来判断点击的。
+  std::vector<PendingTouch> events;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    events.swap(pending_);
+  }
+
+  for (size_t i = 0; i < events.size(); ++i) {
+    const PendingTouch& event = events[i];
+
+    // 同一批里「按下」紧接着「抬起」时，把抬起推迟到下一帧：
+    // RealLive 脚本经常先看 button == 1（按住）再看 == 2（已松开），
+    // 一帧内合并掉会让它永远看不到「按住」这个状态。
+    if (event.action == 2 && i > 0 && events[i - 1].action == 0) {
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      pending_.insert(pending_.begin(), events.begin() + i, events.end());
+      break;
+    }
+
+    // 位置先行：按钮按下/抬起都发生在某个坐标上，事件回调需要一致的鼠标位置。
+    InjectMouseMovement(machine, event.position);
+    if (event.action == 0) {
+      ApplyButtonState(machine, 1, 1, event.buttons);
+      ApplyButtonState(machine, 2, 1, event.buttons);
+    } else if (event.action == 2) {
+      ApplyButtonState(machine, 1, 2, event.buttons);
+      ApplyButtonState(machine, 2, 2, event.buttons);
+    }
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-input",
+                        "touch action=%d at %d,%d buttons=%d (b1=%d b2=%d)",
+                        event.action, event.position.x(), event.position.y(),
+                        event.buttons, button1_state_, button2_state_);
+  }
 }
 
 unsigned int AndroidEventSystem::GetTicks() const { return NowMillis(); }
@@ -63,28 +135,45 @@ bool AndroidEventSystem::ShiftPressed() const { return false; }
 
 bool AndroidEventSystem::CtrlPressed() const { return false; }
 
-Point AndroidEventSystem::GetCursorPos() { return Point(0, 0); }
+Point AndroidEventSystem::GetCursorPos() { return mouse_pos_; }
 
 void AndroidEventSystem::GetCursorPos(Point& position, int& button1, int& button2) {
-  position = Point(0, 0);
-  button1 = 0;
-  button2 = 0;
+  position = mouse_pos_;
+  button1 = button1_state_;
+  button2 = button2_state_;
 }
 
-void AndroidEventSystem::FlushMouseClicks() {}
+void AndroidEventSystem::FlushMouseClicks() {
+  button1_state_ = 0;
+  button2_state_ = 0;
+}
 
 unsigned int AndroidEventSystem::TimeOfLastMouseMove() {
   return last_mouse_move_ticks_;
 }
 
-void AndroidEventSystem::InjectMouseMovement(RLMachine& /*machine*/,
-                                             const Point& /*loc*/) {
+void AndroidEventSystem::InjectMouseMovement(RLMachine& machine, const Point& loc) {
+  mouse_pos_ = loc;
   last_mouse_move_ticks_ = NowMillis();
+  BroadcastEvent(machine,
+                 std::bind(&EventListener::MouseMotion, std::placeholders::_1, loc));
 }
 
-void AndroidEventSystem::InjectMouseDown(RLMachine& /*machine*/) {}
+void AndroidEventSystem::InjectMouseDown(RLMachine& machine) {
+  button1_state_ = 1;
+  button2_state_ = 0;
+  DispatchEvent(machine,
+                std::bind(&EventListener::MouseButtonStateChanged,
+                          std::placeholders::_1, MOUSE_LEFT, 1));
+}
 
-void AndroidEventSystem::InjectMouseUp(RLMachine& /*machine*/) {}
+void AndroidEventSystem::InjectMouseUp(RLMachine& machine) {
+  button1_state_ = 2;
+  button2_state_ = 0;
+  DispatchEvent(machine,
+                std::bind(&EventListener::MouseButtonStateChanged,
+                          std::placeholders::_1, MOUSE_LEFT, 1));
+}
 
 // ---------------------------------------------------------------------------
 // AndroidTextSystem

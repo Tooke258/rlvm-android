@@ -2,6 +2,7 @@ package org.rlvm.android
 
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
+import android.graphics.PointF
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -37,8 +38,50 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     private var pixels: ByteBuffer? = null
     private var frameWidth = 0
     private var frameHeight = 0
+    // 这两个会被 UI 线程读取（触摸坐标换算），GL 线程写入，用 @Volatile 保证可见性。
+    @Volatile
     private var surfaceWidth = 1
+    @Volatile
     private var surfaceHeight = 1
+
+    /**
+     * 帧在视图里的缩放系数（居中显示，保持宽高比）。
+     *
+     * onDrawFrame 与 mapToFrame 必须用同一套规则，否则触摸坐标会和画面对不上——
+     * 所以这里只留一份实现。
+     */
+    private fun fitScale(): Pair<Float, Float> {
+        val frameAspect = frameWidth.toFloat() / frameHeight.toFloat()
+        val surfaceAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
+        return if (surfaceAspect > frameAspect) {
+            // 视图比画面宽：左右留黑边，画面占满高度。
+            Pair(frameAspect / surfaceAspect, 1f)
+        } else {
+            // 视图比画面高：上下留黑边，画面占满宽度。
+            Pair(1f, surfaceAspect / frameAspect)
+        }
+    }
+
+    /**
+     * 把视图坐标（触摸点）换算成游戏帧坐标；落在黑边上时返回 null。
+     *
+     * 从 UI 线程调用。
+     */
+    fun mapToFrame(viewX: Float, viewY: Float): PointF? {
+        if (frameWidth <= 0 || frameHeight <= 0) return null
+        val (scaleX, scaleY) = fitScale()
+        val width = surfaceWidth * scaleX
+        val height = surfaceHeight * scaleY
+        val left = (surfaceWidth - width) / 2f
+        val top = (surfaceHeight - height) / 2f
+        if (viewX < left || viewX > left + width || viewY < top || viewY > top + height) {
+            return null
+        }
+        return PointF(
+            (viewX - left) / width * frameWidth,
+            (viewY - top) / height * frameHeight
+        )
+    }
     private var lastSerial = -1
 
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
@@ -93,15 +136,7 @@ class RlvmRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1i(samplerHandle, 0)
 
         // 按画面比例做信箱式留边，避免 4:3 的画面被拉伸。
-        val frameAspect = frameWidth.toFloat() / frameHeight.toFloat()
-        val surfaceAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
-        var scaleX = 1f
-        var scaleY = 1f
-        if (surfaceAspect > frameAspect) {
-            scaleX = frameAspect / surfaceAspect
-        } else {
-            scaleY = surfaceAspect / frameAspect
-        }
+        val (scaleX, scaleY) = fitScale()
 
         // 帧缓冲第 0 行是画面顶部，而 GL 纹理原点在左下角，因此 V 轴要翻转。
         vertices.clear()
