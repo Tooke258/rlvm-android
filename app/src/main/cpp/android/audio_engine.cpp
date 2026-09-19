@@ -40,6 +40,32 @@ inline int16_t ClampToInt16(int32_t value) {
   return static_cast<int16_t>(value);
 }
 
+// 软限幅阈值：约 -1.7dBFS。超过它的样本走平滑压缩而不是硬削波。
+// 为什么需要：BGM 与语音同时播放时相加很容易顶到满刻度，硬 clamp 会产生
+// 刺耳的削波失真（听感就是"音质变差"）。
+constexpr int32_t kSoftLimit = 27000;
+constexpr int32_t kHardLimit = 32767;
+
+/**
+ * 软限幅：|x| <= kSoftLimit 时原样返回（绝大多数样本走这条，零额外开销）；
+ * 超出部分用 tanh 平滑压缩到 kSoftLimit..kHardLimit 之间。
+ */
+inline int16_t SoftLimit(int32_t value) {
+  if (value > kSoftLimit) {
+    const double over = static_cast<double>(value - kSoftLimit) /
+                        static_cast<double>(kHardLimit - kSoftLimit);
+    return static_cast<int16_t>(kSoftLimit +
+                                (kHardLimit - kSoftLimit) * std::tanh(over));
+  }
+  if (value < -kSoftLimit) {
+    const double over = static_cast<double>(-value - kSoftLimit) /
+                        static_cast<double>(kHardLimit - kSoftLimit);
+    return static_cast<int16_t>(-(kSoftLimit +
+                                  (kHardLimit - kSoftLimit) * std::tanh(over)));
+  }
+  return static_cast<int16_t>(value);
+}
+
 aaudio_data_callback_result_t RenderCallback(AAudioStream* /*stream*/,
                                              void* user_data,
                                              void* audio_data,
@@ -152,8 +178,40 @@ class MemoryWavSource : public AudioSource {
 std::unique_ptr<AudioSource> OpenMemoryWavSource(const void* data, size_t length) {
   if (data == nullptr || length < 64) return nullptr;
 
+  // 关键：上游 VoiceSample::Decode() 返回的 size 是**分配大小**（ovk_voice_sample.cc
+  // 里写的是 *size = buffer_size），可能比真实数据长；尾部那些未初始化字节如果
+  // 被当成音频播出去，听感就是"语音结束时一声爆响"。
+  // 这里按 RIFF 头声明的真实长度裁剪，并直接信任 WAV 解析结果。
+  const unsigned char* bytes = static_cast<const unsigned char*>(data);
+  size_t usable = length;
+  const auto read_u32 = [](const unsigned char* p) -> uint32_t {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+  };
+  if (length >= 44 && std::memcmp(bytes, "RIFF", 4) == 0) {
+    const size_t riff_end = static_cast<size_t>(read_u32(bytes + 4)) + 8;
+    if (riff_end >= 44 && riff_end < usable) usable = riff_end;
+
+    size_t off = 12;
+    while (off + 8 <= length) {
+      const uint32_t chunk_size = read_u32(bytes + off + 4);
+      if (std::memcmp(bytes + off, "data", 4) == 0) {
+        const size_t data_end = off + 8 + static_cast<size_t>(chunk_size);
+        if (data_end < usable) usable = data_end;
+        break;
+      }
+      const size_t next = off + 8 + static_cast<size_t>(chunk_size) +
+                          (static_cast<size_t>(chunk_size) & 1u);
+      if (next <= off) break;  // 防御：坏 chunk 大小
+      off = next;
+    }
+  }
+  __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                      "koe wav: allocated=%zu usable=%zu", length, usable);
+
   std::vector<char> buffer(static_cast<const char*>(data),
-                           static_cast<const char*>(data) + length);
+                           static_cast<const char*>(data) + usable);
   FILE* file = fmemopen(buffer.data(), buffer.size(), "rb");
   if (file == nullptr) {
     __android_log_print(ANDROID_LOG_WARN, kLogTag, "fmemopen failed for koe");
@@ -225,12 +283,30 @@ size_t ResamplingSource::ReadFrames(int16_t* out, size_t frames) {
       continue;
     }
 
+    // 三次插值（Catmull-Rom）：用 position_ 前后各两个采样点。
+    // 线性插值在高频上衰减明显，听感就是"音质偏低"；三次插值代价很小，
+    // 但对 44.1k→48k 这种轻度重采样已经足够好。
     const double frac = position_ - static_cast<double>(index);
-    const int16_t* a = in_ + index * kAudioChannels;
-    const int16_t* b = a + kAudioChannels;
+    const int i1 = static_cast<int>(index);
+    const int i0 = (i1 > 0) ? i1 - 1 : 0;
+    const int i2 = i1 + 1;
+    const int i3 = (i2 + 1 < static_cast<int>(in_len_)) ? i2 + 1 : i2;
+
     for (int ch = 0; ch < kAudioChannels; ++ch) {
-      out[produced * kAudioChannels + ch] = static_cast<int16_t>(
-          a[ch] + (static_cast<double>(b[ch] - a[ch]) * frac));
+      const double p0 = in_[i0 * kAudioChannels + ch];
+      const double p1 = in_[i1 * kAudioChannels + ch];
+      const double p2 = in_[i2 * kAudioChannels + ch];
+      const double p3 = in_[i3 * kAudioChannels + ch];
+
+      const double a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+      const double b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+      const double c = -0.5 * p0 + 0.5 * p2;
+      const double d = p1;
+
+      double value = ((a * frac + b) * frac + c) * frac + d;
+      if (value > 32767.0) value = 32767.0;
+      if (value < -32768.0) value = -32768.0;
+      out[produced * kAudioChannels + ch] = static_cast<int16_t>(value);
     }
     ++produced;
     position_ += step_;
@@ -352,6 +428,9 @@ struct AudioEngine::Channel {
   std::atomic<long long> fade_end_ms{0};
   std::atomic<bool> playing{false};
   std::atomic<bool> loop{false};
+  // 音源已读完但环形缓冲还没播完：此时保持 playing，等缓冲排空再停，
+  // 否则结尾会被硬截断（见 DecoderLoop 里的说明）。
+  std::atomic<bool> draining{false};
 };
 
 AudioEngine& AudioEngine::Instance() {
@@ -516,6 +595,7 @@ void AudioEngine::Play(int channel_index,
   Channel& channel = *channels_[channel_index];
 
   channel.playing.store(false);   // 先停，避免回调读到半更新状态
+  channel.draining.store(false);
   channel.ring->Reset();
   {
     std::lock_guard<std::mutex> lock(channel.mutex);
@@ -530,6 +610,8 @@ void AudioEngine::Stop(int channel_index) {
   if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
     return;
   Channel& channel = *channels_[channel_index];
+  // 显式停止是"立刻停"，不走进 draining（否则游戏切场景时残留的尾巴会继续响）。
+  channel.draining.store(false);
   channel.playing.store(false);
   std::lock_guard<std::mutex> lock(channel.mutex);
   channel.source.reset();
@@ -577,11 +659,24 @@ void AudioEngine::DecoderLoop() {
     bool did_work = false;
     for (auto& channel : channels_) {
       if (!channel->playing.load()) continue;
+
+      // 收尾：音源已读完（draining）时，等环形缓冲真正排空再停通道。
+      // 否则缓冲里剩下的那部分（最多约 1 秒）会被直接丢弃，表现为语音/音效
+      // 结尾"不自然地截断"。
+      if (channel->draining.load()) {
+        if (channel->ring->Available() == 0) {
+          channel->draining.store(false);
+          channel->playing.store(false);
+        }
+        continue;
+      }
+
       if (channel->ring->Space() < kChunkFrames) continue;
 
       std::lock_guard<std::mutex> lock(channel->mutex);
       if (!channel->source) {
-        channel->playing.store(false);
+        // 源已经不在（被 Stop 或上一轮收尾），走同一条排空路径。
+        channel->draining.store(true);
         continue;
       }
 
@@ -592,8 +687,10 @@ void AudioEngine::DecoderLoop() {
           did_work = true;
           continue;
         }
-        channel->playing.store(false);
+        // 关键：先进入 draining，让回调把缓冲播完，再真正停通道。
         channel->source.reset();
+        channel->draining.store(true);
+        did_work = true;
         continue;
       }
       channel->ring->Write(buffer.data(), got);
