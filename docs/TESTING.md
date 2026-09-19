@@ -61,6 +61,31 @@ Start-Sleep -Seconds 7
 & $adb -s $s shell rm /sdcard/shot.png
 ```
 
+### 设备侧诊断参数（不需要重新构建）
+
+把诊断文件 push 到下面这个位置，再点「运行 SAF 引擎」即可生效；文件不存在时全部取缺省值。
+模板见 `tools/rlvm-diag.sample.txt`：
+
+```powershell
+& $adb -s $s push build\rlvm-diag.txt /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+```
+
+支持的键（详见模板文件）：
+
+| 键 | 作用 |
+| --- | --- |
+| `trace=1` | 逐条指令追踪（上游 `set_tracing_on`），输出在 `rlvm-stderr` |
+| `dump_graphics=1` | 运行结束时转储图形栈：每个对象的 src/dst 矩形、alpha、可见性 |
+| `time_budget_ms=N` | 单次运行的执行时间片，缺省 3000 |
+| `max_instructions=N` | 指令条数上限 |
+| `frame_log_every=N` | 每 N 帧打一条帧日志，缺省 1（每帧） |
+
+排查「跑了很多指令却什么都没发生」时，上游诊断输出是关键：
+
+```powershell
+& $adb -s $s logcat -d -s rlvm-native:V rlvm-stdout:V rlvm-stderr:V rlvm-graphics:V '*:S'
+```
+
 ## 4. 测试数据
 
 **不使用任何商业游戏文件。** 测试样本取自 RLVM 上游自带的测试数据（GPLv3 项目自带，且这些 SEEN 是上游开发者生成的最小夹具）：
