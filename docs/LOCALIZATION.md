@@ -57,3 +57,37 @@
 - [ ] 引擎侧日文文本导出开关
 - [ ] 日/中对照表生成与自检
 - [ ] 渲染期替换 + 真机验证
+
+## 6. 导出开关的实现要点（已确认的接口）
+
+下一步要实现 `export_jp_text=1` 的实际导出，相关上游接口已经查清：
+
+```cpp
+// libreallive/archive.h
+Archive::begin() / end()          // 遍历 std::map<int, FilePos>（场景号 -> 位置）
+Scenario* Archive::GetScenario(int index);
+
+// libreallive/scenario.h
+class Scenario {
+  int scene_number() const;                     // 场景号
+  const_iterator begin()/end();                 // 遍历字节码元素
+};
+
+// libreallive/bytecode.h
+class TextoutElement : public BytecodeElement {
+  const string GetText() const;                 // 文本（CP932 原始字节）
+};
+```
+
+导出流程：`for (场景 in archive)` → `GetScenario(场景号)` → 遍历 `begin()/end()` →
+`dynamic_cast<const TextoutElement*>(...)` → `GetText()` → `cp932toUTF8(..., 0)` →
+按 `场景号 / 序号 / 文本` 写 TSV。
+
+**待确认的唯一细节**：`Script::BytecodeList` 的元素是指针还是引用（决定用
+`dynamic_cast<const TextoutElement*>(e->get())` 还是 `&*e`）；`scenario.h` 里
+`typedef BytecodeList::const_iterator const_iterator` 说明它定义在 `Script` 内部，
+下次先看一眼 `Script` 的成员声明即可，无需再猜。
+
+导出产物走应用外部文件目录（`/sdcard/Android/data/org.rlvm.android/files/jp-text.tsv`），
+用 `adb pull` 取回。自检：序章那句「心臓がドキドキ…」应出现在导出结果里
+（验证遍历顺序正确，这是后续与中文串对齐的前提）。
