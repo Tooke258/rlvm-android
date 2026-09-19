@@ -41,6 +41,7 @@
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
+#include "machine/serialization.h"
 #include "modules/modules.h"
 #include "utilities/file.h"
 #include "utilities/string_utilities.h"
@@ -555,6 +556,17 @@ void RunEngineOn(System& system,
   // 在 Android 上 std::cerr 又看不到，于是表现为「跑了很多指令却什么都没发生」。
   machine.SetPrintUndefinedOpcodes(true);
 
+  // 与上游 RLVMInstance 一致：启动时载入"全局数据"（Config：音量、文字速度、
+  // 画面设置等都在里面）。之前我们绕过了 RLVMInstance，这两步就漏掉了——
+  // 结果是配置写得下去却永远读不回来，表现为"config 不保留"。
+  try {
+    Serialization::loadGlobalMemory(machine);
+    report += "global memory loaded\n";
+  } catch (const std::exception& e) {
+    // 首次运行没有 global.sav.gz，属于正常情况。
+    report += std::string("global memory not loaded (first run?): ") + e.what() + "\n";
+  }
+
   // 设备侧诊断参数（文件不存在时全部取缺省值，行为与之前一致）。
   const DiagOptions diag = LoadDiagOptions();
   g_frame_log_every = diag.frame_log_every;
@@ -682,6 +694,15 @@ void RunEngineOn(System& system,
   //「开头能听到一点，随后被测试音乐打断，然后彻底没声音」。
   // 现在音频完全由游戏脚本驱动（日志里可见 play channel=30 file=BGM/BGM14.nwa）。
   // 音频链路的证据改为运行期周期上报：见下方 progress 日志里的 audio 行。
+
+  // 与上游 RLVMInstance 的收尾一致：把全局数据写回（Config 等）。
+  // 写在 RunEngineOn 退出前，也就是用户点「停止引擎」或时间片用尽时。
+  try {
+    Serialization::saveGlobalMemory(machine);
+    report += "global memory saved\n";
+  } catch (const std::exception& e) {
+    report += std::string("global memory save failed: ") + e.what() + "\n";
+  }
 }
 
 jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
