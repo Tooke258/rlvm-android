@@ -80,7 +80,11 @@ void AndroidEventSystem::ApplyButtonState(RLMachine& machine,
   DispatchEvent(machine,
                 std::bind(&EventListener::MouseButtonStateChanged,
                           std::placeholders::_1,
-                          button == 1 ? MOUSE_LEFT : MOUSE_RIGHT, 1));
+                          button == 1 ? MOUSE_LEFT : MOUSE_RIGHT,
+                          // 必须是真实的按下/松开状态，不能像 SDL 的注入 API 那样
+                          // 两个都传 1：正文推进（PauseLongOperation）只在
+                          // !pressed（松开）时结束，传错就表现为「点击没有任何输出」。
+                          state == 1));
 }
 
 void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
@@ -160,19 +164,11 @@ void AndroidEventSystem::InjectMouseMovement(RLMachine& machine, const Point& lo
 }
 
 void AndroidEventSystem::InjectMouseDown(RLMachine& machine) {
-  button1_state_ = 1;
-  button2_state_ = 0;
-  DispatchEvent(machine,
-                std::bind(&EventListener::MouseButtonStateChanged,
-                          std::placeholders::_1, MOUSE_LEFT, 1));
+  ApplyButtonState(machine, 1, 1, 1);
 }
 
 void AndroidEventSystem::InjectMouseUp(RLMachine& machine) {
-  button1_state_ = 2;
-  button2_state_ = 0;
-  DispatchEvent(machine,
-                std::bind(&EventListener::MouseButtonStateChanged,
-                          std::placeholders::_1, MOUSE_LEFT, 1));
+  ApplyButtonState(machine, 1, 2, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +265,28 @@ int AndroidTextSystem::GetCharWidth(int size, uint16_t codepoint) {
 // ---------------------------------------------------------------------------
 
 AndroidTextWindow::AndroidTextWindow(System& system, int window_num)
-    : TextWindow(system, window_num) {}
+    : TextWindow(system, window_num) {
+  // 文字看不见的根因就是这一行：基类构造函数只设置了 default_colour_
+  //（SetDefaultTextColor(gexe("COLOR_TABLE", 0))，本作是白 255,255,255），
+  // 而 font_colour_ 要等 ClearWin() 才会 = default_colour_。游戏在第一条文字
+  // 出现前并不一定调用 ClearWin，于是字形一直用 RGBColour 默认构造出的黑色绘制——
+  // 表现为「字体预览、正文文字全部纯黑不可见」。
+  // 这里在构造完成时就把当前色对齐到默认色，不依赖游戏是否清过窗口。
+  font_colour_ = default_colour_;
+  __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                      "text window #%d colour after ctor: default=(%d,%d,%d) font=(%d,%d,%d)",
+                      window_num, default_colour_.r(), default_colour_.g(),
+                      default_colour_.b(), font_colour_.r(), font_colour_.g(),
+                      font_colour_.b());
+}
+
+void AndroidTextWindow::SetFontColor(const std::vector<int>& colour_data) {
+  TextWindow::SetFontColor(colour_data);
+  __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                      "SetFontColor(%zu values) -> font=(%d,%d,%d)",
+                      colour_data.size(), font_colour_.r(), font_colour_.g(),
+                      font_colour_.b());
+}
 
 std::shared_ptr<Surface> AndroidTextWindow::GetTextSurface() {
   if (!text_surface_) {
@@ -297,6 +314,10 @@ void AndroidTextWindow::AddSelectionItem(const std::string& /*utf8str*/,
                                          int /*selection_id*/) {}
 
 void AndroidTextWindow::ClearWin() {
+  // 必须调用基类：上游在这里做 font_colour_ = default_colour_（以及重置文字插入点）。
+  // 之前漏掉它，后果是默认色（白）从未生效、字形全按构造时的黑色绘制，
+  // 而且插入点不重置（所有字形都画在 (0,0) 附近）。
+  TextWindow::ClearWin();
   if (text_surface_) text_surface_->Fill(RGBAColour(0, 0, 0, 0));
   if (name_surface_) name_surface_->Fill(RGBAColour(0, 0, 0, 0));
 }

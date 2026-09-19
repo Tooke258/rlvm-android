@@ -101,6 +101,7 @@ class AndroidTextWindow : public TextWindow {
 
   std::shared_ptr<Surface> GetTextSurface() override;
   std::shared_ptr<Surface> GetNameSurface() override;
+  void SetFontColor(const std::vector<int>& colour_data) override;
   void RenderNameInBox(const std::string& utf8str) override;
   void DisplayRubyText(const std::string& utf8str) override;
   void AddSelectionItem(const std::string& utf8str, int selection_id) override;
