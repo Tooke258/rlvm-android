@@ -149,6 +149,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xF0101010.toInt())
             setPadding(dp(8), dp(8), dp(8), dp(8))
+            // 面板内也要有收起入口：球虽然始终在最上层（见下方添加顺序），
+            // 但多一个明确的「收起」按钮更符合直觉。
+            addView(Button(this@MainActivity).apply {
+                text = "收起面板"
+                setOnClickListener { togglePanel() }
+            })
             addView(buttonRow(pickButton, safButton))
             addView(buttonRow(stopButton, orientationButton))
             addView(buttonRow(pathButton, fitButton))
@@ -202,13 +208,19 @@ class MainActivity : Activity() {
         val root = FrameLayout(this)
         root.addView(glView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // 先加侧栏、后加球：FrameLayout 里后添加的在上层，
+        // 否则面板一展开就把球盖住，用户再也点不到它（无法收起）。
+        root.addView(panel, FrameLayout.LayoutParams(
+            panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
         val ballParams = FrameLayout.LayoutParams(
             ballSize, ballSize, Gravity.END or Gravity.CENTER_VERTICAL)
         ballParams.rightMargin = dp(6)
         root.addView(ball, ballParams)
-        root.addView(panel, FrameLayout.LayoutParams(
-            panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
-        panel.translationX = panelWidth.toFloat()  // 初始收在屏幕外
+        // 初始状态必须明确为「收起」。用 post 在首次布局后再设一次，
+        // 以免个别机型在首次 layout 时把 translation 重置。
+        panelOpen = false
+        panel.translationX = panelWidth.toFloat()
+        panel.post { if (!panelOpen) panel.translationX = panelWidth.toFloat() }
         setContentView(root)
 
         log(buildString {
