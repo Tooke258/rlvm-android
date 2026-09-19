@@ -15,7 +15,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // task.md 规定只支持这两个 ABI
+        // 发布目标只有这两个 ABI（task.md 硬性要求）。
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
@@ -42,6 +42,12 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            // debug 额外编入 x86_64：本机模拟器是 x86_64 平台，而我们唯一的
+            // Android 运行环境就是模拟器。发布构建（release）不含它，仍然只有
+            // task.md 规定的 arm64-v8a 与 armeabi-v7a。
+            ndk {
+                abiFilters += "x86_64"
+            }
         }
         release {
             isMinifyEnabled = false
