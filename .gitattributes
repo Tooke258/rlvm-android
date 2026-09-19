@@ -1,0 +1,21 @@
+# 统一换行符，避免 Windows 上 CRLF/LF 混用污染 C++ 源码 diff
+* text=auto eol=lf
+
+# Windows 脚本必须保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.bmp binary
+*.tga binary
+*.gif binary
+*.icns binary
+*.jar binary
+*.zip binary
+*.so binary
+*.a binary
+*.dll binary
+*.exe binary
