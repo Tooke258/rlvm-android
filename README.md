@@ -71,10 +71,11 @@ git diff b87ff44 HEAD -- rlvm-release-0.14
 powershell -File tools/setup_third_party.ps1
 ```
 
-Boost 用源码树（本机默认 `E:\boost-1.92.0`），可用环境变量或 Gradle 参数指定：
+Boost 需要一份源码树。用环境变量、`-DBOOST_SOURCE_DIR=`，或在 gitignore 的
+`local.properties` 里写 `boost.dir=` 指定：
 
 ```powershell
-$env:BOOST_SOURCE_DIR = "D:\boost-1.92.0"
+$env:BOOST_SOURCE_DIR = "<Boost 源码树>"
 ```
 
 构建：

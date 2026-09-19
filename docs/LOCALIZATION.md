@@ -2,7 +2,7 @@
 
 > 记录时间：2026-09-19
 > 涉及本地文件（**均不进仓库**）：`local-data/dump-translation.tsv`、
-> `C:\Users\tooke\Desktop\REALLIVE_chs.v0.26.DMP`
+> `<本机路径>\REALLIVE_chs.v0.26.DMP`
 
 ## 1. 现状：译文在哪
 
@@ -77,7 +77,7 @@ RLVM 本身支持多文本编码（`src/encodings/cp936.cc` 即 GBK），场景�
 
 | 文件 | 说明 |
 | --- | --- |
-| `C:\Users\tooke\Desktop\REALLIVE_chs.v0.26.DMP` | 内存转储副本（`Temp` 会被清理，这份是保险） |
+| `<本机路径>\REALLIVE_chs.v0.26.DMP` | 内存转储副本（`Temp` 会被清理，这份是保险；本机真值见 `local-data/LOCAL-PATHS.md`） |
 | `local-data/dump-translation.tsv` | 2398 条 `偏移<TAB>中文`，UTF-8 |
 | `build/dump-translation.tsv` | 同一份工作副本 |
 | `local-data/dump-90-102MB.bin` | **12MB 切片**：中文剧本主区（1480 条译文集中于此） |

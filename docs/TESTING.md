@@ -7,7 +7,7 @@
 | 项 | 值 |
 | --- | --- |
 | 机型 | Redmi K40 游戏版（M2012K10C / `ares`） |
-| adb serial | `if6lf67xkfs4ibf6` |
+| adb serial | `<设备序列号>`（用 `adb devices` 查；本机真值见 `local-data/LOCAL-PATHS.md`） |
 | Android | 12（SDK 31） |
 | ABI | `arm64-v8a`、`armeabi-v7a` |
 | GPU | Adreno 650（后续 GLES 渲染验证的目标机型） |
@@ -24,16 +24,16 @@
 两者都必须用提权（`require_escalated`）执行。构建前要显式设置：
 
 ```powershell
-$env:JAVA_HOME='E:\STM32cubeMX\jre'
-$env:ANDROID_SDK_ROOT='E:\DEV\AndroidSdk'
+$env:JAVA_HOME='<JDK 21 路径>'
+$env:ANDROID_SDK_ROOT='<Android SDK 路径>'
 ```
 
 ## 3. 标准流程
 
 ```powershell
-$adb='E:\DEV\AndroidSdk\platform-tools\adb.exe'
-$s='if6lf67xkfs4ibf6'
-$repo='C:\Users\tooke\Desktop\rlvm-release-0.14'
+$adb='<Android SDK 路径>\platform-tools\adb.exe'
+$s='<设备序列号>'                 # adb devices 查
+$repo='<工作区>'                  # 本仓库根目录
 
 # 1) 确认设备在线
 & $adb devices -l

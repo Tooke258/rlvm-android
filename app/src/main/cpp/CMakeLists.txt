@@ -22,15 +22,38 @@ if(NOT EXISTS "${RLVM_SOURCE_DIR}/src/machine/rlmachine.cc")
 endif()
 
 # Boost 源码树（见 docs/DECISIONS.md D-010）。
-# 优先级：-DBOOST_SOURCE_DIR=... > 环境变量 BOOST_SOURCE_DIR > 本机默认路径。
+# 优先级：-DBOOST_SOURCE_DIR=... > 环境变量 BOOST_SOURCE_DIR
+#         > local.properties 的 boost.dir=（本机路径，该文件已 gitignore）
+#         > third_party/ 下解压出来的 boost* 目录。
 if(NOT BOOST_SOURCE_DIR AND DEFINED ENV{BOOST_SOURCE_DIR})
     file(TO_CMAKE_PATH "$ENV{BOOST_SOURCE_DIR}" BOOST_SOURCE_DIR)
 endif()
-if(NOT BOOST_SOURCE_DIR AND EXISTS "E:/boost-1.92.0/boost/version.hpp")
-    set(BOOST_SOURCE_DIR "E:/boost-1.92.0")
+if(NOT BOOST_SOURCE_DIR)
+    set(_local_props "${CMAKE_CURRENT_SOURCE_DIR}/../../../../local.properties")
+    if(EXISTS "${_local_props}")
+        file(STRINGS "${_local_props}" _boost_line REGEX "^[ \t]*boost\\.dir[ \t]*=")
+        if(_boost_line)
+            string(REGEX REPLACE "^[ \t]*boost\\.dir[ \t]*=[ \t]*" "" _boost_path "${_boost_line}")
+            string(REPLACE "\\:" ":" _boost_path "${_boost_path}")
+            string(REPLACE "\\\\" "/" _boost_path "${_boost_path}")
+            string(REPLACE "\\" "/" _boost_path "${_boost_path}")
+            string(STRIP "${_boost_path}" _boost_path)
+            file(TO_CMAKE_PATH "${_boost_path}" BOOST_SOURCE_DIR)
+        endif()
+    endif()
+endif()
+if(NOT BOOST_SOURCE_DIR)
+    file(GLOB _boost_candidates LIST_DIRECTORIES true
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/boost*")
+    foreach(_candidate ${_boost_candidates})
+        if(EXISTS "${_candidate}/boost/version.hpp")
+            set(BOOST_SOURCE_DIR "${_candidate}")
+            break()
+        endif()
+    endforeach()
 endif()
 if(NOT EXISTS "${BOOST_SOURCE_DIR}/boost/version.hpp")
-    message(FATAL_ERROR "找不到 Boost 源码树，请用 -DBOOST_SOURCE_DIR=<boost 根目录> 指定")
+    message(FATAL_ERROR "找不到 Boost 源码树；请用 -DBOOST_SOURCE_DIR=<boost 根目录>、环境变量 BOOST_SOURCE_DIR，或在 local.properties 里写 boost.dir=<boost 根目录> 指定")
 endif()
 
 message(STATUS "RLVM source : ${RLVM_SOURCE_DIR}")

@@ -162,7 +162,7 @@ rlvm-release-0.14/                工作区根（同时也是 git 仓库根）
 
 ### 构建
 
-先设置 `JAVA_HOME=E:\STM32cubeMX\jre` 与 `ANDROID_SDK_ROOT=E:\DEV\AndroidSdk`
+先设置 `JAVA_HOME=<JDK 21 路径>` 与 `ANDROID_SDK_ROOT=<Android SDK 路径>`
 （已配置为永久用户环境变量），然后在仓库根执行 `.\gradlew.bat assembleDebug --no-daemon`。
 
 **必须提权**：沙箱把 `~/.gradle` 与 `.git` 设为只读，Gradle 构建与 git 提交都要
@@ -173,8 +173,8 @@ rlvm-release-0.14/                工作区根（同时也是 git 仓库根）
 | 项 | 值 |
 | --- | --- |
 | 设备 | Redmi K40 游戏版（M2012K10C / ares），Android 12 / SDK 31，arm64-v8a |
-| adb serial | `if6lf67xkfs4ibf6` |
-| 真实游戏 | `/sdcard/Download/GAL/库特Wafter/库特Wafter`（用户自有，已 SAF 授权） |
+| adb serial | `<设备序列号>` |
+| 真实游戏 | `<游戏目录>`（用户自有，已 SAF 授权；本机真值见 `local-data/LOCAL-PATHS.md`） |
 | 夹具位置 | `/sdcard/Android/data/org.rlvm.android/files/probe`（普通路径）与 `/sdcard/Download/rlvm-probe`（SAF） |
 
 ### 测试夹具
@@ -256,7 +256,7 @@ frame_log_every=120
 ## 9. 复现一次完整验证
 
 1. 构建：在仓库根执行 `.\gradlew.bat assembleDebug --no-daemon`（需提权）。
-2. 安装：`adb -s if6lf67xkfs4ibf6 install -r app\build\outputs\apk\debug\app-debug.apk`。
+2. 安装：`adb -s <设备序列号> install -r app\build\outputs\apk\debug\app-debug.apk`。
 3. 清日志并启动：`adb -s ... logcat -c`、`am force-stop org.rlvm.android`、
    `am start -n org.rlvm.android/.MainActivity`。
 4. 自动点击：`uiautomator dump` 后 `pull` 出 UI XML，取 `运行 SAF 引擎` 的 bounds

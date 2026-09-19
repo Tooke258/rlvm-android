@@ -41,8 +41,8 @@ third_party/
 Thumbs.db
 *~
 *.swp
-.vscode/*
-!.vscode/c_cpp_properties.json
+# 本机 IDE 配置（NDK / Boost 的绝对路径），不入库
+.vscode/
 build/
 # 本地数据：汉化译文、内存转储等——属于用户本地的商业游戏内容，绝不进仓库
 local-data/

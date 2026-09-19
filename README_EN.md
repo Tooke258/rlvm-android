@@ -84,11 +84,12 @@ them with:
 powershell -File tools/setup_third_party.ps1
 ```
 
-Boost must be a source tree (the local default is `E:\boost-1.92.0`); set an
-environment variable or pass it to Gradle:
+Boost must be provided as a source tree. Point the build at it with an
+environment variable, `-DBOOST_SOURCE_DIR=`, or a `boost.dir=` entry in the
+gitignored `local.properties`:
 
 ```powershell
-$env:BOOST_SOURCE_DIR = "D:\boost-1.92.0"
+$env:BOOST_SOURCE_DIR = "<path-to-boost>"
 ```
 
 Build:

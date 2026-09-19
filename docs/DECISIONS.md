@@ -7,7 +7,7 @@
 ## D-001 用户级环境变量指向现有 JDK 21 与 Android SDK
 
 - **日期**：2026-09-19
-- **决策**：`JAVA_HOME=E:\STM32cubeMX\jre`（Temurin 21.0.9 LTS）、`ANDROID_SDK_ROOT=E:\DEV\AndroidSdk`，并追加 JDK/bin、platform-tools、cmdline-tools 到用户 PATH。
+- **决策**：`JAVA_HOME` 指向本机现存的 Temurin 21.0.9 LTS，`ANDROID_SDK_ROOT` 指向本机 Android SDK，并追加 JDK/bin、platform-tools、cmdline-tools 到用户 PATH。
 - **理由**：本机重装系统后注册表被重置，但 E 盘工具幸存。除 STM32CubeMX 自带 JDK 21 外，其余 JDK 均来自 Minecraft 启动器（17 / 22），路径带日期目录更易失效；21 是现存最新 LTS。
 - **遗留风险**：该 JDK 属于第三方软件目录，卸载 STM32CubeMX 会使 `JAVA_HOME` 失效。建议后续换装独立 Temurin LTS。
 - **状态**：已执行
@@ -28,7 +28,7 @@
 
 - **日期**：2026-09-19
 - **决策**：以本机已缓存的组合作为构建基线。
-- **理由**：该组合在 `C:\Users\tooke\Desktop\SAKANA\sakana_APK\new_sakana_apk\android` 上成功构建过；Gradle 9.1.0 发行版是 `~/.gradle/wrapper/dists` 中唯一已下载的发行版，AGP 9.0.1 与 Kotlin 2.3.20 构件也都在缓存中，可离线解析。
+- **理由**：该组合在本机另一个工程的 Android 壳上成功构建过；Gradle 9.1.0 发行版是 `~/.gradle/wrapper/dists` 中唯一已下载的发行版，AGP 9.0.1 与 Kotlin 2.3.20 构件也都在缓存中，可离线解析。
 - **备注**：AGP 9 为主版本升级，DSL 与 8.x 存在破坏性差异；新工程按 9.x DSL 编写，不使用已删除的配置项。
 - **状态**：已决定，待 T0.2 落地
 
@@ -46,7 +46,7 @@
 ## D-005 git 仓库以当前用户身份初始化
 
 - **日期**：2026-09-19
-- **决策**：删除沙箱账户创建的 `.git` 后，以 `tooke` 身份重建并提交基线。
+- **决策**：删除沙箱账户创建的 `.git` 后，以本机账户身份重建并提交基线。
 - **理由**：沙箱运行在独立的 Windows 账户下，其创建的 `.git` 属主与当前用户不一致，git 会以 `dubious ownership` 拒绝所有操作。
 - **备选**：保留原 `.git` 并配置 `safe.directory`（更绕，且后续写入仍受沙箱只读限制）。
 - **状态**：已执行（提交 `b87ff44`，1066 个文件）
@@ -145,9 +145,9 @@
 ## D-010 Boost 1.92.0 从源码编译所需库，绕开 b2
 
 - **日期**：2026-09-19
-- **决策**：使用 `E:\boost-1.92.0`（b2-nodocs 布局），在 CMake 中直接编译 Boost.Filesystem / Boost.Serialization / Boost.Iostreams 的源文件。
+- **决策**：使用 Boost 1.92.0 源码树（b2-nodocs 布局），在 CMake 中直接编译 Boost.Filesystem / Boost.Serialization / Boost.Iostreams 的源文件。
 - **理由**：① RLVM 核心 149 个文件中完全不含 `<SDL/...>`，但深度依赖 Boost——`BOOST_CLASS_VERSION` ×9、`boost::serialization::access` ×24、文本归档 ×72，存档格式无法用标准库替代；② 实测核心用到的 36 个 Boost 头里只有 1 个缺失（`filesystem/convenience.hpp`，早已被移除，其 API 已在 `operations.hpp`），说明 1.92 几乎可直接使用；③ 直接编源码比把 b2 调到能交叉编译更可控。
-- **代价**：Boost 源码树需由 `tools/setup_third_party.ps1` 获取（约 140 MB，gitignore）。CMake 用 `BOOST_SOURCE_DIR` 定位，默认 `E:/boost-1.92.0`，支持 `-D` 或环境变量覆盖。
+- **代价**：Boost 源码树需由 `tools/setup_third_party.ps1` 获取（约 140 MB，gitignore）。CMake 用 `BOOST_SOURCE_DIR` 定位，优先级为 `-DBOOST_SOURCE_DIR=` > 环境变量 > gitignore 的 `local.properties` 里的 `boost.dir=` > `third_party/` 下的解压目录。
 - **状态**：已执行并验证
 
 ---

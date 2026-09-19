@@ -64,10 +64,12 @@ rlvm-release-0.14/                     # 工程根 = git 仓库根
 构建所需环境变量已配置为**永久用户环境变量**（见 `docs/ENVIRONMENT.md` 第 4 节）：
 
 ```
-JAVA_HOME          = E:\STM32cubeMX\jre
-ANDROID_SDK_ROOT   = E:\DEV\AndroidSdk
-ANDROID_NDK_HOME   = E:\DEV\AndroidSdk\ndk\28.2.13676358
+JAVA_HOME          = <JDK 21 路径>
+ANDROID_SDK_ROOT   = <Android SDK 路径>
+ANDROID_NDK_HOME   = <Android SDK 路径>\ndk\28.2.13676358
 ```
+
+本机各占位符对应的真实路径见 `local-data/LOCAL-PATHS.md`（该目录不进仓库）。
 
 常用命令（在工程根执行）：
 
