@@ -666,6 +666,13 @@ void AudioEngine::Play(int channel_index,
   }
   channel.volume.store(clamped);
   channel.loop.store(loop);
+  // 假设 A：起播必须清掉**上一次**的音量渐变状态。游戏播 BGM 常用"淡入"，
+  // 而 fade_from/fade_start_ms/fade_end_ms 是三个独立的原子量：如果上一首的
+  // 淡入参数还留着，起播后的第一个回调会按旧参数算出一个错误音量——音量突变
+  // 听起来就是一声爆点，且必然"每次起播都出现"。
+  channel.fade_from.store(clamped);
+  channel.fade_start_ms.store(0);
+  channel.fade_end_ms.store(0);
   // 起播淡入：消除"从 0 直接跳到文件首样本"的台阶（BGM 起播爆点）。
   channel.fade_in_remaining = kFadeInFrames;
   channel.playing.store(true);
