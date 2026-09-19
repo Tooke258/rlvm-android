@@ -47,6 +47,18 @@ constexpr int32_t kSoftLimit = 27000;
 constexpr int32_t kHardLimit = 32767;
 
 /**
+ * Lanczos-2 核：sinc(x) * sinc(x/2)，|x| < 2 之外为 0。
+ * 用于重采样插值——比线性/三次插值保留更多高频（见 ResamplingSource 的说明）。
+ */
+double LanczosWeight(double x) {
+  const double ax = x < 0 ? -x : x;
+  if (ax < 1e-9) return 1.0;
+  if (ax >= 2.0) return 0.0;
+  const double px = 3.14159265358979323846 * x;
+  return 2.0 * std::sin(px) * std::sin(px / 2.0) / (px * px);
+}
+
+/**
  * 软限幅：|x| <= kSoftLimit 时原样返回（绝大多数样本走这条，零额外开销）；
  * 超出部分用 tanh 平滑压缩到 kSoftLimit..kHardLimit 之间。
  */
@@ -283,14 +295,21 @@ size_t ResamplingSource::ReadFrames(int16_t* out, size_t frames) {
       continue;
     }
 
-    // 三次插值（Catmull-Rom）：用 position_ 前后各两个采样点。
-    // 线性插值在高频上衰减明显，听感就是"音质偏低"；三次插值代价很小，
-    // 但对 44.1k→48k 这种轻度重采样已经足够好。
+    // Lanczos-2 插值：用 position_ 前后各两个采样点加窗 sinc 加权。
+    // 线性插值高频衰减明显（听感"闷"、发毛），三次插值好一些但仍有滚降；
+    // Lanczos-2 在 44.1k→48k 这种轻度重采样上基本不损失高频。
     const double frac = position_ - static_cast<double>(index);
     const int i1 = static_cast<int>(index);
     const int i0 = (i1 > 0) ? i1 - 1 : 0;
     const int i2 = i1 + 1;
     const int i3 = (i2 + 1 < static_cast<int>(in_len_)) ? i2 + 1 : i2;
+
+    // 四个采样点到实际位置的距离：i0 在 -1 处，i3 在 +2 处。
+    const double w0 = LanczosWeight(frac + 1.0);
+    const double w1 = LanczosWeight(frac);
+    const double w2 = LanczosWeight(1.0 - frac);
+    const double w3 = LanczosWeight(2.0 - frac);
+    const double norm = w0 + w1 + w2 + w3;
 
     for (int ch = 0; ch < kAudioChannels; ++ch) {
       const double p0 = in_[i0 * kAudioChannels + ch];
@@ -298,12 +317,12 @@ size_t ResamplingSource::ReadFrames(int16_t* out, size_t frames) {
       const double p2 = in_[i2 * kAudioChannels + ch];
       const double p3 = in_[i3 * kAudioChannels + ch];
 
-      const double a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
-      const double b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
-      const double c = -0.5 * p0 + 0.5 * p2;
-      const double d = p1;
-
-      double value = ((a * frac + b) * frac + c) * frac + d;
+      double value = 0.0;
+      if (norm > 1e-9) {
+        value = (p0 * w0 + p1 * w1 + p2 * w2 + p3 * w3) / norm;
+      } else {
+        value = p1;  // 退化情形（几乎不会发生）：保持原样本
+      }
       if (value > 32767.0) value = 32767.0;
       if (value < -32768.0) value = -32768.0;
       out[produced * kAudioChannels + ch] = static_cast<int16_t>(value);
@@ -435,6 +454,11 @@ struct AudioEngine::Channel {
   std::atomic<bool> fade_out_request{false};
   // 仅由音频回调读写的淡出剩余帧数（回调是唯一写入者，无需原子）。
   int fade_out_remaining = 0;
+  // 换源交叉淡化：新音源先挂起（受 mutex 保护），等旧内容淡出结束后由解码
+  // 线程装上并开始播放。这样"直接切换到新音频"也不会在切换点留下咔哒声。
+  std::unique_ptr<AudioSource> pending_source;
+  std::atomic<int> pending_volume{255};
+  std::atomic<bool> pending_loop{false};
 };
 
 // 淡出长度：约 4ms @48kHz。太短压不住咔哒，太长会让人觉得"反应慢"。
@@ -603,6 +627,18 @@ void AudioEngine::Play(int channel_index,
   if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
     return;
   Channel& channel = *channels_[channel_index];
+  const int clamped = std::max(0, std::min(255, volume));
+
+  // 正在播（或正在淡出）时不能直接换源：旧波形会从非零值被硬切到新波形，
+  // 听感就是切换瞬间的咔哒。改为挂起新源，让旧内容先淡出，再由解码线程接手。
+  if (channel.playing.load(std::memory_order_relaxed)) {
+    std::lock_guard<std::mutex> lock(channel.mutex);
+    channel.pending_source = std::move(source);
+    channel.pending_volume.store(clamped);
+    channel.pending_loop.store(loop);
+    channel.fade_out_request.store(true);
+    return;
+  }
 
   channel.playing.store(false);   // 先停，避免回调读到半更新状态
   channel.draining.store(false);
@@ -611,8 +647,9 @@ void AudioEngine::Play(int channel_index,
   {
     std::lock_guard<std::mutex> lock(channel.mutex);
     channel.source = std::move(source);
+    channel.pending_source.reset();
   }
-  channel.volume.store(std::max(0, std::min(255, volume)));
+  channel.volume.store(clamped);
   channel.loop.store(loop);
   channel.playing.store(true);
 }
@@ -667,6 +704,23 @@ void AudioEngine::DecoderLoop() {
   while (!shutdown_requested_.load()) {
     bool did_work = false;
     for (auto& channel : channels_) {
+      // 换源必须在 playing 检查之前处理：旧内容淡出完成后 playing 已被回调置为
+      // false，如果放在后面就会被直接跳过，新音源永远装不上。
+      {
+        std::lock_guard<std::mutex> lock(channel->mutex);
+        if (channel->pending_source != nullptr &&
+            !channel->fade_out_request.load()) {
+          channel->source = std::move(channel->pending_source);
+          channel->ring->Reset();
+          channel->volume.store(channel->pending_volume.load());
+          channel->loop.store(channel->pending_loop.load());
+          channel->draining.store(false);
+          channel->playing.store(true);
+          did_work = true;
+          continue;
+        }
+      }
+
       if (!channel->playing.load()) continue;
 
       // 收尾：音源已读完（draining）时，等环形缓冲真正排空再停通道。
