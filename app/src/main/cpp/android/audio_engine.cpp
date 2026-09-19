@@ -104,6 +104,7 @@ size_t FrameRing::Space() const {
 }
 
 size_t FrameRing::Write(const int16_t* src, size_t frames) {
+  const uint32_t generation = generation_.load(std::memory_order_acquire);
   const size_t space = Space();
   if (frames > space) frames = space;
   size_t tail = tail_.load(std::memory_order_relaxed);
@@ -112,19 +113,27 @@ size_t FrameRing::Write(const int16_t* src, size_t frames) {
     data_[index * 2] = src[i * 2];
     data_[index * 2 + 1] = src[i * 2 + 1];
   }
+  // 期间若发生 Reset，head/tail 已被清零，这里必须放弃本次写入，
+  // 否则会把 tail 设成一个与清零状态不一致的值。
+  if (generation_.load(std::memory_order_acquire) != generation) return 0;
   tail_.store((tail + frames) % capacity_, std::memory_order_release);
   return frames;
 }
 
 size_t FrameRing::Read(int16_t* dst, size_t frames) {
-  const size_t available = Available();
+  const uint32_t generation = generation_.load(std::memory_order_acquire);
+  const size_t tail = tail_.load(std::memory_order_acquire);
+  const size_t head = head_.load(std::memory_order_acquire);
+  const size_t available = (tail + capacity_ - head) % capacity_;
   if (frames > available) frames = available;
-  size_t head = head_.load(std::memory_order_relaxed);
   for (size_t i = 0; i < frames; ++i) {
     const size_t index = (head + i) % capacity_;
     dst[i * 2] = data_[index * 2];
     dst[i * 2 + 1] = data_[index * 2 + 1];
   }
+  // 关键的防御：如果读取期间发生了 Reset，上面复制到的可能是 Reset 之前的
+  // 陈旧样本（缓冲内容不会被清零）。此时必须丢弃，返回 0 表示"本次没有数据"。
+  if (generation_.load(std::memory_order_acquire) != generation) return 0;
   head_.store((head + frames) % capacity_, std::memory_order_release);
   return frames;
 }
@@ -132,6 +141,7 @@ size_t FrameRing::Read(int16_t* dst, size_t frames) {
 void FrameRing::Reset() {
   head_.store(0, std::memory_order_release);
   tail_.store(0, std::memory_order_release);
+  generation_.fetch_add(1, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------

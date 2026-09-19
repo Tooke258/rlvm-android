@@ -48,6 +48,10 @@ class FrameRing {
   size_t capacity_;
   std::atomic<size_t> head_{0};  // 读位置（帧）
   std::atomic<size_t> tail_{0};  // 写位置（帧）
+  // 代次：每次 Reset 递增。读/写两端都用它检测"本次操作期间是否被 Reset 过"，
+  // 因为 Reset 由控制线程发起、而读写分别在解码线程与音频回调上并发进行——
+  // 没有这个计数，回调会在 Reset 后按旧位置读到缓冲里的陈旧数据（起播爆音）。
+  std::atomic<uint32_t> generation_{0};
 };
 
 /** 可播放的音源：按需解码出交错立体声 16-bit 帧。 */
