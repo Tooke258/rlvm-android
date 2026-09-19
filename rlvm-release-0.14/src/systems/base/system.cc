@@ -55,6 +55,7 @@
 #include "systems/base/system_error.h"
 #include "systems/base/text_system.h"
 #include "utilities/exception.h"
+#include "utilities/file.h"
 #include "utilities/string_utilities.h"
 
 using boost::replace_all;
@@ -377,6 +378,11 @@ std::string System::Regname() {
 }
 
 boost::filesystem::path System::GameSaveDirectory() {
+  // Android 移植：允许把存档目录指到别处（例如游戏目录下的 SAVEDATA_RLVM/）。
+  // 覆盖生效时不做 create_directories——SAF 下没有真实路径，目录由平台层创建。
+  const fs::path override_dir = GetGameSaveDirectoryOverride();
+  if (!override_dir.empty()) return override_dir;
+
   fs::path base_dir = GetHomeDirectory() / ".rlvm" / Regname();
   fs::create_directories(base_dir);
 

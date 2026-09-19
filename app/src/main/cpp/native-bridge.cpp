@@ -735,6 +735,9 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     gameexe("__GAMEPATH") = dir;
     rlvm_android::SetGameFileSystem(
         rlvm_android::MakePosixGameFileSystem(dir));
+    // 存档落到游戏目录下的 SAVEDATA_RLVM/（而不是 $HOME/.rlvm/...），
+    // 这样存档与游戏在一起，便于备份与搬移。
+    SetGameSaveDirectoryOverride(boost::filesystem::path(dir) / "SAVEDATA_RLVM");
 
     libreallive::Archive archive(seen_path.string(),
                                  gameexe("REGNAME").ToString(""));
@@ -795,6 +798,8 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
     // SAF 下没有真实路径；__GAMEPATH 只在退化为普通路径后端时才会被使用。
     gameexe("__GAMEPATH") = std::string("saf:/");
     rlvm_android::SetGameFileSystem(rlvm_android::MakeSafGameFileSystem());
+    // 同上，但 SAF 下存档目录是相对标识，由平台层（ContentResolver）创建。
+    SetGameSaveDirectoryOverride(boost::filesystem::path("SAVEDATA_RLVM"));
     AndroidSystem system(gameexe);
 
     // 资源查找层探针：走上游 System::FindFile 的完整链路

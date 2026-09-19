@@ -209,3 +209,17 @@ void WriteGameFile(const boost::filesystem::path& path, const std::string& data)
   }
   file.write(data.data(), static_cast<std::streamsize>(data.size()));
 }
+
+namespace {
+
+boost::filesystem::path g_game_save_directory_override;
+
+}  // namespace
+
+void SetGameSaveDirectoryOverride(const boost::filesystem::path& path) {
+  g_game_save_directory_override = path;
+}
+
+boost::filesystem::path GetGameSaveDirectoryOverride() {
+  return g_game_save_directory_override;
+}
