@@ -25,10 +25,17 @@ class SafBackend {
  public:
   virtual ~SafBackend() {}
 
+  // 目录项。带上「是否为目录」的标志，避免调用方对每个文件再单独发一次查询——
+  // SAF 的每次查询都是一次跨进程调用，真实游戏目录（数千文件）下代价极高。
+  struct DirectoryEntry {
+    std::string name;
+    bool is_directory;
+  };
+
   virtual bool Exists(const std::string& rel_path) = 0;
   virtual bool IsDirectory(const std::string& rel_path) = 0;
   virtual long long Size(const std::string& rel_path) = 0;
-  virtual std::vector<std::string> ListDirectory(const std::string& rel_path) = 0;
+  virtual std::vector<DirectoryEntry> ListDirectory(const std::string& rel_path) = 0;
 
   // 返回只读 fd，调用方负责 close()。失败返回 -1。
   virtual int OpenFd(const std::string& rel_path) = 0;

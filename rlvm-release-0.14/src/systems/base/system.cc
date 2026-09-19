@@ -470,28 +470,30 @@ void System::BuildFileSystemCache() {
   if (!file_system)
     return;
 
-  for (const std::string& name : file_system->ListDirectory("")) {
-    std::string lowername = name;
+  for (const auto& entry : file_system->ListDirectory("")) {
+    if (!entry.is_directory)
+      continue;
+    std::string lowername = entry.name;
     to_lower(lowername);
     if (find(valid_directories.begin(), valid_directories.end(), lowername) !=
         valid_directories.end()) {
-      AddDirectoryToCache(*file_system, name);
+      AddDirectoryToCache(*file_system, entry.name);
     }
   }
 }
 
 void System::AddDirectoryToCache(rlvm_android::GameFileSystem& file_system,
                                  const std::string& rel_directory) {
-  for (const std::string& entry : file_system.ListDirectory(rel_directory)) {
+  for (const auto& entry : file_system.ListDirectory(rel_directory)) {
     const std::string rel =
-        rel_directory.empty() ? entry : rel_directory + "/" + entry;
-    if (file_system.IsDirectory(rel)) {
+        rel_directory.empty() ? entry.name : rel_directory + "/" + entry.name;
+    if (entry.is_directory) {
       AddDirectoryToCache(file_system, rel);
       continue;
     }
 
     // 与上游逐字一致的扩展名/主名规则，只是路径改为对单个文件名做解析。
-    const fs::path entry_path(entry);
+    const fs::path entry_path(entry.name);
     std::string extension = entry_path.extension().string();
     if (extension.size() > 1 && extension[0] == '.')
       extension = extension.substr(1);

@@ -63,8 +63,8 @@ ToneCurve::ToneCurve(Gameexe& gameexe) {
     return;
   }
 
-  fs::path basename = gameexe("__GAMEPATH").ToString();
-  fs::path filename = CorrectPathCase(basename / "dat" / tonecurve);
+  // Android 移植：见 cgm_table.cc 的同名改动说明。
+  fs::path filename = fs::path("dat") / tonecurve;
 
   int size;
   std::unique_ptr<char[]> data;

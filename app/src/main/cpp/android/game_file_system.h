@@ -26,8 +26,13 @@ class GameFileSystem {
  public:
   virtual ~GameFileSystem() {}
 
+  struct DirectoryEntry {
+    std::string name;
+    bool is_directory;
+  };
+
   virtual bool IsDirectory(const std::string& rel_path) = 0;
-  virtual std::vector<std::string> ListDirectory(const std::string& rel_path) = 0;
+  virtual std::vector<DirectoryEntry> ListDirectory(const std::string& rel_path) = 0;
 
   // 相对路径 -> 文件标识（FindFile 的返回值）。
   virtual std::string MakeId(const std::string& rel_path) = 0;
@@ -44,6 +49,10 @@ std::shared_ptr<GameFileSystem> MakePosixGameFileSystem(const std::string& root)
 
 // 以当前 SAF 后端为根（未安装 SAF 后端时返回 nullptr）。
 std::shared_ptr<GameFileSystem> MakeSafGameFileSystem();
+
+// 读取游戏目录下的文件到内存（经 GameFileSystem，SAF 下同样成立）。
+// rel_path 可以是相对路径；普通路径后端也接受绝对路径。
+bool ReadGameFile(const std::string& rel_path, std::vector<char>& out);
 
 }  // namespace rlvm_android
 

@@ -46,16 +46,29 @@ class SafFileSystem(private val context: Context, private val treeUri: Uri) {
     fun listDirectory(relPath: String): Array<String> {
         val id = resolveDocumentId(relPath) ?: return emptyArray()
         val names = ArrayList<String>()
-        resolver.query(
-            DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, id),
-            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                cursor.getString(0)?.let(names::add)
+        try {
+            resolver.query(
+                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, id),
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(0) ?: continue
+                    val isDirectory =
+                        cursor.getString(1) == DocumentsContract.Document.MIME_TYPE_DIR
+                    // 编码成 "D\tname" / "F\tname"：一次 JNI 调用就把类型带回 native，
+                    // 省掉每个文件一次跨进程的 IsDirectory 查询。
+                    // 真实游戏目录有数千个文件，逐文件查询会让索引构建慢到不可用。
+                    names.add((if (isDirectory) "D\t" else "F\t") + name)
+                }
             }
+        } catch (e: Exception) {
+            // 静默返回已收集到的部分；异常绝不能穿到 JNI 之外。
         }
         return names.toTypedArray()
     }
@@ -66,8 +79,16 @@ class SafFileSystem(private val context: Context, private val treeUri: Uri) {
      */
     fun openFd(relPath: String): Int {
         val id = resolveDocumentId(relPath) ?: return -1
-        val pfd = resolver.openFileDescriptor(buildDocumentUri(id), "r") ?: return -1
-        return pfd.detachFd()
+        return try {
+            val pfd = resolver.openFileDescriptor(buildDocumentUri(id), "r")
+            pfd?.detachFd() ?: -1
+        } catch (e: Exception) {
+            // openFileDescriptor 对不存在的文档会抛 FileNotFoundException。
+            // 必须在这里吞掉：异常穿过 JNI 会让返回值变成未定义值
+            //（实测表现为「不存在的文件返回了看似有效的 fd」），
+            // 而且挂起的异常会污染后续所有 JNI 调用。
+            -1
+        }
     }
 
     // -- 路径解析 -----------------------------------------------------------
@@ -121,21 +142,25 @@ class SafFileSystem(private val context: Context, private val treeUri: Uri) {
     private class DocInfo(val mimeType: String, val size: Long)
 
     private fun info(documentId: String): DocInfo? {
-        resolver.query(
-            buildDocumentUri(documentId),
-            arrayOf(
-                DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE
-            ),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val mime = cursor.getString(0) ?: return null
-                val size = if (cursor.isNull(1)) -1L else cursor.getLong(1)
-                return DocInfo(mime, size)
+        try {
+            resolver.query(
+                buildDocumentUri(documentId),
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val mime = cursor.getString(0) ?: return null
+                    val size = if (cursor.isNull(1)) -1L else cursor.getLong(1)
+                    return DocInfo(mime, size)
+                }
             }
+        } catch (e: Exception) {
+            return null
         }
         return null
     }

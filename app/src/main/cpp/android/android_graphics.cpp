@@ -379,33 +379,3 @@ std::shared_ptr<const Surface> AndroidGraphicsSystem::LoadSurfaceFromFile(
   // 单图资源不受影响；需要多子图的游戏要等这一步补上。
   return surface;
 }
-
-void AndroidGraphicsSystem::DrawBringUpPattern() {
-  if (!frame_buffer_) return;
-  const Size size = frame_buffer_->GetSize();
-  if (size.width() <= 0 || size.height() <= 0) return;
-
-  const int bar_height = size.height() / 10;
-  const uint32_t colours[8] = {
-      PackRGBA(0, 0, 0, 255),       PackRGBA(255, 0, 0, 255),
-      PackRGBA(0, 255, 0, 255),     PackRGBA(0, 0, 255, 255),
-      PackRGBA(255, 255, 0, 255),   PackRGBA(0, 255, 255, 255),
-      PackRGBA(255, 0, 255, 255),   PackRGBA(255, 255, 255, 255),
-  };
-  for (int i = 0; i < 8; ++i) {
-    const int r = static_cast<int>(colours[i] & 0xFF);
-    const int g = static_cast<int>((colours[i] >> 8) & 0xFF);
-    const int b = static_cast<int>((colours[i] >> 16) & 0xFF);
-    frame_buffer_->Fill(RGBAColour(r, g, b, 255),
-                        Rect(Point(i * size.width() / 8, 0),
-                             Size(size.width() / 8, bar_height)));
-  }
-
-  // 一个随帧号横向移动的方块：连续两帧不同，证明画面确实在更新。
-  const int box = size.height() / 8;
-  const int travel = std::max(1, size.width() - box);
-  const int x = static_cast<int>((frame_count_ * 17u) % static_cast<unsigned>(travel));
-  const int y = size.height() / 2 - box / 2;
-  frame_buffer_->Fill(RGBAColour(255, 255, 255, 255),
-                      Rect(Point(x, y), Size(box, box)));
-}

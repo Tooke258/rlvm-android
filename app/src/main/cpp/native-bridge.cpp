@@ -35,6 +35,8 @@
 #include "machine/rlmachine.h"
 #include "modules/modules.h"
 #include "utilities/file.h"
+#include "utilities/string_utilities.h"
+#include "utf8cpp/utf8.h"
 
 namespace {
 
@@ -69,13 +71,14 @@ void CaptureFrame(AndroidGraphicsSystem& graphics) {
   g_frame_height = size.height();
   ++g_frame_serial;
 
-  // 采样校验和：用于区分「引擎产出的帧本身是空的」与「呈现环节没显示出来」。
-  uint64_t checksum = 0;
-  for (size_t i = 0; i < count; i += 97) checksum += g_frame_pixels[i];
+  // 非黑像素数：用于区分「引擎产出的帧本身是空的」与「呈现环节没显示出来」。
+  size_t non_black = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if ((g_frame_pixels[i] & 0x00FFFFFFu) != 0) ++non_black;
+  }
   __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                      "frame %dx%d serial=%u sampled_checksum=%llu", g_frame_width,
-                      g_frame_height, g_frame_serial,
-                      static_cast<unsigned long long>(checksum));
+                      "frame %dx%d serial=%u nonblack=%zu/%zu", g_frame_width,
+                      g_frame_height, g_frame_serial, non_black, count);
 }
 
 /** 把 Java 字符串转成 UTF-8 的 std::string。 */
@@ -85,6 +88,46 @@ std::string JStringToUtf8(JNIEnv* env, jstring value) {
   std::string result = (chars != nullptr) ? chars : "";
   if (chars != nullptr) env->ReleaseStringUTFChars(value, chars);
   return result;
+}
+
+/**
+ * native -> Java 的字符串出口。**所有**返回给 Kotlin 的字符串都必须走这里。
+ *
+ * JNI 的 NewStringUTF 要求 Modified UTF-8；而游戏数据里的字符串往往是 Shift-JIS
+ *（例如 Kud Wafter 的 #REGNAME = "KEY\クドわふたー"，首字节 0x83）。
+ * 直接把这种字节交给 JNI 会触发
+ *   "JNI DETECTED ERROR IN APPLICATION: input is not valid Modified UTF-8"
+ * 并让 ART 直接 abort 整个进程——实测表现就是「跑一下应用就被杀」。
+ */
+jstring NewSafeJavaString(JNIEnv* env, const std::string& text) {
+  if (utf8::is_valid(text.begin(), text.end())) {
+    return env->NewStringUTF(text.c_str());
+  }
+
+  // 不是合法 UTF-8：按 CP932（RealLive 的原生编码）转一次再试。
+  const std::string converted = cp932toUTF8(text, 0);
+  if (utf8::is_valid(converted.begin(), converted.end())) {
+    return env->NewStringUTF(converted.c_str());
+  }
+
+  // 兜底：替换掉非 ASCII 字节，保证一定能构造出 Java 字符串而不是让进程 abort。
+  std::string sanitized;
+  sanitized.reserve(text.size());
+  for (unsigned char c : text) {
+    sanitized.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+  }
+  return env->NewStringUTF(sanitized.c_str());
+}
+
+/**
+ * 供日志与报告显示用：把可能是 Shift-JIS 的游戏字符串转成 UTF-8。
+ * 只在字符串不是合法 UTF-8 时才转换，因此 ASCII 与我们自己的文本原样保留。
+ */
+std::string ToDisplayUtf8(const std::string& text) {
+  if (utf8::is_valid(text.begin(), text.end())) return text;
+  const std::string converted = cp932toUTF8(text, 0);
+  if (utf8::is_valid(converted.begin(), converted.end())) return converted;
+  return std::string();
 }
 
 /** 返回版本串，用于验证 Kotlin <-> JNI 链路（T1.4 的最小验证）。 */
@@ -121,11 +164,11 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
     const fs::path root(dir);
     if (!fs::exists(root)) {
       report += "ERROR: directory does not exist\n";
-      return env->NewStringUTF(report.c_str());
+      return NewSafeJavaString(env, report);
     }
     if (!fs::is_directory(root)) {
       report += "ERROR: not a directory\n";
-      return env->NewStringUTF(report.c_str());
+      return NewSafeJavaString(env, report);
     }
 
     report += "files:\n";
@@ -197,7 +240,7 @@ jstring ProbeGameDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
   }
 
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "probe report:\n%s", report.c_str());
-  return env->NewStringUTF(report.c_str());
+  return NewSafeJavaString(env, report);
 }
 
 /**
@@ -215,14 +258,16 @@ void RunEngineOn(System& system,
                  Gameexe& gameexe,
                  libreallive::Archive& archive,
                  int max_instructions,
-                 bool draw_bring_up_pattern,
                  std::string& report) {
   RLMachine machine(system, archive);
   AddAllModules(machine);
   AddGameHacks(machine);
   machine.SetHaltOnException(false);
 
-  report += "engine assembled (regname=\"" + gameexe("REGNAME").ToString("") + "\")\n";
+  // REGNAME 是 CP932 编码的游戏数据，显示前先转成 UTF-8——
+  // 否则报告本身含有非法 UTF-8 字节。
+  report += "engine assembled (regname=\"" +
+            ToDisplayUtf8(gameexe("REGNAME").ToString("")) + "\")\n";
 
   AndroidGraphicsSystem* graphics =
       dynamic_cast<AndroidGraphicsSystem*>(&system.graphics());
@@ -246,18 +291,14 @@ void RunEngineOn(System& system,
     }
 
     system.Run(machine);
-    if (draw_bring_up_pattern && graphics != nullptr)
-      graphics->DrawBringUpPattern();
     if (graphics != nullptr) {
       CaptureFrame(*graphics);
       ++frames_presented;
     }
 
-    if (machine.CurrentLongOperation()) {
-      stop_reason = "entered long operation";
-      break;
-    }
-
+    // 上游在遇到长操作时只跳出**内层**时间片（把控制权让给这一帧），
+    // 外层循环继续推进——长操作本身由后续的 ExecuteNextInstruction 轮询。
+    // 早先这里直接 break 整个循环，导致游戏停在第一个长操作上不再前进。
     const unsigned int slice_start = system.event().GetTicks();
     unsigned int now = slice_start;
     do {
@@ -274,30 +315,15 @@ void RunEngineOn(System& system,
   report += "stop reason = " + stop_reason + "\n";
   report += "halted = " + std::string(machine.halted() ? "yes" : "no") + "\n";
 
-  // 图像加载探针：走完整链路 System::FindFile -> GraphicsSystem::GetSurfaceNamed
-  // -> AndroidGraphicsSystem::LoadSurfaceFromFile（OpenFd + GRPCONV 解码）。
-  // 目标文件 g00/test.g00 由 tools/make_probe_fixture.ps1 生成（BMP 内容，
-  // 因为解码器按内容而非扩展名分发）。
-  if (graphics != nullptr) {
-    try {
-      std::shared_ptr<const Surface> image = system.graphics().GetSurfaceNamed("test");
-      if (!image) {
-        report += "image test -> <not loaded>\n";
-      } else {
-        int r = 0, g = 0, b = 0;
-        image->GetDCPixel(Point(16, 16), r, g, b);
-        report += "image test -> " + std::to_string(image->GetSize().width()) + "x" +
-                  std::to_string(image->GetSize().height()) + "; pixel(16,16)=(" +
-                  std::to_string(r) + "," + std::to_string(g) + "," +
-                  std::to_string(b) + ")\n";
-        // 画到帧缓冲并呈现，截图即可确认解码结果。
-        const Rect full(Point(0, 0), image->GetSize());
-        image->RenderToScreen(full, full, 255);
-        CaptureFrame(*graphics);
-      }
-    } catch (const std::exception& e) {
-      report += std::string("image test EXCEPTION: ") + e.what() + "\n";
-    }
+  // 音频统计：AndroidSoundSystem 接上 AudioEngine 之后，这里的 peak 就能反映
+  // 游戏是否真的在出声。
+  {
+    const rlvm_android::AudioEngine::Stats stats =
+        rlvm_android::AudioEngine::Instance().GetStats();
+    report += "audio: callbacks=" + std::to_string(stats.callbacks) +
+              " frames=" + std::to_string(stats.frames_rendered) +
+              " peak=" + std::to_string(stats.peak_amplitude) +
+              " active_channels=" + std::to_string(stats.active_channels) + "\n";
   }
 }
 
@@ -315,7 +341,7 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     if (gameexe_path.empty() || seen_path.empty()) {
       report += "ERROR: Gameexe.ini or Seen.txt missing "
                 "(case-corrected lookup also failed)\n";
-      return env->NewStringUTF(report.c_str());
+      return NewSafeJavaString(env, report);
     }
 
     Gameexe gameexe(gameexe_path);
@@ -327,7 +353,7 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     libreallive::Archive archive(seen_path.string(),
                                  gameexe("REGNAME").ToString(""));
     AndroidSystem system(gameexe);
-    RunEngineOn(system, gameexe, archive, max_instructions, true, report);
+    RunEngineOn(system, gameexe, archive, max_instructions, report);
     report += "RUN OK\n";
   } catch (const std::exception& e) {
     report += std::string("EXCEPTION: ") + e.what() + "\n";
@@ -336,7 +362,7 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
   }
 
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "run report:\n%s", report.c_str());
-  return env->NewStringUTF(report.c_str());
+  return NewSafeJavaString(env, report);
 }
 
 /**
@@ -353,18 +379,20 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
     std::shared_ptr<rlvm_android::SafBackend> backend = rlvm_android::GetSafBackend();
     if (!backend) {
       report += "ERROR: no SAF backend installed\n";
-      return env->NewStringUTF(report.c_str());
+      return NewSafeJavaString(env, report);
     }
 
     report += "SAF root listing:\n";
-    for (const std::string& name : backend->ListDirectory("")) {
-      report += "  " + name + "\n";
+    std::vector<std::string> root_names;
+    for (const auto& entry : backend->ListDirectory("")) {
+      report += "  " + entry.name + (entry.is_directory ? "/" : "") + "\n";
+      root_names.push_back(entry.name);
     }
 
     std::string gameexe_text;
     if (!rlvm_android::SafReadAll("Gameexe.ini", gameexe_text)) {
       report += "ERROR: cannot read Gameexe.ini via SAF\n";
-      return env->NewStringUTF(report.c_str());
+      return NewSafeJavaString(env, report);
     }
     report += "Gameexe.ini read via SAF: " +
               std::to_string(gameexe_text.size()) + " bytes\n";
@@ -398,7 +426,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
     const int fd = backend->OpenFd("Seen.txt");
     if (fd < 0) {
       report += "ERROR: cannot open Seen.txt via SAF\n";
-      return env->NewStringUTF(report.c_str());
+      return NewSafeJavaString(env, report);
     }
     report += "Seen.txt opened via SAF fd=" + std::to_string(fd) + "\n";
 
@@ -411,7 +439,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       // 补丁机制：SEEN####.TXT 场景覆盖。
       // SAF 下没有可供 boost::filesystem 枚举的目录，因此这里用 SAF 后端
       // 列出文件名，再按名打开——文件名规则本身仍由 Archive 判定。
-      const std::vector<std::string> names = backend->ListDirectory("");
+      const std::vector<std::string>& names = root_names;
       archive.ApplyOverrides(
           names, [&backend](const std::string& name) -> libreallive::Mapping* {
             const int override_fd = backend->OpenFd(name);
@@ -439,37 +467,9 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       report += "Seen via SAF: TOC entries=" + std::to_string(scenarios) +
                 "; indices=[" + indices + "]\n";
 
-      RunEngineOn(system, gameexe, archive, max_instructions, true, report);
+      RunEngineOn(system, gameexe, archive, max_instructions, report);
     }
 
-    // 音频探针：经 SAF 打开 test.wav（3 秒 440Hz 正弦），用 AAudio 播放 3 秒后
-    // 汇报回调次数、渲染帧数与峰值。峰值非零说明真的把非静音数据送进了设备。
-    {
-      const int audio_fd = backend->OpenFd("test.wav");
-      if (audio_fd < 0) {
-        report += "audio: test.wav not found via SAF\n";
-      } else {
-        rlvm_android::AudioEngine& audio = rlvm_android::AudioEngine::Instance();
-        if (!audio.Start()) {
-          report += "audio: start failed: " + audio.LastError() + "\n";
-        } else {
-          std::unique_ptr<rlvm_android::AudioSource> source =
-              audio.OpenSource(audio_fd, "wav");
-          if (!source) {
-            report += "audio: decode failed\n";
-          } else {
-            audio.ResetPeak();
-            audio.Play(0, std::move(source), false, 255);
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-            const rlvm_android::AudioEngine::Stats stats = audio.GetStats();
-            report += "audio: callbacks=" + std::to_string(stats.callbacks) +
-                      " frames=" + std::to_string(stats.frames_rendered) +
-                      " peak=" + std::to_string(stats.peak_amplitude) + "\n";
-            audio.Stop(0);
-          }
-        }
-      }
-    }
     report += "RUN OK\n";
   } catch (const std::exception& e) {
     report += std::string("EXCEPTION: ") + e.what() + "\n";
@@ -478,7 +478,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
   }
 
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "saf run report:\n%s", report.c_str());
-  return env->NewStringUTF(report.c_str());
+  return NewSafeJavaString(env, report);
 }
 
 /** 由 Kotlin 侧在取得 SAF 目录授权后调用，安装 SAF 后端。 */

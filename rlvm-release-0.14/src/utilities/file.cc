@@ -27,17 +27,21 @@
 
 #include "utilities/file.h"
 
+#include "android/game_file_system.h"
+
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem/operations.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <stack>
 #include <stdexcept>
+#include <vector>
 #include <string>
 
 #include "systems/base/system.h"
@@ -116,6 +120,26 @@ fs::path CorrectPathCase(fs::path Path) {
 bool LoadFileData(const boost::filesystem::path& path,
                   std::unique_ptr<char[]>& fileData,
                   int& fileSize) {
+  // Android 移植：优先经过游戏文件系统读取。
+  // SAF 后端下 path 是游戏相对路径（没有真实文件系统路径可用）；
+  // 普通路径后端下相对与绝对路径都能正确解析，因此这里不再直接用 fs::ifstream。
+  std::shared_ptr<rlvm_android::GameFileSystem> game_files =
+      rlvm_android::GetGameFileSystem();
+  if (game_files) {
+    std::vector<char> contents;
+    if (!rlvm_android::ReadGameFile(path.string(), contents)) {
+      ostringstream oss;
+      oss << "Could not open file \"" << path << "\".";
+      throw rlvm::Exception(oss.str());
+    }
+    fileSize = static_cast<int>(contents.size());
+    fileData.reset(new char[fileSize > 0 ? fileSize : 1]);
+    if (fileSize > 0)
+      std::memcpy(fileData.get(), contents.data(), fileSize);
+    // 与上游语义一致：返回 !ifs.good()，成功时为 false。
+    return false;
+  }
+
   fs::ifstream ifs(path, ifstream::in | ifstream::binary);
   if (!ifs) {
     ostringstream oss;

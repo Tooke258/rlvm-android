@@ -120,11 +120,6 @@ class AndroidGraphicsSystem : public GraphicsSystem {
   // 已完成的帧数，用于判断画面是否在更新。
   unsigned int frame_count() const { return frame_count_; }
 
-  // 引导阶段的测试图案：用真实的 Surface API 画几段色条与一个随帧号移动的方块，
-  // 用来验证「帧缓冲 -> GL 纹理 -> 屏幕」这条链路真的在传像素。
-  // 接入真实游戏后应删除。
-  void DrawBringUpPattern();
-
  private:
   // GraphicsSystem 里这个纯虚函数是 private 的，但仍必须实现。
   std::shared_ptr<const Surface> LoadSurfaceFromFile(

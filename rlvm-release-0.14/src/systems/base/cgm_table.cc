@@ -87,8 +87,11 @@ CGMTable::CGMTable(Gameexe& gameexe) {
     return;
   }
 
-  fs::path basename = gameexe("__GAMEPATH").ToString();
-  fs::path filename = CorrectPathCase(basename / "dat" / cgtable);
+  // Android 移植：不再用 CorrectPathCase 在真实文件系统上做大小写纠正——
+  // SAF 下没有可供 boost::filesystem 遍历的目录，路径不存在会直接抛异常。
+  // 改为构造游戏相对路径，由 LoadFileData 经游戏文件系统读取；
+  // 大小写不敏感的解析由文件系统后端负责。
+  fs::path filename = fs::path("dat") / cgtable;
 
   int size;
   std::unique_ptr<char[]> data;

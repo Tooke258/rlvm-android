@@ -2,6 +2,7 @@
 
 #include <android/log.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -14,7 +15,17 @@ constexpr char kLogTag[] = "rlvm-native";
 
 JavaVM* g_vm = nullptr;
 
-// 从 native 回调 Kotlin。我们的调用都发生在 Java 线程上（Kotlin 的工作线程），
+// 必须清理 Java 异常。否则异常会一直挂起，后续 JNI 调用会静默失败或返回未定义值——
+// 实测中这表现为「对一个不存在的文件返回了看似有效的 fd」，非常难查。
+void ClearJavaException(JNIEnv* env) {
+  if (env == nullptr || !env->ExceptionCheck()) return;
+  __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                      "Java exception inside a SAF callback:");
+  env->ExceptionDescribe();
+  env->ExceptionClear();
+}
+
+// 从 native 回调 Kotlin。调用都发生在 Java 线程上（Kotlin 的工作线程），
 // 因此绝大多数情况下线程已挂接；仍处理需要临时挂接的情况。
 class ScopedEnv {
  public:
@@ -46,7 +57,8 @@ class JniSafBackend : public SafBackend {
     m_exists_ = env->GetMethodID(cls, "exists", "(Ljava/lang/String;)Z");
     m_is_directory_ = env->GetMethodID(cls, "isDirectory", "(Ljava/lang/String;)Z");
     m_size_ = env->GetMethodID(cls, "size", "(Ljava/lang/String;)J");
-    m_list_ = env->GetMethodID(cls, "listDirectory", "(Ljava/lang/String;)[Ljava/lang/String;");
+    m_list_ =
+        env->GetMethodID(cls, "listDirectory", "(Ljava/lang/String;)[Ljava/lang/String;");
     m_open_fd_ = env->GetMethodID(cls, "openFd", "(Ljava/lang/String;)I");
   }
 
@@ -68,6 +80,7 @@ class JniSafBackend : public SafBackend {
     if (env == nullptr) return false;
     jstring arg = env->NewStringUTF(rel_path.c_str());
     const jboolean result = env->CallBooleanMethod(object_, m_exists_, arg);
+    ClearJavaException(env);
     env->DeleteLocalRef(arg);
     return result == JNI_TRUE;
   }
@@ -78,6 +91,7 @@ class JniSafBackend : public SafBackend {
     if (env == nullptr) return false;
     jstring arg = env->NewStringUTF(rel_path.c_str());
     const jboolean result = env->CallBooleanMethod(object_, m_is_directory_, arg);
+    ClearJavaException(env);
     env->DeleteLocalRef(arg);
     return result == JNI_TRUE;
   }
@@ -88,21 +102,23 @@ class JniSafBackend : public SafBackend {
     if (env == nullptr) return -1;
     jstring arg = env->NewStringUTF(rel_path.c_str());
     const jlong result = env->CallLongMethod(object_, m_size_, arg);
+    ClearJavaException(env);
     env->DeleteLocalRef(arg);
     return static_cast<long long>(result);
   }
 
-  std::vector<std::string> ListDirectory(const std::string& rel_path) override {
-    std::vector<std::string> names;
+  std::vector<DirectoryEntry> ListDirectory(const std::string& rel_path) override {
+    std::vector<DirectoryEntry> entries;
     ScopedEnv scoped;
     JNIEnv* env = scoped.get();
-    if (env == nullptr) return names;
+    if (env == nullptr) return entries;
 
     jstring arg = env->NewStringUTF(rel_path.c_str());
-    jobjectArray array = static_cast<jobjectArray>(
-        env->CallObjectMethod(object_, m_list_, arg));
+    jobjectArray array =
+        static_cast<jobjectArray>(env->CallObjectMethod(object_, m_list_, arg));
+    ClearJavaException(env);
     env->DeleteLocalRef(arg);
-    if (array == nullptr) return names;
+    if (array == nullptr) return entries;
 
     const jsize count = env->GetArrayLength(array);
     for (jsize i = 0; i < count; ++i) {
@@ -110,13 +126,20 @@ class JniSafBackend : public SafBackend {
       if (item == nullptr) continue;
       const char* chars = env->GetStringUTFChars(item, nullptr);
       if (chars != nullptr) {
-        names.emplace_back(chars);
+        // Kotlin 侧把每项编码成 "D\tname" / "F\tname"：一次 JNI 调用就带回类型信息，
+        // 省掉每个文件一次 IsDirectory 跨进程查询（真实游戏目录下有数千个文件）。
+        DirectoryEntry entry;
+        entry.is_directory = (chars[0] == 'D' || chars[0] == 'd');
+        const char* separator = std::strchr(chars, '\t');
+        entry.name = (separator != nullptr) ? std::string(separator + 1)
+                                            : std::string(chars);
+        entries.push_back(entry);
         env->ReleaseStringUTFChars(item, chars);
       }
       env->DeleteLocalRef(item);
     }
     env->DeleteLocalRef(array);
-    return names;
+    return entries;
   }
 
   int OpenFd(const std::string& rel_path) override {
@@ -125,6 +148,12 @@ class JniSafBackend : public SafBackend {
     if (env == nullptr) return -1;
     jstring arg = env->NewStringUTF(rel_path.c_str());
     const jint fd = env->CallIntMethod(object_, m_open_fd_, arg);
+    // 回调抛异常时返回值是未定义的，必须清除异常并按失败处理。
+    if (env->ExceptionCheck()) {
+      ClearJavaException(env);
+      env->DeleteLocalRef(arg);
+      return -1;
+    }
     env->DeleteLocalRef(arg);
     return static_cast<int>(fd);
   }
@@ -153,7 +182,6 @@ void InstallJniSafBackend(JNIEnv* env, jobject backend) {
                         "SafFileSystem backend is missing expected methods");
     return;
   }
-  // 先设置门面再保留引用：SetSafBackend 会持有 shared_ptr。
   g_jni_backend = impl;
   SetSafBackend(impl);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "SAF backend installed");
