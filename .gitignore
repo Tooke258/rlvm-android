@@ -47,3 +47,8 @@ build/
 # 本地数据：汉化译文、内存转储等——属于用户本地的商业游戏内容，绝不进仓库
 local-data/
 *.DMP
+
+# ---- 签名材料（绝不入库：私钥与口令）----
+*.jks
+*.keystore
+keystore.properties
