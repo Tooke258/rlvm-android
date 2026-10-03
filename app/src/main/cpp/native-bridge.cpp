@@ -506,14 +506,22 @@ void ExportSceneText(libreallive::Archive& archive,
     if (scenario == nullptr) continue;
     ++scenes;
 
+    // 该场景自己声明的文本编码：0 = CP932（默认），1 = CP936/GBK。
+    // 语义与渲染路径完全一致（RLMachine::GetTextEncoding() 就是
+    // call_stack_.back().scenario->encoding()），**不能**在 0 时回退到
+    // Archive::GetProbableEncodingType()——那是整库默认值，用在逐场景上会把
+    // 未覆盖的日文场景（声明 0）也按 GBK 解成乱码。
+    const int encoding = scenario->encoding();
+
     int ordinal = 0;
     for (auto element = scenario->begin(); element != scenario->end(); ++element) {
       // BytecodeList 是 forward_list<unique_ptr<BytecodeElement>>，取 get() 判型。
       const libreallive::TextoutElement* text =
           dynamic_cast<const libreallive::TextoutElement*>((*element).get());
       if (text == nullptr) continue;
-      // 场景文本是 CP932，转成 UTF-8 便于比对与显示。
-      out << index << '\t' << ordinal++ << '\t' << cp932toUTF8(text->GetText(), 0)
+      // 按场景声明的编码转成 UTF-8，便于比对与显示。
+      out << index << '\t' << ordinal++ << '\t'
+          << cp932toUTF8(text->GetText(), encoding)
           << '\n';
       ++strings;
     }
@@ -869,6 +877,9 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       if (scenarios > 16) indices += ",...";
       report += "Seen via SAF: TOC entries=" + std::to_string(scenarios) +
                 "; indices=[" + indices + "]\n";
+      // 诊断：引擎拿来解码文本的编码。0=CP932 1=CP936(GBK) 2=CP1252 3=CP949。
+      report += "text encoding: probable=" +
+                std::to_string(archive.GetProbableEncodingType()) + "\n";
 
       RunEngineOn(system, gameexe, archive, max_instructions, report);
     }
