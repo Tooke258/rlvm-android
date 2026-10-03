@@ -64,6 +64,53 @@
 | T6.2 | Profiler 优化 | 优化报告 + 补丁 | 帧率、内存达标 | TODO |
 | T6.3 | 发布配置 | `release/` 文档 | 可生成 AAB | TODO |
 
+## v0.2.1 预定更新计划（2026-10-04 拟定）
+
+> 版本策略：0.1.0 = 首个可用版；0.2.0 = 黑屏挂起 + 文本容器切换 + 中文数据兼容。
+> 0.2.1 聚焦"操作完整性"：先把点击补齐，再把按键通道做出来（默认不启用）。
+
+### T7.1 点击补齐：未渲染区域也要能推进文字（必做）
+
+**问题**：`RlvmRenderer.mapToFrame()` 对落在**画面矩形之外**的触摸返回 `null`
+（适配模式下左右/上下的黑边就是这种区域），`MainActivity.handleTouch()` 随即把这次触摸
+丢掉——点黑边不会推进对白。
+
+**做法**
+
+- `mapToFrame()` 改为**夹取**：仍按 fit 模式算出画面矩形，超出部分的坐标 clamp 到
+  `[0, frameWidth-1] / [0, frameHeight-1]`；只有"还没有帧"（`frameWidth <= 0`）时才返回 null；
+- 保持既有语义：面板与悬浮球区域仍由 View 层消费，不转发给引擎；
+- 可选：诊断日志打印夹取前后的坐标，便于真机核对。
+
+**验收**：点画面四周黑边、点画面内空白处都能推进对白；长按黑边仍能唤出右键菜单。
+
+### T7.2 按键通道（LBEX 这类需要键盘输入的游戏，先做出来、默认关闭）（必做）
+
+**背景**：引擎的按键入口是 `EventListener::KeyStateChanged(KeyCode, pressed)`
+（`systems/base/event_listener.h` 里的 `RLKEY_*` 枚举）；SDL 后端在
+`systems/sdl/sdl_event_system.cc` 的 `HandleKeyDown/Up` 里 `DispatchEvent(...)`。
+**Android 后端目前完全没有按键通道**，所以依赖键盘输入的游戏（如 Little Busters! EX）
+拿不到输入。
+
+**做法**
+
+- `AndroidEventSystem`：与 `PostTouchEvent` 并列新增 `PostKeyEvent(int rl_key, bool pressed)`
+  与队列，在 `ExecuteEventSystem(machine)` 里 drain，并
+  `DispatchEvent(machine, bind(&EventListener::KeyStateChanged, _1, KeyCode(rl_key), pressed))`；
+- JNI：`NativeBridge.keyEvent(int rlKeyCode, boolean pressed)`（显式注册，与 `touchEvent` 同规格）；
+- UI：面板新增「按键栏」开关（**默认关**，持久化）。开启后显示浮动按键：
+  `Ctrl`（按住跳过）、`Space`、`Enter`、`Esc`、方向键、`Z / X / C`；
+  默认关闭是刻意的——除 LB 系外的游戏不需要，避免遮挡画面；
+- 键位表集中在一处（Kotlin 常量表），日后按 LBEX 实测需要调整只改这张表。
+
+**验收**：开关关闭时行为与现状完全一致；开启后 `Ctrl` 长按触发跳过、`Enter/Space` 推进对白，
+且不影响触摸输入。
+
+### T7.3 备份项（视情况）
+
+- 面板显示「当前文本容器」文件名（便于确认正在读哪一份数据）；
+- `docs/PROGRESS.md` 与实际能力对齐（该文档停留在 v0.1.0 时代）。
+
 ## 与 task.md 的偏差（已决策）
 
 | 偏差 | 说明 |
