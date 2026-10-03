@@ -145,6 +145,24 @@ RealLive use a native save format that is not interchangeable with RLVM's):
     save000.sav.gz    # save slot
 ```
 
+### Switching the text container (language)
+
+Translated data usually lives in a **separate file** (not the `SEEN.TXT` that ships in the
+game directory). The app never asks you to overwrite the original file; it gives you an
+explicit switch instead:
+
+1. Put the container file into the game directory (e.g. `Seen-CN.TXT`);
+2. Tap "选择文本容器 / Pick text container" in the panel and choose it - the candidate list
+   is built by the app from the game directory, **without** the system file picker (on some
+   devices picking a large file crashes the system file UI);
+3. With the switch **on** the engine reads that container; with it **off** it reads
+   `Seen.txt` from the game directory (the original).
+
+A container must declare its own text encoding per scene (the RLdev metadata `encoding`
+byte: `0` = CP932, `1` = CP936/GBK), otherwise non-Japanese text is decoded as CP932 and
+comes out as mojibake. `Seen####.txt` scene override files in the game directory still take
+precedence over the container (that is the patch mechanism's existing semantics).
+
 ## Platform backends
 
 | Module | Implementation |

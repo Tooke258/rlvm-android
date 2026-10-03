@@ -25,8 +25,8 @@ android {
         applicationId = "org.rlvm.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+    versionCode = 2
+    versionName = "0.2.0"
 
         // 发布目标只有这两个 ABI（task.md 硬性要求）。
         ndk {
