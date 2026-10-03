@@ -59,6 +59,14 @@ object NativeBridge {
     external fun requestStop()
 
     /**
+     * 挂起 / 恢复引擎（屏幕熄灭、应用进后台时调用）。
+     *
+     * 与 [requestStop] 的区别：停止是收尾退出，挂起是原地冻结——进度、音频位置都不动，
+     * 回到前台后接着跑。之前没有这条通道，黑屏后引擎线程仍在推进字节码并继续出声。
+     */
+    external fun setEngineSuspended(suspended: Boolean)
+
+    /**
      * 触摸输入。坐标必须是**游戏帧坐标**（0..帧宽 / 0..帧高），
      * 由 RlvmRenderer.mapToFrame 从视图坐标换算而来。
      *

@@ -155,6 +155,17 @@ class AudioEngine {
   void Play(int channel, std::unique_ptr<AudioSource> source, bool loop, int volume);
   void Stop(int channel);
   void SetVolume(int channel, int volume);  // 0..255
+  /**
+   * 挂起/恢复音频输出（黑屏、应用进后台；见 native-bridge.cpp 的
+   * SetEngineSuspended）。
+   *
+   * 挂起时不仅静音，还会把 AAudio 数据回调停掉——只静音的话，声卡回调仍会
+   * 每秒唤醒几百次 CPU，黑屏期间白白耗电。恢复后各通道从原位置继续：环形缓冲里
+   * 已解码的内容不丢，听感上等于"按了暂停"，而不是重播或截断。
+   */
+  void SetSuspended(bool suspended);
+  bool IsSuspended() const { return suspended_.load(std::memory_order_relaxed); }
+
   // 在 duration_ms 内把音量平滑过渡到 target_volume（0..255）。duration 为 0
   // 表示立即生效。混音在音频回调里按块插值，不需要额外的线程或定时器。
   void FadeVolume(int channel, int target_volume, int duration_ms);
@@ -186,6 +197,7 @@ class AudioEngine {
   std::vector<std::unique_ptr<Channel>> channels_;
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_requested_{false};
+  std::atomic<bool> suspended_{false};
   std::string last_error_;
   void* stream_ = nullptr;   // AAudioStream*
   int decoder_thread_started_ = 0;

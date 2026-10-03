@@ -87,6 +87,13 @@ std::string g_diag_dir;
 // 因此必须有一个从外部喊停的通道。
 std::atomic<bool> g_stop_requested{false};
 
+// 「挂起引擎」请求：黑屏 / 应用进后台时由 UI 线程置位，引擎线程在每轮循环开头检查。
+//
+// 之前没有这条通道：屏幕熄灭后 GL 线程被 onPause 停住，引擎线程却照样按 10ms 时间片
+// 推进字节码、音频回调照样出声——用户看到的就是「黑屏之后游戏还在跑」。挂起期间既
+// 不推进指令也不合成新帧，音频同时被打成静音并停掉数据回调；置回 false 后从原位置继续。
+std::atomic<bool> g_engine_suspended{false};
+
 // 是否已有一台引擎在跑。默认不限时运行后，重复点「运行」很容易起第二台，
 // 两台引擎共用同一个 AudioEngine 与帧缓冲会互相踩踏，所以直接拒绝并存。
 std::atomic<bool> g_run_active{false};
@@ -625,6 +632,12 @@ void RunEngineOn(System& system,
       stop_reason = "stop requested";
       break;
     }
+    // 挂起（黑屏/应用进后台，见 SetEngineSuspended）：完全不推进——不跑 system.Run
+    // （不合成新帧）、不执行字节码，只让出 CPU 等唤醒。音频侧同时静音并暂停回调。
+    if (g_engine_suspended.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      continue;
+    }
     if (machine.halted()) {
       stop_reason = "machine halted";
       break;
@@ -934,6 +947,21 @@ void RequestStop(JNIEnv* /*env*/, jobject /*thiz*/) {
 }
 
 /**
+ * 挂起 / 恢复引擎（屏幕熄灭、应用进后台）。
+ *
+ * 与 requestStop 的区别：停止是「收尾退出」，挂起是「原地冻结」——进度、存档、
+ * 音频位置全都不动，唤醒后接着跑。这里只置标志，真正的收敛点在引擎循环开头
+ * （不推进指令、不合成帧）与 AudioEngine::SetSuspended（静音 + 停 AAudio 回调）。
+ */
+void SetEngineSuspended(JNIEnv* /*env*/, jobject /*thiz*/, jboolean suspended) {
+  const bool value = suspended != JNI_FALSE;
+  g_engine_suspended.store(value);
+  rlvm_android::AudioEngine::Instance().SetSuspended(value);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "engine suspended=%s",
+                      value ? "yes" : "no");
+}
+
+/**
  * 触摸/鼠标输入（T2.3）。
  *
  * 坐标已经是**游戏帧坐标**（Kotlin 侧按帧在视图里的实际绘制矩形换算过），
@@ -991,6 +1019,7 @@ const JNINativeMethod kNativeMethods[] = {
     {"setDiagnosticsDir", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
+    {"setEngineSuspended", "(Z)V", reinterpret_cast<void*>(SetEngineSuspended)},
     {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},

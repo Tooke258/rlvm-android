@@ -238,3 +238,36 @@
   点「停止引擎」后报告 `stop reason = stop requested`；重复点击返回
   `ERROR: 已有一台引擎在运行，请先点「停止引擎」。`
 - **状态**：已执行并验证
+
+---
+
+## D-017 屏幕熄灭 / 进后台时挂起引擎（而不是继续跑）
+
+- **日期**：2026-10-04
+- **决策**：新增 `NativeBridge.setEngineSuspended(boolean)`。`MainActivity` 在
+  `onStop`（进后台）与 `ACTION_SCREEN_OFF/ON` 广播（MIUI 这类"Activity 仍然 started
+  但屏幕已熄灭"的厂商差异）两处上报状态；native 侧只置一个进程级标志
+  `g_engine_suspended`，引擎循环在每轮开头看到它就跳过 `system.Run()`（不合成帧）与
+  字节码执行、让出 20 ms 睡眠；同时 `AudioEngine::SetSuspended()` 让混音输出静音
+  **并暂停 AAudio 数据回调**（`AAudioStream_requestPause/requestStart`）。
+  恢复后从原位置继续——不退出、不重载、不丢进度。
+- **理由**：此前只有 `onPause` 停掉 GL 线程，引擎线程依然按 10 ms 时间片推进字节码、
+  音频回调依然出声，用户观察到的现象是「黑屏之后引擎仍然正常运行」。挂起（而不是
+  停止）是为了让唤醒后能原地继续；只静音不停回调则不够——AAudio 每秒仍会唤醒 CPU
+  几百次，黑屏期间白白耗电（真机日志里能看到音频 HAL 在挂起后
+  `needStopPlaybackTask force:1`）。
+- **实现要点**：
+  - 挂起标志是**进程级**的（Kotlin 侧放在 `companion object`）：native 那台引擎活在
+    进程里，而 Activity 可能被系统回收后重建；标志若跟着 Activity 走，重建出来的实例
+    会以为"没挂起"，从而永远不去通知 native 恢复。
+  - 挂起不消耗 `time_budget_ms` 之外的东西：默认 `time_budget_ms=0`（不限时），
+    因此不影响既有行为。
+- **验证**（Redmi K40 / 天玑1200 / Android 12，release 包）：
+  `input keyevent 26` 熄屏后日志出现
+  `rlvm-audio: suspended=yes` + `rlvm-native: engine suspended=yes`，随后 11.5 s
+  内**零帧推进**（`progress:` 与 `frame` 日志完全停止）；`input keyevent 224`
+  唤醒后出现 `suspended=no`，帧计数与 BGM 立即恢复
+  （`rlvm-audio: runtime: active_channels=1 peak_in_window=4384`）。
+- **语义影响**：只动 Android 后端（`native-bridge.cpp` / `audio_engine.*` /
+  `MainActivity.kt`），未触碰 `libreallive` / `machine` / `modules` 的任何语义。
+- **状态**：已执行并验证

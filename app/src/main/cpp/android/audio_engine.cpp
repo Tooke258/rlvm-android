@@ -800,10 +800,39 @@ bool AudioEngine::IsPlaying(int channel_index) const {
   return channels_[channel_index]->playing.load();
 }
 
+/**
+ * 挂起/恢复音频（黑屏、应用进后台时由 native-bridge.cpp 的 SetEngineSuspended 调用）。
+ *
+ * 除了让混音输出静音，还要把 AAudio 的数据回调本身停掉：回调每秒会唤醒 CPU 几百次，
+ * 而屏幕已经熄灭、引擎也停摆了，没有任何理由继续唤醒它。
+ */
+void AudioEngine::SetSuspended(bool suspended) {
+  if (suspended_.exchange(suspended) == suspended) return;  // 状态没变就别动流
+
+  // stream_ 由 Start()/Shutdown() 写入，先取到本地再判断。
+  AAudioStream* stream = static_cast<AAudioStream*>(stream_);
+  if (stream != nullptr) {
+    const aaudio_result_t result = suspended ? AAudioStream_requestPause(stream)
+                                             : AAudioStream_requestStart(stream);
+    if (result != AAUDIO_OK) {
+      __android_log_print(ANDROID_LOG_WARN, "rlvm-audio",
+                          "stream %s failed: %s", suspended ? "pause" : "start",
+                          AAudio_convertResultToText(result));
+    }
+  }
+  __android_log_print(ANDROID_LOG_INFO, "rlvm-audio", "suspended=%s",
+                      suspended ? "yes" : "no");
+}
+
 void AudioEngine::DecoderLoop() {
   std::vector<int16_t> buffer(kChunkFrames * kAudioChannels);
 
   while (!shutdown_requested_.load()) {
+    // 挂起（黑屏/后台）：源位置、环形缓冲、淡入淡出状态整体冻结。
+    if (suspended_.load(std::memory_order_relaxed)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      continue;
+    }
     bool did_work = false;
     for (auto& channel : channels_) {
       // 换源必须在 playing 检查之前处理：旧内容淡出完成后 playing 已被回调置为
@@ -875,6 +904,10 @@ void AudioEngine::MixInto(int16_t* out,
                           int16_t* scratch,
                           int32_t frames,
                           int* peak) {
+  // 挂起期间只输出静音：既不消耗环形缓冲，也不推进淡入/淡出。
+  // （正常路径下回调已经先把 out 清零，这里直接返回即可。）
+  if (suspended_.load(std::memory_order_relaxed)) return;
+
   const long long now = NowMillis();
   for (auto& channel : channels_) {
     if (!channel->playing.load(std::memory_order_relaxed)) continue;

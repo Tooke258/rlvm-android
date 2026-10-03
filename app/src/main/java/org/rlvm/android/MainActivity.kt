@@ -1,7 +1,10 @@
 package org.rlvm.android
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.net.Uri
@@ -46,6 +49,15 @@ class MainActivity : Activity() {
         const val TOUCH_DOWN = 0
         const val TOUCH_MOVE = 1
         const val TOUCH_UP = 2
+
+        // 引擎是否处于「挂起」（黑屏/后台）状态。
+        //
+        // 必须是**进程级**状态而不是 Activity 的字段：native 那台引擎活在进程里，
+        // 而 Activity 可能被系统回收后重建（MIUI 上很常见）。若标志跟着 Activity 走，
+        // 重建出来的实例以为"当前没挂起"，于是永远不去通知 native 恢复——引擎就
+        // 一直卡在挂起里。放在 companion 里，谁读到都是同一份真相。
+        @Volatile
+        private var engineSuspended = false
     }
 
     private lateinit var output: TextView
@@ -269,6 +281,46 @@ class MainActivity : Activity() {
         super.onResume()
         if (::glView.isInitialized) glView.onResume()
         applySystemUi()
+    }
+
+    // -- 黑屏 / 进后台 ⇄ 引擎挂起 -------------------------------------------
+    //
+    // 之前只有 onPause 停掉 GL 线程，引擎线程照样按 10ms 时间片推进字节码、音频也照样
+    // 出声——表现就是「黑屏之后游戏还在跑」。现在屏幕熄灭或应用进后台就把引擎挂起
+    // （不推进、不合成、不出声），回到前台原地继续。
+    //
+    // 两道保障：onStop/onStart 覆盖「应用被切走」，ACTION_SCREEN_OFF/ON 覆盖 MIUI 这类
+    // 「Activity 仍然 started 但屏幕已熄灭」的厂商差异。
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> setEngineSuspended(true)
+                Intent.ACTION_SCREEN_ON -> setEngineSuspended(false)
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        registerReceiver(screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        })
+        setEngineSuspended(false)
+    }
+
+    override fun onStop() {
+        setEngineSuspended(true)
+        runCatching { unregisterReceiver(screenReceiver) }
+        super.onStop()
+    }
+
+    /** 只在状态真的变化时过桥：onStop 与屏幕广播会重复报告同一件事。 */
+    private fun setEngineSuspended(suspended: Boolean) {
+        if (engineSuspended == suspended) return
+        engineSuspended = suspended
+        runCatching { NativeBridge.setEngineSuspended(suspended) }
+            .onFailure { log("引擎挂起切换失败：${it.message}") }
     }
 
     override fun onPause() {
