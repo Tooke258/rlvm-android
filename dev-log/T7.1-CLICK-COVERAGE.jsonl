@@ -1,0 +1,5 @@
+{"type":"task","id":"T7.1","phase":"v0.2.1：操作完整性","timestamp":"2026-10-04T02:55:00+08:00","goal":"点没渲染的地方（黑边 / 界外）也能推进对白"}
+{"type":"design","content":"RlvmRenderer.mapToFrame() 原先对画面矩形之外的触摸返回 null，MainActivity.handleTouch() 随即丢弃 → 黑边点击没有反应。方案对比：(a) 夹取到最近的画面边缘——风险是把黑边点击送进贴边按钮；(b) 界外点击统一映射到画面顶部中间 (frameWidth/2, 0)——顶部中间不会放按钮，且 RealLive 的对白推进只看左键按下、不看坐标。用户选择 (b)。"}
+{"type":"agent_output","content":"修改 app/src/main/java/org/rlvm/android/RlvmRenderer.kt：mapToFrame() 先按 fit 模式算出画面矩形，矩形内的点照旧按实际坐标换算；矩形外的点返回 PointF(frameWidth / 2f, 0f)。仅当 frameWidth/Height <= 0（还没有帧）或 surface 尺寸为 0（视图还没量出来）时返回 null。长按=右键、滑动=移动鼠标的语义不变；控制面板与悬浮球仍由 View 层消费，不转发给引擎。"}
+{"type":"verification","content":"构建：.\\gradlew.bat assembleRelease --no-daemon → BUILD SUCCESSFUL；adb install -r 覆盖安装（release 签名）。真机（Redmi K40 / Android 12 / Kud Wafter）：点左右黑边、上下黑边、画面外角落都能推进对白；画面内按钮（标题界面 START/LOAD 等）命中不受影响；黑边长按仍能唤出右键菜单。用户回报 T7.1 闭环通过。","status":"verified"}
+{"type":"notes","content":"取舍记录在 docs/DECISIONS.md D-020；TASKS.md 的 T7.1 已标记完成。若日后发现某作品在画面顶部中间确实放了可点元素，可退化为『界外点击先做 UI 命中测试、未命中才当推进』（更像原版行为），目前不需要。"}

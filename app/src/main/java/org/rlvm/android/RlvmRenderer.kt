@@ -97,7 +97,14 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     }
 
     /**
-     * 把视图坐标（触摸点）换算成游戏帧坐标；落在黑边上时返回 null。
+     * 把视图坐标（触摸点）换算成游戏帧坐标；还没拿到帧时返回 null。
+     *
+     * **落在画面矩形之外的触摸（适配模式下左右/上下的黑边）不再丢弃**，而是统一映射到
+     * 画面的**顶部中间**（v0.2.1 T7.1）：RealLive 的对白推进只看"有没有左键按下"、不看
+     * 坐标，而画面顶部中间不会放按钮，所以界外点击一律当作"在空白处点了一下"，
+     * 既能让文字往下走，又不会误触任何界面元素。
+     *
+     * （曾经的备选是"夹取到最近的画面边缘"，但那会把黑边点击送进贴边的按钮，已弃用。）
      *
      * 从 UI 线程调用。
      */
@@ -106,10 +113,14 @@ class RlvmRenderer : GLSurfaceView.Renderer {
         val (scaleX, scaleY) = fitScale()
         val width = surfaceWidth * scaleX
         val height = surfaceHeight * scaleY
+        // 视图尺寸还没量出来（surfaceWidth/Height 为 0）时无法换算，按"没有帧"处理。
+        if (width <= 0f || height <= 0f) return null
         val left = (surfaceWidth - width) / 2f
         val top = (surfaceHeight - height) / 2f
-        if (viewX < left || viewX > left + width || viewY < top || viewY > top + height) {
-            return null
+        val inside = viewX >= left && viewX <= left + width &&
+            viewY >= top && viewY <= top + height
+        if (!inside) {
+            return PointF(frameWidth / 2f, 0f)
         }
         return PointF(
             (viewX - left) / width * frameWidth,
