@@ -39,6 +39,7 @@
 #include <string>
 
 #include "libreallive/compression.h"
+#include "libreallive/expression.h"
 #include "utilities/exception.h"
 #include "utilities/gettext.h"
 #include "utilities/string_utilities.h"
@@ -151,7 +152,21 @@ Script::Script(const Header& hdr,
   const char* end = uncompressed + dlen;
   size_t pos = 0;
   pointer_t it = elts_.before_begin();
+  // 本场景声明的编码决定字节码扫描器怎么判断「双字节字符首字节」——必须在这棵
+  // 元素树被解析之前设好，否则 GBK 场景里被补丁改写的裸中文参数会被扫成 0 长度，
+  // 触发调用方的零前进死循环（见 libreallive/expression.h 的说明与 D-019）。
+  SetCurrentTextEncoding(hdr.rldev_metadata_.text_encoding());
+  // 防御：每个字节码元素至少有 8 字节头，所以元素数不可能超过「解压长度 / 4」。
+  // 数据被改坏时（例如汉化补丁重写的 select 布局不是 RLVM 期望的格式），扫描器会一路
+  // 错位，把整段数据切成百万级「元素」，每个元素都是一个堆对象——真机表现是内存暴涨，
+  // 然后被系统 lowmemorykiller SIGKILL（实测连系统的文件管理器都被连带杀掉）。
+  // 宁可让这一个场景解析失败（导出与引擎都按场景容错），也绝不能拖垮整机。
+  const size_t max_elements = dlen / 4 + 16;
+  size_t element_count = 0;
   while (pos < dlen) {
+    if (++element_count > max_elements) {
+      throw Error("bytecode element overflow: scene data is malformed");
+    }
     // Read element
     it = elts_.emplace_after(it, BytecodeElement::Read(stream, end, cdat));
     cdat.offsets[pos] = it;

@@ -246,6 +246,9 @@ void RLMachine::ExecuteNextInstruction() {
   if (halted() == true) {
     return;
   } else {
+    // 让字节码/表达式扫描器按「当前所在场景」声明的编码工作：切场景（Jump/Farcall）
+    // 之后这里会跟着换，因此运行期解析表达式、GetText() 取文本时用的都是正确规则。
+    libreallive::SetCurrentTextEncoding(GetTextEncoding());
     try {
       if (call_stack_.back().frame_type == StackFrame::TYPE_LONGOP) {
         delay_stack_modifications_ = true;

@@ -1,6 +1,7 @@
 package org.rlvm.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -39,6 +40,10 @@ class MainActivity : Activity() {
         const val REQUEST_PICK_TREE = 1001
         const val PREFS = "rlvm"
         const val KEY_TREE_URI = "saf_tree_uri"
+        // 文本容器：相对游戏目录树内的路径（不再用 document URI——系统文件选择器在
+        // 部分机型上会崩，而且容器本来就应该放在游戏目录里）。
+        const val KEY_CONTAINER_PATH = "text_container_path"
+        const val KEY_CONTAINER_ON = "text_container_on"
         const val KEY_LANDSCAPE = "landscape"
         const val KEY_FIT_MODE = "fit_mode"
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
@@ -70,6 +75,8 @@ class MainActivity : Activity() {
     private lateinit var rootView: FrameLayout
     private var panelWidth = 0
     private var panelOpen = false
+    // 「文本容器」开关按钮：标签要随状态变化，所以留一个引用。
+    private lateinit var containerButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,6 +129,16 @@ class MainActivity : Activity() {
                 log("画面适配：${fitModeLabel(mode)}")
             }
         }
+        // 文本容器（语言）切换：汉化容器是另一个文件，用显式开关切换，不去覆盖游戏目录的
+        // SEEN.TXT。开关状态与所选文件都持久化，引擎在「运行 SAF 引擎」时按它选归档。
+        val pickContainerButton = Button(this).apply {
+            text = getString(R.string.pick_text_container)
+            setOnClickListener { pickTextContainer() }
+        }
+        containerButton = Button(this).apply {
+            setOnClickListener { setTextContainerEnabled(!textContainerEnabled) }
+        }
+        updateContainerButtonLabel()
 
         // 画面区：native 在引擎线程上合成帧，这里只负责显示。
         renderer = RlvmRenderer()
@@ -174,6 +191,7 @@ class MainActivity : Activity() {
             addView(buttonRow(pickButton, safButton))
             addView(buttonRow(stopButton, orientationButton))
             addView(buttonRow(pathButton, fitButton))
+            addView(buttonRow(pickContainerButton, containerButton))
             addView(
                 ScrollView(this@MainActivity).apply { addView(output) },
                 LinearLayout.LayoutParams(
@@ -275,6 +293,8 @@ class MainActivity : Activity() {
             val saved = savedTreeUri()
             append(if (saved == null) "尚未授权任何目录，请点“选择游戏目录”。" else "已授权目录：$saved")
         })
+        // 把持久化的文本容器开关推给 native（默认关 = 用游戏目录里的 Seen.txt）。
+        applyTextContainer()
     }
 
     override fun onResume() {
@@ -330,6 +350,102 @@ class MainActivity : Activity() {
 
     // -- SAF 目录授权 ------------------------------------------------------
 
+    // -- 文本容器（语言）开关 ----------------------------------------------
+    //
+    // 汉化容器是**另一个文件**（合并后的 Seen 归档），不能要求用户覆盖游戏目录里的
+    // SEEN.TXT——那样就没法切回原版了。所以这里给一个显式开关 + 文件选择：
+    // 开 = 引擎读用户指定的容器；关 = 读游戏目录里的 Seen.txt。
+    // 注意：游戏目录里的 Seen####.txt 覆盖文件仍然优先于容器（补丁机制的既有语义）。
+
+    /** 当前是否使用「指定文本容器」。 */
+    private val textContainerEnabled: Boolean
+        get() = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getBoolean(KEY_CONTAINER_ON, false) && savedContainerPath() != null
+
+    /** 所选容器在游戏目录里的相对路径（例如 "Seen-CN.TXT"）。 */
+    private fun savedContainerPath(): String? =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_CONTAINER_PATH, null)
+
+    private fun updateContainerButtonLabel() {
+        if (::containerButton.isInitialized) {
+            containerButton.text = getString(
+                if (textContainerEnabled) R.string.toggle_text_container_on
+                else R.string.toggle_text_container_off
+            )
+        }
+    }
+
+    /** 把当前开关状态推给 native：关 → 空串（用游戏目录 Seen.txt）。 */
+    private fun applyTextContainer() {
+        val path = if (textContainerEnabled) savedContainerPath() ?: "" else ""
+        runCatching { NativeBridge.setTextContainerPath(path) }
+            .onFailure { log("文本容器设置失败：${it.message}") }
+        updateContainerButtonLabel()
+    }
+
+    private fun setTextContainerEnabled(enabled: Boolean) {
+        if (enabled && savedContainerPath() == null) {
+            log("还没有选择文本容器文件，先点「选择文本容器」。")
+            return
+        }
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_CONTAINER_ON, enabled).apply()
+        applyTextContainer()
+        log(
+            if (enabled) "文本容器：开（${savedContainerPath()}）"
+            else "文本容器：关（用游戏目录里的 Seen.txt）"
+        )
+    }
+
+    /**
+     * 选择文本容器：**不**调用系统文件选择器，直接在应用内列出游戏目录里的候选文件。
+     *
+     * 为什么不用 ACTION_OPEN_DOCUMENT：部分机型（本机 MIUI）在选择大文件时会把
+     * 系统文件界面搞崩，而容器本来就应该和游戏数据放在一起。列目录走的是已经授权
+     * 的 SAF 目录树（一次跨进程查询拿到全部条目），只有候选文件才去问一次大小。
+     */
+    private fun pickTextContainer() {
+        val treeUri = savedTreeUri()
+        if (treeUri == null) {
+            log("请先点“选择游戏目录”完成授权，才能列出候选容器。")
+            return
+        }
+        val saf = SafFileSystem(applicationContext, treeUri)
+        val names = saf.listDirectory("")
+            .filter { it.startsWith("F\t") }
+            .map { it.substring(2) }
+            .filter { isCandidateContainer(it) }
+        if (names.isEmpty()) {
+            log("游戏目录里没有找到候选容器（*.TXT / *.BIN / *.DAT / *.EXE / Seen*）。")
+            return
+        }
+        val entries = names.map { it to saf.size(it) }.sortedByDescending { it.second }
+        val labels = entries.map { (name, size) ->
+            if (size > 0) "%s   (%.2f MB)".format(name, size / 1048576.0) else name
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("选择文本容器")
+            .setItems(labels) { _, which ->
+                val name = entries[which].first
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_CONTAINER_PATH, name)
+                    .putBoolean(KEY_CONTAINER_ON, true)
+                    .apply()
+                applyTextContainer()
+                log("已选择文本容器：$name（已开启）")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 候选容器的名字规则：RL 的文本归档通常叫 Seen*.txt，或藏在这些扩展名里。 */
+    private fun isCandidateContainer(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.startsWith("seen") ||
+            lower.endsWith(".txt") || lower.endsWith(".bin") ||
+            lower.endsWith(".dat") || lower.endsWith(".exe")
+    }
+
     private fun pickDirectory() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(
@@ -345,6 +461,7 @@ class MainActivity : Activity() {
     @Deprecated("用 startActivityForResult 换取不引入 androidx 依赖（骨架刻意保持零第三方依赖）")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+
         if (requestCode != REQUEST_PICK_TREE) return
 
         val uri = data?.data
@@ -385,6 +502,8 @@ class MainActivity : Activity() {
             return
         }
         log("--- SAF 运行 ---")
+        // 每次开引擎都同步一次文本容器设置：开关可能刚被切过。
+        applyTextContainer()
         background {
             val report = runCatching {
                 NativeBridge.setSafBackend(SafFileSystem(applicationContext, treeUri))

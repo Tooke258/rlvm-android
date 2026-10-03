@@ -7,4 +7,7 @@
     <string name="stop_engine">停止引擎</string>
     <string name="toggle_orientation">横屏/竖屏</string>
     <string name="cycle_fit">画面适配</string>
+    <string name="pick_text_container">选择文本容器</string>
+    <string name="toggle_text_container_on">容器：开</string>
+    <string name="toggle_text_container_off">容器：关</string>
 </resources>

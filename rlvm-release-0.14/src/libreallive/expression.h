@@ -51,6 +51,29 @@ size_t NextExpression(const char* src);
 size_t NextString(const char* src);
 size_t NextData(const char* src);
 
+// 字节码扫描用的「当前场景文本编码」（0=CP932, 1=CP936/GBK, 2=CP1252, 3=CP949）。
+//
+// 上游的字节码/表达式扫描器（NextString / NextData / GetData / TextoutElement…）全都写死
+// 按 Shift_JIS 判断「双字节字符的首字节」：只有 0x81-0x9F、0xE0-0xEF 才算首字节，其余按
+// 单字节处理；未加引号的文本一旦遇到「不在允许集合里」的字节就立刻结束、甚至返回 0 长度。
+// 这对 CP932 数据是对的，对 GBK 数据是错的——常用简体字的引导字节多在 0xB0-0xF7：
+//   * 参数/选项里的裸中文被扫成 0 长度 → 调用方的 `while (*p != ')') p += NextData(p)`
+//     零前进死循环（真机实测内存涨到 5.3GB 后被系统 lowmemorykiller 杀掉，连带把系统的
+//     文件管理器一起清掉）；
+//   * 尾字节是 0x5C（'\'）的汉字会被当成转义符，文本被吃掉一个字节。
+// 因此扫描规则必须跟着场景声明的编码走。编码在「场景开始解析」与「每条指令执行前」设置
+// （见 scenario.cc / rlmachine.cc 的 D-019 注释）；CP932（默认 0）下与上游逐字节一致。
+int CurrentTextEncoding();
+void SetCurrentTextEncoding(int encoding);
+
+// 这个字节是否是「双字节字符的首字节」（按上面的当前编码判断）。
+bool IsTextLeadByte(char c);
+
+// 诊断辅助：把 src 开始的 n 个字节打成 "12 34 56" 形式的十六进制串。
+// 零前进守卫用它把「卡在哪几个字节上」直接写进报错信息里——真机上只看日志就能定位
+// 是哪种字节触发了坏数据（见 D-019）。
+std::string ByteDumpForError(const char* src, int n);
+
 // Parse expression functions
 class ExpressionPiece;
 std::unique_ptr<ExpressionPiece> GetExpressionToken(const char*& src);

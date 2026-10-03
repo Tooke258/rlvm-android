@@ -117,9 +117,17 @@ CommandElement* BuildFunctionElement(const char* stream) {
   if (*ptr == '(') {
     const char* end = ptr + 1;
     while (*end != ')') {
+      const char* step_start = end;
       const size_t len = NextData(end);
       params.push_back(string(end, len));
       end += len;
+      // 零前进守卫（D-019）：坏数据会让 NextData 返回 0，上游在这里会死循环并把
+      // params 撑到几 GB——真机上曾被系统 lowmemorykiller 杀掉，还连带清掉别的应用。
+      // 合法 token 一定消耗 ≥1 字节，所以这条只可能对坏数据触发；宁可报解析错误。
+      if (end == step_start) {
+        throw Error("BuildFunctionElement(): parameter list makes no progress at " +
+                    ByteDumpForError(step_start, 16));
+      }
     }
   }
 
@@ -314,7 +322,7 @@ TextoutElement::TextoutElement(const char* src, const char* file_end) {
           *end == entrypoint_marker)
         break;
     }
-    if ((*end >= 0x81 && *end <= 0x9f) || (*end >= 0xe0 && *end <= 0xef))
+    if (IsTextLeadByte(*end))
       end += 2;
     else
       ++end;
@@ -341,7 +349,7 @@ const string TextoutElement::GetText() const {
         rv.push_back('\\');
       }
     } else {
-      if ((*it >= 0x81 && *it <= 0x9f) || (*it >= 0xe0 && *it <= 0xef))
+      if (IsTextLeadByte(*it))
         rv.push_back(*it++);
       rv.push_back(*it++);
     }
@@ -897,10 +905,16 @@ GosubWithElement::GosubWithElement(const char* src, ConstructionData& cdata)
     repr_size++;
 
     while (*src != ')') {
+      const char* step_start = src;
       int expr = NextData(src);
       repr_size += expr;
       params.push_back(string(src, expr));
       src += expr;
+      // 零前进守卫（D-019）：同上——坏数据下会死循环 + params 无限增长。
+      if (src == step_start) {
+        throw Error("GosubWithElement(): parameter list makes no progress at " +
+                    ByteDumpForError(step_start, 16));
+      }
     }
     src++;
 

@@ -67,6 +67,16 @@ object NativeBridge {
     external fun setEngineSuspended(suspended: Boolean)
 
     /**
+     * 指定文本容器（汉化/原版 SEEN 归档）在**游戏目录树内的相对路径**；
+     * 空串表示用游戏目录里的 Seen.txt。
+     *
+     * 合并后的汉化容器是**另一个文件**，不该要求用户覆盖游戏目录里的原始 SEEN.TXT——
+     * 这个开关就是"语言/容器"的显式切换入口。用相对路径而不是 document URI：
+     * 容器就该和游戏数据放一起，而且系统文件选择器在部分机型上会崩。
+     */
+    external fun setTextContainerPath(relPath: String)
+
+    /**
      * 触摸输入。坐标必须是**游戏帧坐标**（0..帧宽 / 0..帧高），
      * 由 RlvmRenderer.mapToFrame 从视图坐标换算而来。
      *

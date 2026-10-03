@@ -59,6 +59,42 @@ std::string IntToBytecode(int val) {
 
 namespace libreallive {
 
+namespace {
+
+// 当前场景文本编码；0 = CP932（默认，行为与上游完全一致）。
+int g_current_text_encoding = 0;
+
+}  // namespace
+
+int CurrentTextEncoding() { return g_current_text_encoding; }
+
+void SetCurrentTextEncoding(int encoding) { g_current_text_encoding = encoding; }
+
+bool IsTextLeadByte(char c) {
+  // 显式按无符号字节判断：上游在 ARM（char 默认无符号）上就是这个语义，
+  // 而 x86 上 char 有符号会让 0xE0-0xEF 那半边永远不成立。
+  const unsigned char b = static_cast<unsigned char>(c);
+  if (g_current_text_encoding == 1 || g_current_text_encoding == 3) {
+    // CP936(GBK) / CP949：双字节字符首字节 0x81-0xFE。注意 0xA0-0xDF 这一段在
+    // CP932 里是单字节半角片假名，在 GBK 里是首字节——这正是汉化文本的核心差异。
+    return b >= 0x81 && b <= 0xFE;
+  }
+  // CP932（默认）与 CP1252（本就是单字节）：维持上游判定。
+  return (b >= 0x81 && b <= 0x9F) || (b >= 0xE0 && b <= 0xEF);
+}
+
+std::string ByteDumpForError(const char* src, int n) {
+  static const char* kHex = "0123456789abcdef";
+  std::string out;
+  for (int i = 0; i < n; ++i) {
+    const unsigned char b = static_cast<unsigned char>(src[i]);
+    if (!out.empty()) out += ' ';
+    out += kHex[b >> 4];
+    out += kHex[b & 0x0F];
+  }
+  return out;
+}
+
 // Expression Tokenization
 //
 // Functions that tokenize expression data while parsing the bytecode
@@ -127,12 +163,12 @@ size_t NextString(const char* src) {
         end += 1 + NextExpression(end);
         continue;
       }
-      if (!((*end >= 0x81 && *end <= 0x9f) || (*end >= 0xe0 && *end <= 0xef) ||
-            (*end >= 'A' && *end <= 'Z') || (*end >= '0' && *end <= '9') ||
-            *end == ' ' || *end == '?' || *end == '_' || *end == '"'))
+      if (!(IsTextLeadByte(*end) || (*end >= 'A' && *end <= 'Z') ||
+            (*end >= '0' && *end <= '9') || *end == ' ' || *end == '?' ||
+            *end == '_' || *end == '"'))
         break;
     }
-    if ((*end >= 0x81 && *end <= 0x9f) || (*end >= 0xe0 && *end <= 0xef))
+    if (IsTextLeadByte(*end))
       end += 2;
     else
       ++end;
@@ -146,10 +182,9 @@ size_t NextData(const char* src) {
     return 1 + NextData(src + 1);
   if (*src == '\n')
     return 3 + NextData(src + 3);
-  if ((*src >= 0x81 && *src <= 0x9f) || (*src >= 0xe0 && *src <= 0xef) ||
-      (*src >= 'A' && *src <= 'Z') || (*src >= '0' && *src <= '9') ||
-      *src == ' ' || *src == '?' || *src == '_' || *src == '"' ||
-      strcmp(src, "###PRINT(") == 0)
+  if (IsTextLeadByte(*src) || (*src >= 'A' && *src <= 'Z') ||
+      (*src >= '0' && *src <= '9') || *src == ' ' || *src == '?' ||
+      *src == '_' || *src == '"' || strcmp(src, "###PRINT(") == 0)
     return NextString(src);
   if (*src == 'a' || *src == '(') {
     const char* end = src;
@@ -168,8 +203,15 @@ size_t NextData(const char* src) {
       }
     }
 
-    while (*end != ')')
+    while (*end != ')') {
+      const char* step_start = end;
       end += NextData(end);
+      // 零前进守卫（D-019）：坏数据下 NextData 可能返回 0，上游会在这里死循环。
+      if (end == step_start) {
+        throw Error("NextData(): parameter list makes no progress at " +
+                    ByteDumpForError(step_start, 16));
+      }
+    }
     end++;
     if (*end == '\\')
       end += NextExpression(end);
@@ -402,10 +444,9 @@ std::unique_ptr<ExpressionPiece> GetData(const char*& src) {
   } else if (*src == '\n') {
     src += 3;
     return GetData(src);
-  } else if ((*src >= 0x81 && *src <= 0x9f) || (*src >= 0xe0 && *src <= 0xef) ||
-             (*src >= 'A' && *src <= 'Z') || (*src >= '0' && *src <= '9') ||
-             *src == ' ' || *src == '?' || *src == '_' || *src == '"' ||
-             strcmp(src, "###PRINT(") == 0) {
+  } else if (IsTextLeadByte(*src) || (*src >= 'A' && *src <= 'Z') ||
+             (*src >= '0' && *src <= '9') || *src == ' ' || *src == '?' ||
+             *src == '_' || *src == '"' || strcmp(src, "###PRINT(") == 0) {
     return GetString(src);
   } else if (*src == 'a') {
     // TODO(erg): Cleanup below.
@@ -436,7 +477,14 @@ std::unique_ptr<ExpressionPiece> GetData(const char*& src) {
     }
 
     while (*end != ')') {
+      const char* step_start = end;
       cep->AddContainedPiece(GetData(end));
+      // 零前进守卫（D-019）：GetData 若一步都没推进，上游会在这里死循环并把
+      // 子表达式无限塞进 vector（真机实测内存涨到 GB 级）。
+      if (end == step_start) {
+        throw Error("GetData(): parameter list makes no progress at " +
+                    ByteDumpForError(step_start, 16));
+      }
     }
 
     return std::unique_ptr<ExpressionPiece>(cep.release());
@@ -454,7 +502,13 @@ std::unique_ptr<ExpressionPiece> GetComplexParam(const char*& src) {
     std::unique_ptr<ComplexExpressionPiece> cep(new ComplexExpressionPiece());
 
     while (*src != ')') {
+      const char* step_start = src;
       cep->AddContainedPiece(GetData(src));
+      // 零前进守卫（D-019）：同上。
+      if (src == step_start) {
+        throw Error("GetComplexParam(): parameter list makes no progress at " +
+                    ByteDumpForError(step_start, 16));
+      }
     }
 
     return std::unique_ptr<ExpressionPiece>(cep.release());

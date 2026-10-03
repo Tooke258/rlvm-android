@@ -271,3 +271,66 @@
 - **语义影响**：只动 Android 后端（`native-bridge.cpp` / `audio_engine.*` /
   `MainActivity.kt`），未触碰 `libreallive` / `machine` / `modules` 的任何语义。
 - **状态**：已执行并验证
+
+---
+
+## D-018 文本容器（语言）显式开关：不改用户的原始 SEEN.TXT
+
+- **日期**：2026-10-04
+- **背景**：汉化数据是一份**单独的容器文件**（日文场景 + 中文场景合并后的 Seen 归档，
+  见 `local-data/tools-l10n/merge_container.py`，产物只留本机）。不能要求用户去覆盖游戏
+  根目录的 `SEEN.TXT`——那是用户的原始文件，覆盖了就切不回日文。
+- **决策**：面板上加「选择文本容器」+「容器：开/关」两个入口：
+  - 列表由**应用自己**列游戏目录树的候选文件（`Seen*` / `*.txt` / `*.bin` / `*.dat` /
+    `*.exe`，带大小），用 `AlertDialog` 选；**不使用** `ACTION_OPEN_DOCUMENT`——本机 MIUI
+    在选择大文件时会把系统文件界面搞崩（实测两次，均为系统 UI 进程被拖死）；
+  - 选择结果按**游戏目录树内的相对路径**持久化（`Seen-CN.TXT`），
+    `NativeBridge.setTextContainerPath()` → native 保存进程级路径 →
+    `RunScenarioSaf` 用 `SafBackend::OpenFd()` 打开；打不开则回退到 `Seen.txt` 并打印 WARNING；
+  - 游戏目录里的 `Seen####.txt` 覆盖文件仍然**优先于**容器（补丁机制的既有语义）。
+- **验证**：日志可见 `text container = Seen-CN.TXT` / `(game dir Seen.txt)` 来回切换；
+  中文容器 `TOC entries=63`（原版 62）且游戏内文本为中文；切回原版即日文原文。
+- **语义影响**：只动应用层（Kotlin + native-bridge），未改 `libreallive` 语义。
+- **状态**：已执行并验证
+
+---
+
+## D-019 字节码扫描按场景编码 + 「零前进」守卫（本次唯一的核心改动）
+
+- **日期**：2026-10-04
+- **背景（真机事故）**：接入中文容器后，引擎在解析场景 2720 时**内存涨到 RSS 5.27GB +
+  swap 4.65GB**，被系统 `lowmemorykiller` 以 `oom_score_adj 0` 杀掉；LMK 顺手清掉一批
+  后台进程，用户看到的是「资源管理器崩了」。
+- **根因**：`libreallive/bytecode.cc` 的 `BuildFunctionElement()`（以及 `NextData` 内部、
+  运行时 `GetData`/`GetComplexParam`、`GosubWithElement` 共 5 处）长这样：
+  `while (*p != ')') { size_t n = NextData(p); params.push_back(string(p, n)); p += n; }`
+  —— `NextData()` 对「既不认识的 Shift_JIS 首字节、也不在允许单字节集合里」的字节**返回 0**，
+  于是 `p` 不前进、每轮还往 vector 里 push 一个元素 → 死循环 + 无限增长。
+  汉化补丁把参数里的引号/逗号/换行改写过，GBK 文本里就出现这种字节（中文引导字节多在
+  0xB0-0xF7，而上游只认到 0x9F）。
+- **决策（用户批准的两层改动）**：
+  1. **L2 编码感知扫描**：新增 `CurrentTextEncoding()/SetCurrentTextEncoding()/IsTextLeadByte()`
+     （`libreallive/expression.h/.cc`）。`IsTextLeadByte()` 在 CP932 下与上游**逐字节一致**
+     （0x81-0x9F、0xE0-0xEF），在 CP936/CP949 下按 0x81-0xFE 判定；6 处写死的判定全部改用它。
+     编码在两个时点设置：`Script` 构造（按场景声明的编码解析元素树，`scenario.cc`）与
+     `ExecuteNextInstruction`（每条指令前，跟随当前场景，`rlmachine.cc`）。
+  2. **L1 零前进守卫**：上述 5 处循环里，若某一步没有推进，立即抛 `libreallive::Error`
+     （报错信息里带卡住位置附近的 16 字节十六进制，便于定位）。合法 token 一定消耗 ≥1 字节，
+     所以这条只可能对坏数据触发——效果是「该场景解析失败」，而不是吃几 GB 内存。
+  另加两道保险：`Script` 解析时限制元素数（≤ 解压长度/4），以及运行时内存探针
+  （`mem[...] rss=` 日志 + 1.2GB 自停）。
+- **验证（Redmi K40 / 天玑1200 / Android 12，release 包）**：
+  - 事故前：只解析到场景 2719 就无输出，33s 后 `lowmemorykiller: Kill 'org.rlvm.android'
+    ... to free 5523896kB rss, 4650160kb swap`；
+  - 改动后：63 个场景全部解析，`mem[after export] rss≈245MB`、运行期稳定在 ~260MB，
+    LMK 零记录；逐场景元素数均为几十~几千（无异常膨胀）；帧率不受影响（引擎合成 ~340fps，
+    显示侧 `fps=120` 满帧、单帧 ≤9.5ms）；
+  - 守卫按设计只拦下 **1 个场景：2728**（`BuildFunctionElement(): parameter list makes no
+    progress at 00 0a 7b 04 …`）。2728 的中文数据是**完整**的（我们自己的抽取有 1586 行），
+    属于解析兼容性问题而非数据缺失；`0a <行号> 00` 在该场景里是常规结构（27 处），
+    所以不是「补丁丢行留下的垃圾字节」。当前决定：2728 取日文原版（`merge_container.py
+    --force-jp 2728`），其余 62 个场景保持中文；深挖 2728 需要另做离线解析器分析。
+- **语义影响**：`libreallive/expression.cc`、`libreallive/bytecode.cc`、`libreallive/scenario.cc`、
+  `machine/rlmachine.cc` —— CP932 数据的行为逐字节不变（默认编码 0 走原判定），
+  GBK 数据从「误判/死循环」变成「正确切分或干净失败」。
+- **状态**：已执行并验证（2728 待后续）

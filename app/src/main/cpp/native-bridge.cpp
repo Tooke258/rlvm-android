@@ -94,6 +94,39 @@ std::atomic<bool> g_stop_requested{false};
 // 不推进指令也不合成新帧，音频同时被打成静音并停掉数据回调；置回 false 后从原位置继续。
 std::atomic<bool> g_engine_suspended{false};
 
+// 文本容器（例如合并了汉化的 SEEN 归档）在游戏目录树内的相对路径。
+// 空 = 用游戏目录里的 Seen.txt。UI 线程写入、引擎线程读取，所以加锁。
+std::mutex g_text_container_mutex;
+std::string g_text_container_path;
+
+// ---------------------------------------------------------------------------
+// 内存探针（诊断用）
+//
+// 背景：真机上出现过「引擎解析到一半内存暴涨，被系统 lowmemorykiller SIGKILL，
+// 连带把系统文件管理器一起杀掉」。为了定位是哪一步在涨内存，这里读 /proc/self/status
+// 的 VmRSS 并打日志；同时给一个自身上限，超过就主动停手，避免再把整机拖下水。
+// ---------------------------------------------------------------------------
+constexpr long kMemoryGuardKb = 1200 * 1024;  // 1.2 GB
+
+long CurrentRssKb() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.compare(0, 6, "VmRSS:") != 0) continue;
+    try {
+      return std::stol(line.substr(6));
+    } catch (...) {
+      return -1;
+    }
+  }
+  return -1;
+}
+
+void LogMemory(const char* phase) {
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "mem[%s] rss=%ld kB", phase,
+                      CurrentRssKb());
+}
+
 // 是否已有一台引擎在跑。默认不限时运行后，重复点「运行」很容易起第二台，
 // 两台引擎共用同一个 AudioEngine 与帧缓冲会互相踩踏，所以直接拒绝并存。
 std::atomic<bool> g_run_active{false};
@@ -504,12 +537,40 @@ void ExportSceneText(libreallive::Archive& archive,
     return;
   }
 
+  // 诊断：常驻内存探针 + 自身上限。真机上出现过「解析到一半内存暴涨、被系统
+  // lowmemorykiller SIGKILL，连带把别的应用一起杀」的情况——这里把内存曲线和
+  // 每个场景的元素数打进日志，并在超过上限时主动停手，避免再把整机拖下水。
+  LogMemory("export start");
   std::ostringstream out;
   int scenes = 0;
   int strings = 0;
+  std::vector<int> failed;
   for (auto it = archive.begin(); it != archive.end(); ++it) {
     const int index = it->first;
-    libreallive::Scenario* scenario = archive.GetScenario(index);
+    const long rss_before = CurrentRssKb();
+    if (rss_before > kMemoryGuardKb) {
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                          "export_jp_text: aborted before scene %d, rss=%ld kB > %ld kB",
+                          index, rss_before, kMemoryGuardKb);
+      report += "export_jp_text: aborted at scene " + std::to_string(index) +
+                " (rss guard)\n";
+      break;
+    }
+    // 逐场景容错：解析失败（例如汉化补丁改写过的菜单场景，select 结构不是
+    // RLVM 期望的布局）只跳过这一个场景并记账，否则一个坏场景会让整份导出
+    // ——以及"到底哪些场景坏"这个诊断结论——全都拿不到。
+    libreallive::Scenario* scenario = nullptr;
+    try {
+      scenario = archive.GetScenario(index);
+    } catch (const std::exception& e) {
+      failed.push_back(index);
+      report += "export_jp_text: scene " + std::to_string(index) +
+                " parse failed: " + e.what() + "\n";
+      __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                          "export_jp_text: scene %d parse failed: %s", index,
+                          e.what());
+      continue;
+    }
     if (scenario == nullptr) continue;
     ++scenes;
 
@@ -519,6 +580,16 @@ void ExportSceneText(libreallive::Archive& archive,
     // Archive::GetProbableEncodingType()——那是整库默认值，用在逐场景上会把
     // 未覆盖的日文场景（声明 0）也按 GBK 解成乱码。
     const int encoding = scenario->encoding();
+
+    // 元素数：正常场景是「几千」量级；被改坏的数据会让扫描器一路错位，把整段
+    // 数据切成十万级甚至百万级元素——这就是内存暴涨的直接来源，先量出来。
+    int elements = 0;
+    for (auto element = scenario->begin(); element != scenario->end(); ++element) {
+      ++elements;
+    }
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "export scene %d: dlen=%zu elements=%d enc=%d rss=%ld kB",
+                        index, it->second.length, elements, encoding, rss_before);
 
     int ordinal = 0;
     for (auto element = scenario->begin(); element != scenario->end(); ++element) {
@@ -544,7 +615,8 @@ void ExportSceneText(libreallive::Archive& archive,
   file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
   file.close();
   report += "export_jp_text: scenes=" + std::to_string(scenes) +
-            " strings=" + std::to_string(strings) + " -> " + path + "\n";
+            " strings=" + std::to_string(strings) +
+            " failed=" + std::to_string(failed.size()) + " -> " + path + "\n";
 }
 
 void RunEngineOn(System& system,
@@ -554,6 +626,7 @@ void RunEngineOn(System& system,
                  std::string& report) {
   // 分步日志：真机上「跑很久却没有任何输出」时，用它定位卡在哪一步。
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: constructing RLMachine");
+  LogMemory("engine start");
 
   // 触摸输入（T2.3）：把当前系统暴露给 UI 线程，离开 RunEngineOn 时自动断开。
   CurrentSystemGuard current_system(dynamic_cast<AndroidSystem*>(&system));
@@ -564,6 +637,7 @@ void RunEngineOn(System& system,
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddGameHacks");
   AddGameHacks(machine);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: machine ready");
+  LogMemory("machine ready");
   // 与上游 RLVMInstance 一致：遇到指令异常时跳过该指令继续执行，
   // 而不是把整台机器标记为 halted。
   machine.SetHaltOnException(false);
@@ -612,6 +686,7 @@ void RunEngineOn(System& system,
     }
     ExportSceneText(archive, export_dir, report);
   }
+  LogMemory("after export");
 
   AndroidGraphicsSystem* graphics =
       dynamic_cast<AndroidGraphicsSystem*>(&system.graphics());
@@ -658,9 +733,18 @@ void RunEngineOn(System& system,
     // 进度日志：定位「跑很久但没有输出」这类问题。
     if (frames_presented % 60 == 0) {
       __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                          "progress: frames=%d instructions=%d elapsed=%ums",
+                          "progress: frames=%d instructions=%d elapsed=%ums rss=%ldkB",
                           frames_presented, executed,
-                          system.event().GetTicks() - started);
+                          system.event().GetTicks() - started, CurrentRssKb());
+      // 自我保护：真机上出现过内存暴涨把整机拖垮（系统连带杀掉别的应用）。
+      // 宁可让引擎自己停下来，也不要让系统去杀。
+      if (CurrentRssKb() > kMemoryGuardKb) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag,
+                            "memory guard: rss=%ld kB > %ld kB, stopping engine",
+                            CurrentRssKb(), kMemoryGuardKb);
+        stop_reason = "memory guard";
+        break;
+      }
     }
 
     // 音频在运行期的周期性证据：active_channels>0 表示游戏自己点的 BGM 还在播；
@@ -845,16 +929,38 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
       }
     }
 
-    const int fd = backend->OpenFd("Seen.txt");
-    if (fd < 0) {
-      report += "ERROR: cannot open Seen.txt via SAF\n";
-      return NewSafeJavaString(env, report);
+    // 文本容器选择：默认游戏目录里的 Seen.txt；开关打开时改用用户指定的那个文件
+    // （合并了汉化的容器）。指定的文件打不开就回退，避免"开关一开游戏直接起不来"。
+    std::string container_path;
+    {
+      std::lock_guard<std::mutex> lock(g_text_container_mutex);
+      container_path = g_text_container_path;
     }
-    report += "Seen.txt opened via SAF fd=" + std::to_string(fd) + "\n";
+    std::string container_label = "Seen.txt (游戏目录)";
+    int fd = -1;
+    if (!container_path.empty()) {
+      fd = backend->OpenFd(container_path);
+      if (fd >= 0) {
+        container_label = container_path;
+        report += "text container \"" + container_path +
+                  "\" opened via SAF fd=" + std::to_string(fd) + "\n";
+      } else {
+        report += "WARNING: 指定容器 " + container_path +
+                  " 打不开，回退到游戏目录 Seen.txt\n";
+      }
+    }
+    if (fd < 0) {
+      fd = backend->OpenFd("Seen.txt");
+      if (fd < 0) {
+        report += "ERROR: cannot open Seen.txt via SAF\n";
+        return NewSafeJavaString(env, report);
+      }
+      report += "Seen.txt opened via SAF fd=" + std::to_string(fd) + "\n";
+    }
 
     {
       // Archive 内部完成 mmap，之后即可关闭 fd（映射仍然有效）。
-      libreallive::Archive archive(fd, "saf:/Seen.txt",
+      libreallive::Archive archive(fd, "saf:/" + container_label,
                                    gameexe("REGNAME").ToString(""));
       close(fd);
 
@@ -962,6 +1068,25 @@ void SetEngineSuspended(JNIEnv* /*env*/, jobject /*thiz*/, jboolean suspended) {
 }
 
 /**
+ * 指定文本容器（汉化/原版的 SEEN 归档）在游戏目录里的相对路径，
+ * 空串 = 回到游戏目录的 Seen.txt。
+ *
+ * 为什么要有这个开关：合并后的汉化容器是**另一个文件**，不能要求用户去覆盖游戏目录里
+ * 的 SEEN.TXT（那是用户的原始文件，覆盖了就没法切回日文）。所以 UI 上给一个显式开关 +
+ * 应用内文件列表，native 在开引擎时按这个相对路径走 SAF 打开容器；关掉即恢复原版。
+ * 注意：游戏目录里的 Seen####.txt 覆盖文件仍然优先于容器（补丁机制的既有语义）。
+ */
+void SetTextContainerPath(JNIEnv* env, jobject /*thiz*/, jstring jpath) {
+  const std::string path = jpath == nullptr ? std::string() : JStringToUtf8(env, jpath);
+  {
+    std::lock_guard<std::mutex> lock(g_text_container_mutex);
+    g_text_container_path = path;
+  }
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "text container = %s",
+                      path.empty() ? "(game dir Seen.txt)" : path.c_str());
+}
+
+/**
  * 触摸/鼠标输入（T2.3）。
  *
  * 坐标已经是**游戏帧坐标**（Kotlin 侧按帧在视图里的实际绘制矩形换算过），
@@ -1020,6 +1145,8 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
     {"setEngineSuspended", "(Z)V", reinterpret_cast<void*>(SetEngineSuspended)},
+    {"setTextContainerPath", "(Ljava/lang/String;)V",
+     reinterpret_cast<void*>(SetTextContainerPath)},
     {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
