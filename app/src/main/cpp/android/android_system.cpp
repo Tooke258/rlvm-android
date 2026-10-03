@@ -67,6 +67,15 @@ void AndroidEventSystem::PostTouchEvent(int action,
   pending_.push_back(PendingTouch{action, position, buttons});
 }
 
+void AndroidEventSystem::PostKeyEvent(int rl_key_code, bool pressed) {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  constexpr size_t kMaxPendingKeys = 32;
+  if (pending_keys_.size() >= kMaxPendingKeys) {
+    pending_keys_.erase(pending_keys_.begin());
+  }
+  pending_keys_.push_back(PendingKey{rl_key_code, pressed});
+}
+
 /** 按位掩码设置某个鼠标键的状态，并派发事件（语义与上游 SDL 后端一致）。 */
 void AndroidEventSystem::ApplyButtonState(RLMachine& machine,
                                           int button,
@@ -128,6 +137,28 @@ void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
                         event.action, event.position.x(), event.position.y(),
                         event.buttons, button1_state_, button2_state_);
   }
+
+  // 按键事件（v0.2.1 T7.2）：与触摸同批注入，语义与上游 SDL 后端一致——
+  // 先更新 Shift/Ctrl 的按住状态（ShiftPressed()/CtrlPressed() 要用），
+  // 再把事件广播给 EventListener（长操作、Ctrl 跳过等都在上面）。
+  std::vector<PendingKey> keys;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    keys.swap(pending_keys_);
+  }
+  for (const PendingKey& key : keys) {
+    if (key.code == RLKEY_LSHIFT || key.code == RLKEY_RSHIFT) {
+      shift_pressed_ = key.pressed;
+    } else if (key.code == RLKEY_LCTRL || key.code == RLKEY_RCTRL) {
+      ctrl_pressed_ = key.pressed;
+    }
+    DispatchEvent(machine, std::bind(&EventListener::KeyStateChanged,
+                                     std::placeholders::_1,
+                                     static_cast<KeyCode>(key.code),
+                                     key.pressed));
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-input", "key code=%d pressed=%d",
+                        key.code, key.pressed ? 1 : 0);
+  }
 }
 
 unsigned int AndroidEventSystem::GetTicks() const { return NowMillis(); }
@@ -136,9 +167,9 @@ void AndroidEventSystem::Wait(unsigned int milliseconds) const {
   std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
 }
 
-bool AndroidEventSystem::ShiftPressed() const { return false; }
+bool AndroidEventSystem::ShiftPressed() const { return shift_pressed_; }
 
-bool AndroidEventSystem::CtrlPressed() const { return false; }
+bool AndroidEventSystem::CtrlPressed() const { return ctrl_pressed_; }
 
 Point AndroidEventSystem::GetCursorPos() { return mouse_pos_; }
 

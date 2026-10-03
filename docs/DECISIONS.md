@@ -365,3 +365,36 @@
   的命中不受影响；黑边长按仍能唤出右键菜单。
 - **语义影响**：只动 Android 前端的坐标换算，未触碰引擎语义。
 - **状态**：已执行并验证（T7.1 闭环）
+
+---
+
+## D-021 浮动按键栏 + 按键事件通道（v0.2.1 T7.2）
+
+- **日期**：2026-10-04
+- **背景**：RealLive 的按键入口是 `EventListener::KeyStateChanged(KeyCode, pressed)`
+  （`systems/base/event_listener.h` 的 `RLKEY_*`），SDL 后端在 `sdl_event_system.cc` 的
+  `HandleKeyDown/Up` 里 `DispatchEvent(...)`；**Android 后端此前完全没有按键通道**，
+  同时 `ShiftPressed()`/`CtrlPressed()` 是写死的 `false`。
+- **决策**：分两层补齐，且**默认关闭**：
+  1. **通道**：`AndroidEventSystem::PostKeyEvent(rl_key, pressed)` 与触摸并列入队，在
+     `ExecuteEventSystem()` 里注入 `KeyStateChanged`；`ShiftPressed()/CtrlPressed()`
+     改为如实回答（Ctrl 是"按住跳过"的判定来源）。JNI：`NativeBridge.keyEvent(code, pressed)`。
+  2. **界面**：面板新增「按键栏：开/关」（默认关、持久化）。开启后显示半透明浮层：
+     - 四向方向键（按住持续）→ **移动鼠标光标**（每 60ms 一步 8px）。理由：RealLive 脚本
+       今天读得到的"方向"只有鼠标位置，键盘对脚本不可见；
+     - 「加速」（按住）→ 键盘键（默认 `LSHIFT`）；
+     - 「击打」（按住）→ 鼠标左键按下/抬起；
+     - 「右键」（按住）→ 鼠标右键按下/抬起（与长按等价）。
+     除按钮本身外不拦截触摸，未命中的事件照旧落到游戏画面。
+- **已知边界（重要）**：**这条通道今天不能驱动 LB/LBEX 的小游戏**。原因是小游戏逻辑在
+  `PT00.dll` 里，而 RLVM 对 `LB.ENV`/`LB_EX.ENV` 有专门的 hack
+  （`machine/game_hacks.cc`: `AddLineAction(7030, 15, LB_SkipBaseball)`）直接把那次
+  farcall 返回掉；`LittleBustersPT00DLL::CallDLL()` 也只是一个返回 0 的桩。要让小游戏能玩，
+  必须先实现 `PT00` 这个 `RealLiveDLL`（见 §"下一步"）。本决策只负责把入口铺好：
+  方向、鼠标左右键、键盘键三条路都已验证可用，DLL 补上后不需要再改输入层。
+- **验证**（真机 Redmi K40 / Android 12）：开关关闭时行为与之前完全一致；开启后方向键能
+  推动光标、击打能推进对白、右键能唤出游戏菜单；「加速」在游戏里无可见效果（符合预期），
+  但日志里能看到 `rlvm-input: key code=304 pressed=1/0` 注入到引擎。
+- **语义影响**：只动 Android 后端（`android_system.*` / `native-bridge.cpp` / Kotlin UI），
+  未改 `libreallive` / `machine` 语义。
+- **状态**：已执行并验证

@@ -1103,7 +1103,23 @@ void TouchEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint action, jfloat x, jfloat
   static_cast<AndroidEventSystem&>(system->event())
       .PostTouchEvent(static_cast<int>(action),
                       Point(static_cast<int>(x), static_cast<int>(y)),
-                      resolved);
+      resolved);
+}
+
+/**
+ * 按键事件（v0.2.1 T7.2）。
+ *
+ * key_code 取 systems/base/event_listener.h 的 RLKEY_*（例如 LSHIFT=304、LCTRL=306、
+ * UP=273）。与 TouchEvent 一样只入队，注入发生在引擎线程。
+ *
+ * 今天 RealLive 脚本还读不到键盘状态（RLVM 没有对应模块），这条通道先服务系统级消费者
+ * （Shift/Ctrl）并为将来小游戏的 DLL 模拟预留。
+ */
+void KeyEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint key_code, jboolean pressed) {
+  AndroidSystem* system = g_current_system.load();
+  if (system == nullptr) return;  // 引擎没在跑，忽略
+  static_cast<AndroidEventSystem&>(system->event())
+      .PostKeyEvent(static_cast<int>(key_code), pressed != JNI_FALSE);
 }
 
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
@@ -1148,6 +1164,7 @@ const JNINativeMethod kNativeMethods[] = {
     {"setTextContainerPath", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetTextContainerPath)},
     {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},
+    {"keyEvent", "(IZ)V", reinterpret_cast<void*>(KeyEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},
