@@ -39,6 +39,8 @@
 #include <fstream>
 #include <sstream>
 
+#include "android/text_encoding.h"
+
 #include "utilities/file.h"
 #include <iostream>
 #include <exception>
@@ -102,7 +104,12 @@ void saveGameTo(std::ostream& oss, RLMachine& machine) {
   filtered_output.push(boost::iostreams::zlib_compressor());
   filtered_output.push(oss);
 
-  const SaveGameHeader header(machine.system().graphics().window_subtitle());
+  // Android 移植（D-033）：存档标题归一化成 CP932 再存。汉化包的对话场景是 GBK，
+  // 而游戏的 LOAD 界面走的是原版 CP932 场景；不转的话标题会在 LOAD 列表里
+  // 显示成半角片假名（老存档就是 CP932，所以显示正常）。
+  const SaveGameHeader header(rlvm_android::NormalizeTitleToCP932(
+      machine.system().graphics().window_subtitle(),
+      machine.GetTextEncoding()));
 
   g_current_machine = &machine;
 

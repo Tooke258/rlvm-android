@@ -427,6 +427,7 @@ add_library(rlvm SHARED
     android/mov_probe.cpp        # v0.2.3 影片通路探针（PS 解复用 + AMediaCodec）
     android/mov_player.cpp       # v0.2.3 影片播放（解复用 + 解码线程 + 上屏）
     android/app_log.cpp          # v0.2.3 native 侧写入应用日志文件
+    android/text_encoding.cpp    # v0.2.3 存档标题的编码归一化（D-033）
     android/saf_file_system.cpp
     # SDL 音频转换的最小兼容层：供 vendor/xclannad/wavfile.cc 使用
     compat/sdl_shim/sdl_audio_compat.cpp
