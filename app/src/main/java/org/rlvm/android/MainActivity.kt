@@ -12,6 +12,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.graphics.drawable.GradientDrawable
 import android.opengl.GLSurfaceView
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -44,6 +46,8 @@ class MainActivity : Activity() {
         // 部分机型上会崩，而且容器本来就应该放在游戏目录里）。
         const val KEY_CONTAINER_PATH = "text_container_path"
         const val KEY_CONTAINER_ON = "text_container_on"
+        // 浮动按键栏（v0.2.1 T7.2）：默认关闭。
+        const val KEY_INPUT_PAD_ON = "input_pad_on"
         const val KEY_LANDSCAPE = "landscape"
         const val KEY_FIT_MODE = "fit_mode"
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
@@ -54,6 +58,10 @@ class MainActivity : Activity() {
         const val TOUCH_DOWN = 0
         const val TOUCH_MOVE = 1
         const val TOUCH_UP = 2
+
+        // 上游 systems/base/event_listener.h 的 RLKEY_*（按键栏目前用得到的几个）。
+        const val RLKEY_LSHIFT = 304
+        const val RLKEY_LCTRL = 306
 
         // 引擎是否处于「挂起」（黑屏/后台）状态。
         //
@@ -77,6 +85,14 @@ class MainActivity : Activity() {
     private var panelOpen = false
     // 「文本容器」开关按钮：标签要随状态变化，所以留一个引用。
     private lateinit var containerButton: Button
+    // 浮动按键栏（v0.2.1 T7.2）：默认隐藏的输入层 + 它的开关按钮。
+    private lateinit var inputOverlay: FrameLayout
+    private lateinit var inputPadButton: Button
+    // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
+    private var cursorX = -1f
+    private var cursorY = -1f
+    private val padHandler = Handler(Looper.getMainLooper())
+    private var padRepeat: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,6 +155,11 @@ class MainActivity : Activity() {
             setOnClickListener { setTextContainerEnabled(!textContainerEnabled) }
         }
         updateContainerButtonLabel()
+        // 浮动按键栏（v0.2.1 T7.2）：默认关。开启后显示方向键 + 加速 + 击打 + 右键。
+        inputPadButton = Button(this).apply {
+            setOnClickListener { setInputPadEnabled(!inputPadEnabled) }
+        }
+        updateInputPadButtonLabel()
 
         // 画面区：native 在引擎线程上合成帧，这里只负责显示。
         renderer = RlvmRenderer()
@@ -192,12 +213,104 @@ class MainActivity : Activity() {
             addView(buttonRow(stopButton, orientationButton))
             addView(buttonRow(pathButton, fitButton))
             addView(buttonRow(pickContainerButton, containerButton))
+            addView(buttonRow(inputPadButton, android.view.View(this@MainActivity)))
             addView(
                 ScrollView(this@MainActivity).apply { addView(output) },
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
             )
         }
+
+        // ---- 浮动按键栏（v0.2.1 T7.2）：默认关闭的输入层 --------------------
+        //
+        // 给"方向 + 按住键 + 鼠标键"这类小游戏（LBEX 那种）补输入。四条通路：
+        //   · 四向方向键 → 移动**鼠标光标**（RealLive 脚本今天唯一读得到的方向输入）；
+        //   · 加速       → 按住时发键盘键（默认 LSHIFT）。脚本目前读不到键盘，这一路是
+        //                  为将来补上小游戏 DLL 模拟预留的；
+        //   · 击打       → 鼠标左键按下/抬起；
+        //   · 右键       → 鼠标右键按下/抬起（与长按等价，显式按钮更方便）。
+        // 整层默认 GONE；除按钮本身外不拦截触摸（未命中按钮时事件照旧落到游戏画面）。
+        val padSize = dp(54)
+        fun padButton(label: String,
+                      onPress: () -> Unit,
+                      onRelease: () -> Unit): TextView = TextView(this@MainActivity).apply {
+            text = label
+            textSize = 17f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x55101010.toInt())
+                setStroke(dp(1), 0x55FFFFFF.toInt())
+            }
+            setOnTouchListener { v, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        onPress()
+                        v.isPressed = true
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        onRelease()
+                        v.isPressed = false
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+
+        fun padRow(vararg cells: android.view.View?): LinearLayout {
+            val row = LinearLayout(this@MainActivity)
+            row.orientation = LinearLayout.HORIZONTAL
+            for (cell in cells) {
+                if (cell == null) {
+                    row.addView(android.view.View(this@MainActivity),
+                        LinearLayout.LayoutParams(padSize, padSize))
+                } else {
+                    row.addView(cell, LinearLayout.LayoutParams(padSize, padSize))
+                }
+            }
+            return row
+        }
+
+        val dpad = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(padRow(null, padButton("\u2191", { startPadRepeat(0f, -8f) }, { stopPadRepeat() }), null))
+            addView(padRow(
+                padButton("\u2190", { startPadRepeat(-8f, 0f) }, { stopPadRepeat() }),
+                null,
+                padButton("\u2192", { startPadRepeat(8f, 0f) }, { stopPadRepeat() })
+            ))
+            addView(padRow(null, padButton("\u2193", { startPadRepeat(0f, 8f) }, { stopPadRepeat() }), null))
+        }
+
+        val actionPad = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(padButton("加速", { sendKey(RLKEY_LSHIFT, true) }, { sendKey(RLKEY_LSHIFT, false) }),
+                LinearLayout.LayoutParams(padSize, padSize))
+            addView(padButton("击打", { sendMouseButton(1, true) }, { sendMouseButton(1, false) }),
+                LinearLayout.LayoutParams(padSize, padSize))
+            addView(padButton("右键", { sendMouseButton(2, true) }, { sendMouseButton(2, false) }),
+                LinearLayout.LayoutParams(padSize, padSize))
+        }
+
+        inputOverlay = FrameLayout(this@MainActivity).apply {
+            addView(dpad, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.START or Gravity.BOTTOM).apply {
+                leftMargin = dp(12)
+                bottomMargin = dp(12)
+            })
+            addView(actionPad, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.END or Gravity.BOTTOM).apply {
+                rightMargin = dp(12)
+                bottomMargin = dp(12)
+            })
+            visibility = if (inputPadEnabled) android.view.View.VISIBLE else android.view.View.GONE
+        }
+        updateInputPadButtonLabel()
 
         // 悬浮球：可拖动（免得挡住游戏 UI），点击则展开/收起侧栏。
         // 拖动有两条规则：
@@ -273,6 +386,9 @@ class MainActivity : Activity() {
         rootView = root
         root.addView(glView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // 按键栏压在游戏画面之上、控制面板之下（FrameLayout 里后加的在上层）。
+        root.addView(inputOverlay, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // 先加侧栏、后加球：FrameLayout 里后添加的在上层，
         // 否则面板一展开就把球盖住，用户再也点不到它（无法收起）。
         root.addView(panel, FrameLayout.LayoutParams(
@@ -304,6 +420,88 @@ class MainActivity : Activity() {
     }
 
     // -- 黑屏 / 进后台 ⇄ 引擎挂起 -------------------------------------------
+    // -- 浮动按键栏（v0.2.1 T7.2）--------------------------------------------
+    //
+    // 全部走已有的事件通道：方向键 = 移动鼠标光标；击打/右键 = 鼠标左右键；
+    // 加速 = 键盘键（今天没有脚本级消费者，留给将来小游戏的 DLL 模拟）。
+
+    private val inputPadEnabled: Boolean
+        get() = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getBoolean(KEY_INPUT_PAD_ON, false)
+
+    private fun updateInputPadButtonLabel() {
+        if (::inputPadButton.isInitialized) {
+            inputPadButton.text = getString(
+                if (inputPadEnabled) R.string.toggle_input_pad_on
+                else R.string.toggle_input_pad_off)
+        }
+    }
+
+    private fun setInputPadEnabled(enabled: Boolean) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_INPUT_PAD_ON, enabled).apply()
+        if (::inputOverlay.isInitialized) {
+            inputOverlay.visibility =
+                if (enabled) android.view.View.VISIBLE else android.view.View.GONE
+        }
+        updateInputPadButtonLabel()
+        if (!enabled) stopPadRepeat()
+        log(
+            if (enabled) "按键栏：开（方向键移动光标 / 加速 / 击打 / 右键）"
+            else "按键栏：关"
+        )
+    }
+
+    /** 当前画面尺寸（宽, 高），来自 native 已呈现的帧。 */
+    private fun frameSize(): Pair<Int, Int> {
+        val packed = runCatching { NativeBridge.getFrameSize() }.getOrDefault(0)
+        return (packed ushr 16).coerceAtLeast(1) to (packed and 0xFFFF).coerceAtLeast(1)
+    }
+
+    /** 虚拟光标：首次使用时从画面中心开始（RealLive 脚本读到的就是它的位置）。 */
+    private fun ensureCursor() {
+        if (cursorX >= 0f && cursorY >= 0f) return
+        val (w, h) = frameSize()
+        cursorX = w / 2f
+        cursorY = h / 2f
+    }
+
+    /** 方向键按住：每 60ms 把虚拟光标推一格（游戏只认鼠标位置，不认方向键）。 */
+    private fun startPadRepeat(dx: Float, dy: Float) {
+        stopPadRepeat()
+        val step = object : Runnable {
+            override fun run() {
+                ensureCursor()
+                val (w, h) = frameSize()
+                cursorX = (cursorX + dx).coerceIn(0f, (w - 1).toFloat())
+                cursorY = (cursorY + dy).coerceIn(0f, (h - 1).toFloat())
+                runCatching { NativeBridge.touchEvent(TOUCH_MOVE, cursorX, cursorY, 1) }
+                padRepeat = this
+                padHandler.postDelayed(this, 60)
+            }
+        }
+        padRepeat = step
+        step.run()
+    }
+
+    private fun stopPadRepeat() {
+        padRepeat?.let { padHandler.removeCallbacks(it) }
+        padRepeat = null
+    }
+
+    /** 鼠标键：mask 1=左键 2=右键。按下/抬起分别投递，脚本才能看到"按住"这个状态。 */
+    private fun sendMouseButton(mask: Int, pressed: Boolean) {
+        ensureCursor()
+        runCatching {
+            NativeBridge.touchEvent(
+                if (pressed) TOUCH_DOWN else TOUCH_UP, cursorX, cursorY, mask)
+        }
+    }
+
+    private fun sendKey(rlKeyCode: Int, pressed: Boolean) {
+        runCatching { NativeBridge.keyEvent(rlKeyCode, pressed) }
+    }
+
     //
     // 之前只有 onPause 停掉 GL 线程，引擎线程照样按 10ms 时间片推进字节码、音频也照样
     // 出声——表现就是「黑屏之后游戏还在跑」。现在屏幕熄灭或应用进后台就把引擎挂起

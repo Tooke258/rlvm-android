@@ -10,4 +10,6 @@
     <string name="pick_text_container">选择文本容器</string>
     <string name="toggle_text_container_on">容器：开</string>
     <string name="toggle_text_container_off">容器：关</string>
+    <string name="toggle_input_pad_on">按键栏：开</string>
+    <string name="toggle_input_pad_off">按键栏：关</string>
 </resources>

@@ -54,6 +54,18 @@ class AndroidEventSystem : public EventSystem {
   void PostTouchEvent(int action, const Point& position);
   void PostTouchEvent(int action, const Point& position, int buttons);
 
+  /**
+   * 由 UI 线程投递一个按键事件（v0.2.1 T7.2）。
+   *
+   * code 取 systems/base/event_listener.h 的 RLKEY_* 值。与触摸一样只入队，
+   * 真正的注入在引擎线程的 ExecuteEventSystem 里（按键要广播给 EventListener——
+   * 长操作、TextSystem 的 Ctrl 跳过等都挂在上面）。
+   *
+   * 说明：RealLive 的**脚本**目前还读不到键盘状态（RLVM 没有对应模块），所以这条通道
+   * 今天主要供 Shift/Ctrl 这类系统级消费者使用；等将来补上小游戏的 DLL 模拟，它就直接可用。
+   */
+  void PostKeyEvent(int rl_key_code, bool pressed);
+
  private:
   /** 按位掩码设置某个鼠标键状态并派发事件（1=左键 2=右键）。 */
   void ApplyButtonState(RLMachine& machine, int button, int state, int button_mask);
@@ -64,11 +76,21 @@ class AndroidEventSystem : public EventSystem {
     int buttons;  // 位掩码：1=左键 2=右键
   };
 
+  struct PendingKey {
+    int code;  // RLKEY_*
+    bool pressed;
+  };
+
   std::mutex queue_mutex_;
   std::vector<PendingTouch> pending_;
+  std::vector<PendingKey> pending_keys_;
   Point mouse_pos_;
   int button1_state_ = 0;
   int button2_state_ = 0;
+  // Shift / Ctrl 的按住状态（ShiftPressed()/CtrlPressed() 要如实回答；Ctrl 是
+  // "按住跳过"的判定来源）。
+  bool shift_pressed_ = false;
+  bool ctrl_pressed_ = false;
   unsigned int last_mouse_move_ticks_;
 };
 

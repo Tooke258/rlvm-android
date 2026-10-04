@@ -85,6 +85,14 @@ object NativeBridge {
     external fun touchEvent(action: Int, x: Float, y: Float, buttons: Int)
 
     /**
+     * 按键事件（v0.2.1 T7.2）。
+     *
+     * [rlKeyCode] 取上游 `systems/base/event_listener.h` 的 `RLKEY_*`
+     * （例如 LSHIFT=304、LCTRL=306、UP=273 …）。与触摸一样只入队，注入在引擎线程完成。
+     */
+    external fun keyEvent(rlKeyCode: Int, pressed: Boolean)
+
+    /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */
