@@ -97,14 +97,7 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     }
 
     /**
-     * 把视图坐标（触摸点）换算成游戏帧坐标；还没拿到帧时返回 null。
-     *
-     * **落在画面矩形之外的触摸（适配模式下左右/上下的黑边）不再丢弃**，而是统一映射到
-     * 画面的**顶部中间**（v0.2.1 T7.1）：RealLive 的对白推进只看"有没有左键按下"、不看
-     * 坐标，而画面顶部中间不会放按钮，所以界外点击一律当作"在空白处点了一下"，
-     * 既能让文字往下走，又不会误触任何界面元素。
-     *
-     * （曾经的备选是"夹取到最近的画面边缘"，但那会把黑边点击送进贴边的按钮，已弃用。）
+     * 把视图坐标（触摸点）换算成游戏帧坐标；落在黑边上时返回 null。
      *
      * 从 UI 线程调用。
      */
@@ -113,14 +106,10 @@ class RlvmRenderer : GLSurfaceView.Renderer {
         val (scaleX, scaleY) = fitScale()
         val width = surfaceWidth * scaleX
         val height = surfaceHeight * scaleY
-        // 视图尺寸还没量出来（surfaceWidth/Height 为 0）时无法换算，按"没有帧"处理。
-        if (width <= 0f || height <= 0f) return null
         val left = (surfaceWidth - width) / 2f
         val top = (surfaceHeight - height) / 2f
-        val inside = viewX >= left && viewX <= left + width &&
-            viewY >= top && viewY <= top + height
-        if (!inside) {
-            return PointF(frameWidth / 2f, 0f)
+        if (viewX < left || viewX > left + width || viewY < top || viewY > top + height) {
+            return null
         }
         return PointF(
             (viewX - left) / width * frameWidth,
@@ -128,9 +117,6 @@ class RlvmRenderer : GLSurfaceView.Renderer {
         )
     }
     private var lastSerial = -1
-
-    /** 纹理是否已经按当前尺寸分配过（决定用 glTexImage2D 还是 glTexSubImage2D）。 */
-    private var textureAllocated = false
 
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
@@ -211,16 +197,8 @@ class RlvmRenderer : GLSurfaceView.Renderer {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
-    /**
-     * 如果 native 侧有新帧就重新分配缓冲并上传纹理。
-     *
-     * 关键：**先问帧序号**（一次 JNI，只读一个整数），序号没变就直接返回。
-     * 以前这里每帧都调 `copyFrameToBuffer`：那是 1.9MB 的 memcpy，而且和引擎线程
-     * 抢同一把互斥锁——120 次/秒 ≈ 230MB/s 的无谓拷贝把引擎的合成时间吃掉了。
-     */
+    /** 如果 native 侧有新帧就重新分配缓冲并上传纹理。 */
     private fun uploadFrameIfChanged() {
-        val serial = NativeBridge.getFrameSerial()
-        if (serial == 0 || serial == lastSerial) return
         val packed = NativeBridge.getFrameSize()
         if (packed == 0) return
         val width = packed ushr 16
@@ -232,37 +210,20 @@ class RlvmRenderer : GLSurfaceView.Renderer {
             frameHeight = height
             pixels = ByteBuffer.allocateDirect(width * height * 4)
                 .order(ByteOrder.nativeOrder())
-            textureAllocated = false
+            lastSerial = -1
         }
 
         val buffer = pixels ?: return
-        val got = NativeBridge.copyFrameToBuffer(buffer)
-        if (got < 0) return
-        lastSerial = got
+        val serial = NativeBridge.copyFrameToBuffer(buffer)
+        if (serial < 0 || serial == lastSerial) return
+        lastSerial = serial
 
         buffer.position(0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture)
-        if (textureAllocated) {
-            // 尺寸没变时用 SubImage 更新，避免每帧重新分配纹理（移动 GPU 上代价很高）。
-            GLES30.glTexSubImage2D(
-                GLES30.GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight,
-                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
-            )
-        } else {
-            GLES30.glTexImage2D(
-                GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, frameWidth, frameHeight, 0,
-                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
-            )
-            GLES30.glTexParameteri(
-                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
-            GLES30.glTexParameteri(
-                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-            GLES30.glTexParameteri(
-                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-            GLES30.glTexParameteri(
-                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-            textureAllocated = true
-        }
+        GLES30.glTexImage2D(
+            GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, frameWidth, frameHeight, 0,
+            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
+        )
         // 逐帧打日志会拖慢 GL 线程（logcat 是同步 I/O），只在开头和偶尔抽样时打。
         uploadCount++
         if (uploadCount <= 3 || uploadCount % 300 == 0) {

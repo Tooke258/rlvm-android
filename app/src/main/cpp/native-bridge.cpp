@@ -11,14 +11,12 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
-#include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <chrono>
 #include <atomic>
 #include <thread>
-#include <typeinfo>
 #include <vector>
 
 #include <unistd.h>
@@ -34,8 +32,6 @@
 #include "libreallive/archive.h"
 #include "libreallive/bytecode.h"
 #include "libreallive/gameexe.h"
-#include "libreallive/intmemref.h"
-#include "libreallive/scenario.h"
 #include "android/android_system.h"
 #include "android/android_graphics.h"
 #include "android/audio_engine.h"
@@ -44,7 +40,6 @@
 #include "android/log_redirect.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
-#include "machine/long_operation.h"
 #include "machine/rlmachine.h"
 #include "machine/serialization.h"
 #include "modules/modules.h"
@@ -83,10 +78,6 @@ int g_frame_log_every = 1;
 //   time_budget_ms=8000  单次运行的执行时间片
 //   max_instructions=N   指令条数上限
 //   frame_log_every=60   每 N 帧才打一条帧日志（默认 1，即每帧）
-  //   lb_minigame=1        不跳过 LB/LBEX 的棒球小游戏（逆向 PT00 用；默认 0 = 跳过）
-  //   dirty_gate=0         退回「每轮无条件合帧」的旧行为（默认 1 = 脏标记驱动，见 D-022）
-  //   dirty_stats=1        每秒打印一次「谁把屏幕标脏」的分类计数（诊断帧率用）
-  //   slice_ms=N           主循环时间片（默认 6ms；上游是 10ms。见 D-023）
 // ---------------------------------------------------------------------------
 std::mutex g_diag_mutex;
 std::string g_diag_dir;
@@ -255,39 +246,11 @@ struct DiagOptions {
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
   // 不同 RealLive 作品的脚本约定不一致，因此做成设备侧可调。
   int touch_button = 1;
-  // 逆向 PT00（LB/LBEX 棒球小游戏）用：置 1 则不跳过小游戏，脚本会跑进去并调用
-  // PT00.dll，`little_busters_pt00dll.cc` 会把每次 (func, 参数) 打出来。
-  bool lb_minigame = false;
-  // 合帧策略（D-022）：true = 与上游 SDL 后端一致，只在屏幕被标记为脏时合成一帧；
-  // false = 退回旧行为（每轮无条件合成）。做成开关便于真机 A/B 对比。
-  bool dirty_gate = true;
-  // 每秒打印脏标记的分类来源（dc0/hik/obj/text/mouse），用于判断"合帧率低"是
-  // 游戏本来就没标脏，还是我们漏标了。
-  bool dirty_stats = false;
   // 0 表示不限时：应用要能一直停在标题/正文上，BGM 才不会「响一下就没了」。
   // 自动化测试需要在报告里拿到结果时，用 diag 文件设一个有限值。
   int time_budget_ms = 0;
   int max_instructions = 0;  // 0 表示沿用调用方传入的值
   int frame_log_every = 1;
-  // 主循环每一轮的时间片（毫秒）。上游是 10ms（≈100 轮/秒），但手机屏幕多是
-  // 120Hz：100 与 120 不是整数比（5:6），画面会以"1 个 vsync / 2 个 vsync"交替
-  // 显示，观感就是抖。把时间片压到 6ms（≈150 轮/秒 > 120Hz）让显示端每个 vsync
-  // 都能拿到新帧（见 D-023）。可用诊断文件 slice_ms=N 调回去做对比。
-  int slice_ms = 6;
-  // 内容每变化一次就导出一张 PPM（最多这么多张）。用来直接"看"动画的形态：
-  // 是逐帧图片切换，还是连续位移/渐变——不靠推理。
-  int dump_frames = 0;
-  // 是否忽略 force_wait（见主循环里的说明）。默认 true：force_wait 是上游 SDL
-  // 后端的节奏控制，在我们的架构下只会把脚本循环切碎。写 0 可退回旧行为对比。
-  bool exec_ignore_force_wait = true;
-  // 诊断：把指定场景号（逗号分隔）的字节码反汇编成源码形式，写进诊断目录。
-  // 用于逆向系统脚本（存档/读档菜单）到底调了哪些指令。默认空 = 不导出。
-  std::vector<int> dump_scenarios;
-  // 诊断：dump_scenario=all 时把整库所有场景反汇编到一个文件（量大，按需开）。
-  bool dump_all_scenarios = false;
-  // 诊断：主循环解剖。每秒把「轮数 / 字节码指令 / long op 步进 / 栈顶 long op 类型」
-  // 分开计数打印——用来回答"每轮主循环为什么只跑得动 1 条指令"（见 D-023 后续）。
-  bool loop_probe = false;
 };
 
 /** 读取并解析诊断文件；文件不存在时返回缺省值。 */
@@ -330,61 +293,9 @@ DiagOptions LoadDiagOptions() {
       if (number > 0) options.frame_log_every = number;
     } else if (key == "touch_button") {
       if (number > 0) options.touch_button = number;
-    } else if (key == "lb_minigame") {
-      options.lb_minigame = (number != 0);
-    } else if (key == "dirty_gate") {
-      options.dirty_gate = (number != 0);
-    } else if (key == "dirty_stats") {
-      options.dirty_stats = (number != 0);
-    } else if (key == "slice_ms") {
-      if (number >= 1 && number <= 40) options.slice_ms = number;
-    } else if (key == "dump_frames") {
-      if (number >= 1 && number <= 200) options.dump_frames = number;
-    } else if (key == "exec_ignore_force_wait") {
-      options.exec_ignore_force_wait = (number != 0);
-    } else if (key == "dump_scenario") {
-      options.dump_scenarios.clear();
-      options.dump_all_scenarios = false;
-      if (value == "all") {
-        options.dump_all_scenarios = true;
-        continue;
-      }
-      std::stringstream items(value);
-      std::string item;
-      while (std::getline(items, item, ',')) {
-        if (!item.empty()) options.dump_scenarios.push_back(std::atoi(item.c_str()));
-      }
-    } else if (key == "loop_probe") {
-      options.loop_probe = (number != 0);
     }
   }
   return options;
-}
-
-/**
- * 画面「内容」的稀疏哈希（诊断用，见 D-023）。
- *
- * 每次合成后与上一帧比一次，就能得到**内容真正变化的速率**——用户感知到的帧率是它，
- * 而不是主循环轮次、也不是合成次数。三者一旦差得多，就能立刻判断到底是
- * "游戏本来就没在动"还是"我们把它丢了"。
- */
-uint64_t SparseFrameHash(AndroidGraphicsSystem& graphics) {
-  std::shared_ptr<AndroidSurface> frame = graphics.frame_buffer();
-  if (!frame) return 0;
-  const Size size = frame->GetSize();
-  const uint32_t* pixels = frame->pixels();
-  if (pixels == nullptr || size.width() <= 0 || size.height() <= 0) return 0;
-  uint64_t hash = 1469598103934665603ull;  // FNV-1a
-  // 每 4 行取一行、每行每 4 像素取一个（覆盖 1/16 像素）。早先用 1/128 的稀疏采样，
-  // 像「角色小幅动作」「眨眼」这类只动一小块画面的动画会被漏检，读数因此偏小。
-  // 480000/16 = 30000 次哈希，代价仍然可以忽略。
-  for (int y = 0; y < size.height(); y += 4) {
-    const uint32_t* row = pixels + static_cast<size_t>(y) * size.width();
-    for (int x = 0; x < size.width(); x += 4) {
-      hash = (hash ^ row[x]) * 1099511628211ull;
-    }
-  }
-  return hash;
 }
 
 /** 把图形系统当前的帧缓冲拷进呈现缓冲。 */
@@ -420,51 +331,6 @@ void CaptureFrame(AndroidGraphicsSystem& graphics) {
 }
 
 /** 把 Java 字符串转成 UTF-8 的 std::string。 */
-/**
- * 把当前呈现缓冲写成 PPM（P6）文件，供离线核对动画形态。
- *
- * 只在"内容真的变了"的时候调用（见主循环），因此每一张文件都对应一次真实的
- * 画面更新。把连续几张放在一起看，就能区分"资源本身就是逐帧图片切换"和
- * "连续位移/渐变被我们渲染成阶跃"——这是靠日志数字无法分辨的。
- */
-void DumpFramePpm(int index) {
-  std::string dir;
-  {
-    std::lock_guard<std::mutex> lock(g_diag_mutex);
-    dir = g_diag_dir;
-  }
-  if (dir.empty()) return;
-
-  std::vector<uint32_t> pixels;
-  int width = 0;
-  int height = 0;
-  {
-    std::lock_guard<std::mutex> lock(g_frame_mutex);
-    pixels = g_frame_pixels;
-    width = g_frame_width;
-    height = g_frame_height;
-  }
-  if (width <= 0 || height <= 0 || pixels.empty()) return;
-
-  char relative[64];
-  std::snprintf(relative, sizeof(relative), "/frame-%04d.ppm", index);
-  std::ofstream out(dir + relative, std::ios::binary);
-  if (!out) return;
-
-  out << "P6\n" << width << " " << height << "\n255\n";
-  std::vector<char> rgb(static_cast<size_t>(width) * height * 3);
-  for (size_t i = 0; i < pixels.size(); ++i) {
-    const uint32_t pixel = pixels[i];
-    rgb[i * 3 + 0] = static_cast<char>(pixel & 0xFFu);
-    rgb[i * 3 + 1] = static_cast<char>((pixel >> 8) & 0xFFu);
-    rgb[i * 3 + 2] = static_cast<char>((pixel >> 16) & 0xFFu);
-  }
-  out.write(rgb.data(), static_cast<std::streamsize>(rgb.size()));
-  __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                      "dumped frame %d (%dx%d) -> frame-%04d.ppm", index, width,
-                      height, index);
-}
-
 std::string JStringToUtf8(JNIEnv* env, jstring value) {
   if (value == nullptr) return std::string();
   const char* chars = env->GetStringUTFChars(value, nullptr);
@@ -753,88 +619,6 @@ void ExportSceneText(libreallive::Archive& archive,
             " failed=" + std::to_string(failed.size()) + " -> " + path + "\n";
 }
 
-/**
- * 诊断：把某个场景反汇编成 RLVM 的「源码形式」（指令名 + 参数），写进诊断目录。
- *
- * 系统菜单/存档读档这类界面是游戏自带脚本实现的，只有反汇编出来才能知道它到底
- * 调用了哪些指令——「存档能写、读档列表为空」这类问题用它定位比盲猜 opcode 可靠。
- */
-void DumpScenarioToFile(libreallive::Archive& archive,
-                        const std::string& out_dir,
-                        int scene_number,
-                        std::string& report) {
-  if (out_dir.empty()) {
-    report += "dump_scenario: no diagnostics dir; skipped\n";
-    return;
-  }
-
-  std::ostringstream oss;
-  libreallive::Scenario* scenario = nullptr;
-  try {
-    scenario = archive.GetScenario(scene_number);
-  } catch (const std::exception& e) {
-    oss << "// SEEN" << scene_number << " parse failed: " << e.what() << "\n";
-  }
-  if (scenario != nullptr) {
-    for (auto const& instruction : *scenario)
-      instruction->PrintSourceRepresentation(oss);
-  }
-
-  const std::string path =
-      out_dir + "/scenario-" + std::to_string(scene_number) + ".txt";
-  std::ofstream file(path, std::ios::binary);
-  if (!file) {
-    report += "dump_scenario: cannot write " + path + "\n";
-    return;
-  }
-  const std::string payload = oss.str();
-  file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-  file.close();
-  report += "dump_scenario: SEEN" + std::to_string(scene_number) +
-            (scenario != nullptr ? " ok" : " (no scenario)") + " -> " + path +
-            " (" + std::to_string(payload.size()) + " bytes)\n";
-}
-
-/** 诊断：把整库场景反汇编到一个文件，前面带 `#scene N` 分隔标记。 */
-void DumpAllScenariosToFile(libreallive::Archive& archive,
-                            const std::string& out_dir,
-                            std::string& report) {
-  if (out_dir.empty()) {
-    report += "dump_scenario(all): no diagnostics dir; skipped\n";
-    return;
-  }
-
-  std::ostringstream oss;
-  int dumped = 0;
-  for (auto it = archive.begin(); it != archive.end(); ++it) {
-    const int index = it->first;
-    libreallive::Scenario* scenario = nullptr;
-    try {
-      scenario = archive.GetScenario(index);
-    } catch (const std::exception& e) {
-      oss << "#scene " << index << " PARSE FAILED: " << e.what() << "\n";
-      continue;
-    }
-    if (scenario == nullptr) continue;
-    oss << "#scene " << index << "\n";
-    for (auto const& instruction : *scenario)
-      instruction->PrintSourceRepresentation(oss);
-    ++dumped;
-  }
-
-  const std::string path = out_dir + "/scenarios-all.txt";
-  std::ofstream file(path, std::ios::binary);
-  if (!file) {
-    report += "dump_scenario(all): cannot write " + path + "\n";
-    return;
-  }
-  const std::string payload = oss.str();
-  file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-  file.close();
-  report += "dump_scenario(all): scenes=" + std::to_string(dumped) + " -> " +
-            path + " (" + std::to_string(payload.size()) + " bytes)\n";
-}
-
 void RunEngineOn(System& system,
                  Gameexe& gameexe,
                  libreallive::Archive& archive,
@@ -877,12 +661,6 @@ void RunEngineOn(System& system,
   g_frame_log_every = diag.frame_log_every;
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);
-  // 合帧策略（D-022）：默认与上游一致（脏标记驱动）。
-  SetDirtyGateEnabled(diag.dirty_gate);
-  SetDirtyStatsEnabled(diag.dirty_stats);
-  // 逆向 PT00 用：诊断文件里 lb_minigame=1 时不再跳过 LB/LBEX 的棒球小游戏，
-  // 让脚本跑进去调用 PT00.dll（调用记录见 little_busters_pt00dll.cc）。默认仍跳过。
-  SetLBSkipBaseball(!diag.lb_minigame);
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 
@@ -891,14 +669,10 @@ void RunEngineOn(System& system,
   report += "engine assembled (regname=\"" +
             ToDisplayUtf8(gameexe("REGNAME").ToString("")) + "\")\n";
   report += "diagnostics: trace=" + std::string(diag.trace ? "on" : "off") +
-            " loop_probe=" + std::string(diag.loop_probe ? "on" : "off") +
             " blit_stats=" + std::string(diag.blit_stats ? "on" : "off") +
             " time_budget_ms=" + std::to_string(diag.time_budget_ms) +
             " max_instructions=" + std::to_string(max_instructions) +
-            " frame_log_every=" + std::to_string(diag.frame_log_every) +
-            " lb_minigame=" + std::string(diag.lb_minigame ? "on" : "off") +
-            " dirty_gate=" + std::string(diag.dirty_gate ? "on" : "off") +
-            " slice_ms=" + std::to_string(diag.slice_ms) + "\n";
+            " frame_log_every=" + std::to_string(diag.frame_log_every) + "\n";
 
   // 重采样自检：把「音调是否偏高」变成日志里的一个频率数字。
   if (diag.audio_selftest) report += rlvm_android::ResamplerSelfTest();
@@ -912,19 +686,6 @@ void RunEngineOn(System& system,
     }
     ExportSceneText(archive, export_dir, report);
   }
-
-  // 诊断：反汇编指定场景（存档/读档/系统菜单等脚本）。
-  if (!diag.dump_scenarios.empty() || diag.dump_all_scenarios) {
-    std::string dump_dir;
-    {
-      std::lock_guard<std::mutex> lock(g_diag_mutex);
-      dump_dir = g_diag_dir;
-    }
-    for (const int scene_number : diag.dump_scenarios)
-      DumpScenarioToFile(archive, dump_dir, scene_number, report);
-    if (diag.dump_all_scenarios)
-      DumpAllScenariosToFile(archive, dump_dir, report);
-  }
   LogMemory("after export");
 
   AndroidGraphicsSystem* graphics =
@@ -933,80 +694,15 @@ void RunEngineOn(System& system,
   // 与上游 RLVMInstance::Run 相同的结构：每轮先让子系统跑一遍（含合成一帧），
   // 再以 10ms 为时间片连续执行字节码。
   const unsigned int time_budget_ms = static_cast<unsigned int>(diag.time_budget_ms);
-  const int slice_ms = diag.slice_ms;
   const unsigned int started = system.event().GetTicks();
   // 只统计本次运行造成的合成量，先清零。
   TakeGraphicsBlitStats();
   g_stop_requested.store(false);
   int executed = 0;
   int frames_presented = 0;
-  // 已合帧计数（AndroidGraphicsSystem::frame_count_）：用来判断这一轮是否真的
-  // 合过一帧（D-022 之后合帧是脏标记驱动的）。
-  unsigned int last_composed = 0;
-  // 主循环周期统计（节奏抖动是"卡顿感"的直接来源，见 D-023）。
-  unsigned int last_loop_start = 0;
-  unsigned int dt_min = 0xFFFFFFFFu, dt_max = 0, dt_sum = 0, dt_count = 0;
-  // 内容变化计数：每次合成后与上一帧比一次哈希（见 SparseFrameHash 的说明）。
-  uint64_t last_frame_hash = 0;
-  unsigned int content_changes = 0;
-  // 内容变化「间隔」直方图（毫秒）：用户感知到的帧率是内容变化的间隔，而不是
-  // 循环轮次。直方图能区分「稳定 60fps」与「稳定 10fps 但中间夹着重复帧」——
-  // 后者看起来就是逐帧动画式的顿（见 D-023）。
-  unsigned int last_change_ticks = 0;
-  unsigned int change_hist[6] = {0, 0, 0, 0, 0, 0};
-  // 主循环三阶段耗时（毫秒累计）：把「每轮十几毫秒」拆成
-  // 子系统/合帧（run）、字节码执行（exec）、让出 CPU（wait）三份。
-  unsigned int phase_run_ms = 0;
-  unsigned int phase_exec_ms = 0;
-  unsigned int phase_wait_ms = 0;
-  // 「呈现交接」耗时（SparseFrameHash + CaptureFrame）。这段原本不落在
-  // run/exec/wait 任何一个相位里，是"每帧成本"的黑洞；图层叠加类动画每帧内容
-  // 都在变，所以这段的成本直接决定它们的观感。
-  uint64_t phase_present_us = 0;
-  // 窗口内「最慢的单条指令」：执行阶段每轮十几毫秒，必须定位到具体是哪条
-  //（连同场景号和行号），否则只能盲猜。见 D-023。
-  uint64_t slow_op_us = 0;
-  int slow_op_scene = -1;
-  int slow_op_line = -1;
-  unsigned int report_executed = 0;
-  // 上一次打印统计时的状态：用来算窗口内的真实速率（窗口不一定正好 1 秒）。
-  unsigned int report_composed = 0;
-  unsigned int report_ticks = started;
-  int dumped_frames = 0;
-  int tree_dumps = 0;
-  // 长操作推进计数：合帧 54 次/秒但内容只变 8 次/秒，说明"每次合帧都拿到同一个
-  // 画面"。长操作（Effect/过场）是唯一能产生新画面的东西，必须确认它是否每轮推进。
-  unsigned int long_op_rounds = 0;
-  // intC[1] 的上次打印值：只在变化时输出（见循环内的诊断）。
-  int last_logged_c1 = -1;
-  // 主循环解剖（loop_probe）：把「每轮主循环到底把时间花在哪」拆开计数。
-  // 关键是把**字节码指令**与**long op 步进**分开——两者都算 executed，
-  // 混在一起就永远看不出"每轮只有 1 条指令"是被 long op 卡住还是别的原因。
-  unsigned int probe_rounds = 0;
-  unsigned int probe_bytecode_ops = 0;
-  unsigned int probe_longop_steps = 0;
-  unsigned int probe_longop_rounds = 0;      // 退出 exec 片时栈顶是 long op 的轮数
-  unsigned int probe_force_wait_rounds = 0;  // 退出时 force_wait 仍为真的轮数
-  std::map<std::string, unsigned int> probe_longop_types;
-  std::map<int, unsigned int> probe_scene_ops;
-  // 场景号:行号 -> 执行次数（key = scene<<32 | line）。用来判断"最热场景里
-  // 那几百万条指令到底花在哪一行"——是循环体在空转，还是别处。
-  std::map<uint64_t, unsigned int> probe_line_ops;
-  unsigned int probe_report_ticks = started;
   std::string stop_reason = "instruction budget exhausted";
 
   while (executed < max_instructions) {
-    {
-      const unsigned int loop_now = system.event().GetTicks();
-      if (last_loop_start != 0) {
-        const unsigned int dt = loop_now - last_loop_start;
-        if (dt < dt_min) dt_min = dt;
-        if (dt > dt_max) dt_max = dt;
-        dt_sum += dt;
-        ++dt_count;
-      }
-      last_loop_start = loop_now;
-    }
     if (g_stop_requested.load()) {
       stop_reason = "stop requested";
       break;
@@ -1028,202 +724,18 @@ void RunEngineOn(System& system,
       break;
     }
 
-    const unsigned int run_begin_ticks = system.event().GetTicks();
     system.Run(machine);
-    phase_run_ms += system.event().GetTicks() - run_begin_ticks;
     if (graphics != nullptr) {
-      // 只在真正合过帧时才拷进呈现缓冲（D-022：合帧已改为脏标记驱动）。
-      // 静止画面不再每轮重复拷贝/上传；GL 线程本来就只在帧序号变化时重传。
-      const auto present_start = std::chrono::steady_clock::now();
-      const unsigned int composed = graphics->frame_count();
-      if (composed != last_composed) {
-        last_composed = composed;
-        const uint64_t hash = SparseFrameHash(*graphics);
-        if (hash != last_frame_hash) {
-          last_frame_hash = hash;
-          ++content_changes;
-          const unsigned int change_ticks = system.event().GetTicks();
-          if (last_change_ticks != 0) {
-            const unsigned int gap = change_ticks - last_change_ticks;
-            if (gap < 8) ++change_hist[0];
-            else if (gap < 16) ++change_hist[1];
-            else if (gap < 33) ++change_hist[2];
-            else if (gap < 66) ++change_hist[3];
-            else if (gap < 133) ++change_hist[4];
-            else ++change_hist[5];
-          }
-          last_change_ticks = change_ticks;
-          // 只有内容真的变了才发布新帧：不然 GL 线程每轮都要重传 1.9MB 纹理
-          //（动画是低频内容时，这是纯浪费——见 D-023）。
-          CaptureFrame(*graphics);
-          if (diag.dump_frames > 0 && dumped_frames < diag.dump_frames) {
-            ++dumped_frames;
-            DumpFramePpm(dumped_frames);
-          }
-          // 内容变化瞬间的图形栈（含每个对象的 alpha 与活跃 mutator）。
-          // "alpha 为什么每 117ms 跳一个大台阶"只有这一刻的现场能回答。
-          if (diag.dump_graphics && tree_dumps < 20) {
-            ++tree_dumps;
-            std::ostringstream tree;
-            graphics->Refresh(&tree);
-            __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                                "tree| ---- change #%d ----", tree_dumps);
-            std::istringstream lines(tree.str());
-            std::string line;
-            while (std::getline(lines, line)) {
-              if (!line.empty()) {
-                __android_log_print(ANDROID_LOG_INFO, kLogTag, "tree| %s",
-                                    line.c_str());
-              }
-            }
-          }
-        }
-      }
-      phase_present_us += static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - present_start)
-              .count());
+      CaptureFrame(*graphics);
       ++frames_presented;
-    }
-
-    // intC[1] 每次变化都打一行（诊断）：这是脚本喂给 index_series 的"已过时间"。
-    // 它变化的粒度 = 淡变台阶的粗细。只在变化时输出，日志量很小。
-    if (diag.dirty_stats) {
-      const int c1 = machine.GetIntValue(
-          libreallive::IntMemRef(libreallive::INTC_LOCATION, 0, 1));
-      if (c1 != last_logged_c1) {
-        last_logged_c1 = c1;
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                            "intC1 -> %d (intL0=%d, t=%ums)", c1,
-                            machine.GetIntValue(libreallive::IntMemRef(
-                                libreallive::INTL_LOCATION, 0, 0)),
-                            system.event().GetTicks() - started);
-      }
     }
 
     // 进度日志：定位「跑很久但没有输出」这类问题。
     if (frames_presented % 60 == 0) {
       __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                          "progress: loops=%d composed=%u instructions=%d elapsed=%ums rss=%ldkB",
-                          frames_presented,
-                          graphics != nullptr ? graphics->frame_count() : 0u,
-                          executed,
+                          "progress: frames=%d instructions=%d elapsed=%ums rss=%ldkB",
+                          frames_presented, executed,
                           system.event().GetTicks() - started, CurrentRssKb());
-      if (diag.dirty_stats) {
-        // 本统计窗口的轮数（dt_count 在下面 loop dt 打印后会被清零，先留一份）。
-        unsigned int window_loops = 0;
-        unsigned int window_dt_sum = 0;
-        // 谁在标脏（dc0/hik/obj/text/mouse）——用来判断合帧率低的来源。
-        __android_log_print(ANDROID_LOG_INFO, kLogTag, "dirty: %s",
-                            TakeDirtyStatsSummary().c_str());
-        // 合成成本：这一秒里 blit 了多少次、写了多少像素、花了多少时间。
-        // 用来回答"每帧十几毫秒到底花在哪"——像素数是关键（480000 = 一屏）。
-        uint64_t blit_calls = 0, blit_pixels = 0, blit_us = 0;
-        TakeBlitCostSummary(blit_calls, blit_pixels, blit_us);
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                            "blit cost: calls=%llu pixels=%llu time=%.1fms/screens=%.2f",
-                            static_cast<unsigned long long>(blit_calls),
-                            static_cast<unsigned long long>(blit_pixels),
-                            blit_us / 1000.0,
-                            blit_pixels / 480000.0);
-        // 合成路径：fast 应该是绝大多数（背景/立绘整行 memcpy）。若 slow 占多数，
-        // 说明「整面不透明」判定没建立起来，逐像素混合就是这十几毫秒的来源。
-        {
-          uint64_t fast_calls = 0, slow_calls = 0;
-          TakeBlitPathSummary(fast_calls, slow_calls);
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "blit path: fast=%llu slow=%llu calls",
-                              static_cast<unsigned long long>(fast_calls),
-                              static_cast<unsigned long long>(slow_calls));
-        }
-        uint64_t worst_us = 0;
-        const std::string worst = TakeBlitWorstSummary(worst_us);
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                            "blit worst: %.1fms  %s", worst_us / 1000.0,
-                            worst.c_str());
-        // 主循环节奏：min/avg/max 三件套。avg 与 max 差得远 = 抖动（动画会顿）。
-        if (dt_count > 0) {
-          window_loops = dt_count;
-          window_dt_sum = dt_sum;
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "loop dt: min=%ums avg=%.1fms max=%ums (n=%u)",
-                              dt_min, static_cast<double>(dt_sum) / dt_count, dt_max,
-                              dt_count);
-          dt_min = 0xFFFFFFFFu;
-          dt_max = 0;
-          dt_sum = 0;
-          dt_count = 0;
-        }
-        // 内容变化率：这才是用户看到的"帧率"。窗口不一定是整 1 秒，
-        // 因此按实际窗口长度归一化（早先直接把窗口内计数当成 /s，会偏读）。
-        const unsigned int window_ticks = system.event().GetTicks() - report_ticks;
-        const unsigned int window_ms = window_ticks > 0 ? window_ticks : 1;
-        const unsigned int composed_now =
-            graphics != nullptr ? graphics->frame_count() : 0u;
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                            "content: changed=%.1f/s (composites=%.1f/s window=%ums)",
-                            content_changes * 1000.0 / window_ms,
-                            (composed_now - report_composed) * 1000.0 / window_ms,
-                            window_ms);
-        // 内容变化间隔分布：稳定 10fps 的样子是 33-66/>133 占满；
-        // 稳定 60fps 的样子是 8-16/16-33 占满。两者观感完全不同。
-        __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                            "content dt: <8ms=%u 8-16=%u 16-33=%u 33-66=%u 66-133=%u >133=%u",
-                            change_hist[0], change_hist[1], change_hist[2],
-                            change_hist[3], change_hist[4], change_hist[5]);
-        // 每轮耗时构成（ms 累计 ÷ 轮数，给出三阶段的平均毫秒）。
-        {
-          // 注意除数必须是**本窗口的轮数**：早先用累计 frames_presented，
-          // 会让读数随运行时间越来越小（刚上机时每轮 16ms 被显示成 0.23ms）。
-          const double loops = window_loops > 0 ? window_loops : 1.0;
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "phase cost: run=%.2fms exec=%.2fms wait=%.2fms "
-                              "present=%.2fms other=%.2fms per-loop",
-                              phase_run_ms / loops, phase_exec_ms / loops,
-                              phase_wait_ms / loops, phase_present_us / 1000.0 / loops,
-                              (static_cast<double>(window_dt_sum) -
-                               (phase_run_ms + phase_exec_ms + phase_wait_ms)) /
-                                  loops);
-        }
-        // 执行阶段细节：本窗口执行了多少条指令、最慢的一条在哪里。
-        // 「每轮 14ms 却只跑 2 条指令」必须看到指令本体才能继续。
-        {
-          const unsigned int ops = executed - report_executed;
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "exec detail: ops=%u slowest=%.1fms scene=%d line=%d",
-                              ops, slow_op_us / 1000.0, slow_op_scene,
-                              slow_op_line);
-          // 关键判据：本窗口有多少轮"结尾时长操作仍挂着"。
-          // 若 ≈ 轮数，说明长操作每轮都在推进（那画面理应每轮都变）；
-          // 若远小于轮数，说明多数轮次根本没跑到长操作，画面自然不变。
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "long op: rounds=%u of %u loops", long_op_rounds,
-                              window_loops);
-          // 动画计时变量现场：脚本用 intC[0]=剩余时间 / intC[1]=已过时间 驱动
-          // index_series，intL[0] 是喂给 objChildAlpha 的值。直接读出来看取值
-          // 范围与更新粒度（不依赖任何写入探针是否命中）。
-          __android_log_print(
-              ANDROID_LOG_INFO, kLogTag, "vars: intC[0]=%d intC[1]=%d intL[0]=%d",
-              machine.GetIntValue(libreallive::IntMemRef(
-                  libreallive::INTC_LOCATION, 0, 0)),
-              machine.GetIntValue(libreallive::IntMemRef(
-                  libreallive::INTC_LOCATION, 0, 1)),
-              machine.GetIntValue(libreallive::IntMemRef(
-                  libreallive::INTL_LOCATION, 0, 0)));
-        }
-        content_changes = 0;
-        change_hist[0] = change_hist[1] = change_hist[2] = 0;
-        change_hist[3] = change_hist[4] = change_hist[5] = 0;
-        phase_run_ms = phase_exec_ms = phase_wait_ms = 0;
-        phase_present_us = 0;
-        slow_op_us = 0;
-        slow_op_scene = -1;
-        slow_op_line = -1;
-        report_executed = executed;
-        long_op_rounds = 0;
-        report_composed = composed_now;
-        report_ticks = system.event().GetTicks();
-      }
       // 自我保护：真机上出现过内存暴涨把整机拖垮（系统连带杀掉别的应用）。
       // 宁可让引擎自己停下来，也不要让系统去杀。
       if (CurrentRssKb() > kMemoryGuardKb) {
@@ -1254,136 +766,12 @@ void RunEngineOn(System& system,
     const unsigned int slice_start = system.event().GetTicks();
     unsigned int now = slice_start;
     do {
-      const auto instruction_start = std::chrono::steady_clock::now();
-      // 分类：栈顶是 long op 时，ExecuteNextInstruction 只是推进它，不执行任何字节码。
-      // 两者必须分开计数，否则"每轮只有 1 条指令"无法归因。
-      const std::shared_ptr<LongOperation> top_op = machine.CurrentLongOperation();
-      if (diag.loop_probe) {
-        if (top_op) {
-          ++probe_longop_steps;
-          ++probe_longop_types[typeid(*top_op).name()];
-        } else {
-          ++probe_bytecode_ops;
-          const int scene = machine.SceneNumber();
-          ++probe_scene_ops[scene];
-          const uint64_t key =
-              (static_cast<uint64_t>(static_cast<uint32_t>(scene)) << 32) |
-              static_cast<uint32_t>(machine.line_number());
-          ++probe_line_ops[key];
-        }
-      }
       machine.ExecuteNextInstruction();
-      const uint64_t instruction_us = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - instruction_start)
-              .count());
-      if (instruction_us > slow_op_us) {
-        slow_op_us = instruction_us;
-        slow_op_scene = machine.SceneNumber();
-        slow_op_line = machine.line_number();
-      }
       ++executed;
       now = system.event().GetTicks();
-    } while (!machine.CurrentLongOperation() &&
-             (!system.force_wait() || diag.exec_ignore_force_wait) &&
-             (now - slice_start < slice_ms));
-    // 说明见 DiagOptions::exec_ignore_force_wait：上游 SDL 后端用 force_wait 在
-    // refresh() 时让出时间片给视频刷新；我们的合帧由主循环每轮统一完成，
-    // 因此它唯一的实际效果是把"一圈脚本"切成十几轮才转完（实测 128ms/圈，
-    // 让 10000 级的淡变只剩 8 级台阶）。默认忽略它。
-    if (diag.loop_probe) {
-      ++probe_rounds;
-      if (machine.CurrentLongOperation()) ++probe_longop_rounds;
-      if (system.force_wait()) ++probe_force_wait_rounds;
-    }
+    } while (!machine.CurrentLongOperation() && !system.force_wait() &&
+             (now - slice_start < 10));
     system.set_force_wait(false);
-    phase_exec_ms += system.event().GetTicks() - slice_start;
-    if (machine.CurrentLongOperation() != nullptr) ++long_op_rounds;
-
-    // 与上游 RLVMInstance::Run 一致：把这一轮补满到 slice_ms，再进入下一轮。
-    //
-    //   if (!sdlSystem.ShouldFastForward()) {
-    //     int real_sleep_time = 10 - (end_ticks - start_ticks);
-    //     if (real_sleep_time < 1) real_sleep_time = 1;
-    //     sdlSystem.event().Wait(real_sleep_time);
-    //   }
-    //
-    // 上游的 10ms 对应 ~100 轮/秒；手机屏幕普遍是 120Hz，100 与 120 不成整数比，
-    // 显示端会交替显示 1 / 2 个 vsync，观感就是抖（D-023）。因此这里的时间片默认
-    // 压到 6ms（≈150 轮/秒），让每个 vsync 都能取到新帧；诊断文件 slice_ms=N 可调。
-    if (!system.ShouldFastForward()) {
-      const unsigned int slice_elapsed = system.event().GetTicks() - slice_start;
-      const int real_sleep_time = slice_elapsed >= static_cast<unsigned int>(slice_ms)
-                                      ? 1
-                                      : slice_ms - static_cast<int>(slice_elapsed);
-      const unsigned int wait_begin_ticks = system.event().GetTicks();
-      system.event().Wait(static_cast<unsigned int>(real_sleep_time));
-      phase_wait_ms += system.event().GetTicks() - wait_begin_ticks;
-    }
-
-    // ---- 主循环解剖：每秒一行（loop_probe=1 时） ----
-    // 一次性回答："每轮主循环的 1 条指令" 到底是 long op 卡的，还是别的。
-    if (diag.loop_probe) {
-      const unsigned int probe_now = system.event().GetTicks();
-      if (probe_now - probe_report_ticks >= 1000) {
-        const unsigned int window = probe_now - probe_report_ticks;
-        probe_report_ticks = probe_now;
-        const double per_s = 1000.0 / window;
-        __android_log_print(
-            ANDROID_LOG_INFO, kLogTag,
-            "loop probe: %ums rounds=%u(%.0f/s) bytecode=%u(%.0f/s) "
-            "longop_steps=%u(%.0f/s) longop_rounds=%u fw_rounds=%u",
-            window, probe_rounds, probe_rounds * per_s, probe_bytecode_ops,
-            probe_bytecode_ops * per_s, probe_longop_steps,
-            probe_longop_steps * per_s, probe_longop_rounds,
-            probe_force_wait_rounds);
-        for (const auto& kv : probe_longop_types) {
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "loop probe:   longop %s -> %u steps",
-                              kv.first.c_str(), kv.second);
-        }
-        // 字节码都花在哪个场景上（最热 3 个）。
-        for (int rank = 0; rank < 3; ++rank) {
-          int best_scene = -1;
-          unsigned int best = 0;
-          for (const auto& kv : probe_scene_ops) {
-            if (kv.second > best) {
-              best = kv.second;
-              best_scene = kv.first;
-            }
-          }
-          if (best_scene < 0) break;
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "loop probe:   scene %d -> %u ops", best_scene,
-                              best);
-          probe_scene_ops.erase(best_scene);
-        }
-        // 最热的 5 行：直接看几百万条指令落在脚本的哪一行上。
-        for (int rank = 0; rank < 8; ++rank) {
-          uint64_t best_key = 0;
-          unsigned int best = 0;
-          for (const auto& kv : probe_line_ops) {
-            if (kv.second > best) {
-              best = kv.second;
-              best_key = kv.first;
-            }
-          }
-          if (best == 0) break;
-          const int scene = static_cast<int>(best_key >> 32);
-          const int line = static_cast<int>(
-              static_cast<uint32_t>(best_key & 0xFFFFFFFFull));
-          __android_log_print(ANDROID_LOG_INFO, kLogTag,
-                              "loop probe:   SEEN%d:%d -> %u ops", scene, line,
-                              best);
-          probe_line_ops.erase(best_key);
-        }
-        probe_scene_ops.clear();
-        probe_line_ops.clear();
-        probe_rounds = probe_bytecode_ops = probe_longop_steps = 0;
-        probe_longop_rounds = probe_force_wait_rounds = 0;
-        probe_longop_types.clear();
-      }
-    }
   }
 
   report += "instructions executed = " + std::to_string(executed) + "\n";
@@ -1715,23 +1103,7 @@ void TouchEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint action, jfloat x, jfloat
   static_cast<AndroidEventSystem&>(system->event())
       .PostTouchEvent(static_cast<int>(action),
                       Point(static_cast<int>(x), static_cast<int>(y)),
-      resolved);
-}
-
-/**
- * 按键事件（v0.2.1 T7.2）。
- *
- * key_code 取 systems/base/event_listener.h 的 RLKEY_*（例如 LSHIFT=304、LCTRL=306、
- * UP=273）。与 TouchEvent 一样只入队，注入发生在引擎线程。
- *
- * 今天 RealLive 脚本还读不到键盘状态（RLVM 没有对应模块），这条通道先服务系统级消费者
- * （Shift/Ctrl）并为将来小游戏的 DLL 模拟预留。
- */
-void KeyEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint key_code, jboolean pressed) {
-  AndroidSystem* system = g_current_system.load();
-  if (system == nullptr) return;  // 引擎没在跑，忽略
-  static_cast<AndroidEventSystem&>(system->event())
-      .PostKeyEvent(static_cast<int>(key_code), pressed != JNI_FALSE);
+                      resolved);
 }
 
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
@@ -1739,19 +1111,6 @@ jint GetFrameSize(JNIEnv* /*env*/, jobject /*thiz*/) {
   std::lock_guard<std::mutex> lock(g_frame_mutex);
   if (g_frame_width <= 0 || g_frame_height <= 0) return 0;
   return (g_frame_width << 16) | (g_frame_height & 0xFFFF);
-}
-
-/**
- * 当前帧序号（v0.2.2 性能修复）。
- *
- * GL 线程**每帧**都会问一次；只有序号变了才去拷贝 800x600x4 字节的像素。
- * 之前是每帧无条件 memcpy 1.9MB（120 次/秒 ≈ 230MB/s）并持有与引擎线程相同的
- * 互斥锁——引擎侧每次合成都要在锁上排队，实测把 7ms 的合成时间全耗在争用上，
- * 表现就是动画"被抽帧"。这里只读一个整数，代价可以忽略。
- */
-jint GetFrameSerial(JNIEnv* /*env*/, jobject /*thiz*/) {
-  std::lock_guard<std::mutex> lock(g_frame_mutex);
-  return static_cast<jint>(g_frame_serial);
 }
 
 /**
@@ -1789,11 +1148,9 @@ const JNINativeMethod kNativeMethods[] = {
     {"setTextContainerPath", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetTextContainerPath)},
     {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},
-    {"keyEvent", "(IZ)V", reinterpret_cast<void*>(KeyEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},
-    {"getFrameSerial", "()I", reinterpret_cast<void*>(GetFrameSerial)},
     {"copyFrameToBuffer", "(Ljava/nio/ByteBuffer;)I",
      reinterpret_cast<void*>(CopyFrameToBuffer)},
 };

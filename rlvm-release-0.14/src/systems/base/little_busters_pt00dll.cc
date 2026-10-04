@@ -28,8 +28,6 @@
 
 #include <iostream>
 
-#include "machine/rlmachine.h"
-
 LittleBustersPT00DLL::LittleBustersPT00DLL() {
   std::cerr << "WARNING: Little Busters Baseball is implemented in a DLL and "
             << "hasn't been reverse engineered yet." << std::endl;
@@ -43,15 +41,7 @@ int LittleBustersPT00DLL::CallDLL(RLMachine& machine,
                                   int arg2,
                                   int arg3,
                                   int arg4) {
-  // 调用记录（逆向 PT00 的第一步）：把每次调用原样打出来，用来枚举"脚本到底用了哪些
-  // func、参数长什么样、按什么顺序"。输出走 std::cerr —— Android 上由 log_redirect
-  // 接到 logcat，因此这里不依赖任何平台 API。
-  //
-  // 平时看不到这些输出：只有把棒球小游戏的跳过关掉（诊断文件里 lb_minigame=1，
-  // 见 machine/game_hacks.h 的 SetLBSkipBaseball）脚本才会跑进小游戏、进而调用到这里。
-  std::cerr << "PT00 call: (SEEN" << machine.SceneNumber() << ")(Line "
-            << machine.line_number() << ") func=" << func << " args=[" << arg1
-            << ", " << arg2 << ", " << arg3 << ", " << arg4 << "]" << std::endl;
+  // Perform no spew.
   return 0;
 }
 

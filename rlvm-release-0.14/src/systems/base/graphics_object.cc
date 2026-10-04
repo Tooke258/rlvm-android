@@ -867,10 +867,7 @@ void GraphicsObject::Render(int objNum,
                             std::ostream* tree) {
   if (object_data_ && visible()) {
     if (tree) {
-      // 诊断输出（仅当调用方要树时）。加上 alpha/可见性：
-      // "画面每 117ms 跳一个大台阶"需要看到对象此刻到底是不透明多少。
-      *tree << "Object #" << objNum << ": alpha=" << GetComputedAlpha()
-            << " visible=" << (visible() ? 1 : 0) << std::endl;
+      *tree << "Object #" << objNum << ":" << std::endl;
     }
 
     object_data_->Render(*this, parent, tree);

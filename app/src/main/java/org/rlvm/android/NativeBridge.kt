@@ -85,14 +85,6 @@ object NativeBridge {
     external fun touchEvent(action: Int, x: Float, y: Float, buttons: Int)
 
     /**
-     * 按键事件（v0.2.1 T7.2）。
-     *
-     * [rlKeyCode] 取上游 `systems/base/event_listener.h` 的 `RLKEY_*`
-     * （例如 LSHIFT=304、LCTRL=306、UP=273 …）。与触摸一样只入队，注入在引擎线程完成。
-     */
-    external fun keyEvent(rlKeyCode: Int, pressed: Boolean)
-
-    /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */
@@ -100,12 +92,6 @@ object NativeBridge {
 
     /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
     external fun getFrameSize(): Int
-
-    /**
-     * 当前帧序号（O(1)，不拷贝像素）。GL 线程先问它：序号没变就直接返回，
-     * 免得每帧白拷 1.9MB、还把引擎线程堵在与渲染线程相同的锁上。
-     */
-    external fun getFrameSerial(): Int
 
     /**
      * 把当前帧复制到 [buffer]（需为直接缓冲区，容量 >= 宽*高*4，RGBA8888）。
