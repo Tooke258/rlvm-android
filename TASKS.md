@@ -78,6 +78,11 @@
 
 ### v0.2.2 实际内容：回滚到 v0.2.0 + 计时修复，再增量回归到功能齐平（2026-10-04）
 
+**发布状态：已发布。** tag `v0.2.2` = 提交 `93e99b5`，Release 附 `app-release.apk`（Latest）。
+
+- Release：https://github.com/Tooke258/rlvm-android/releases/tag/v0.2.2
+- v0.2.1 因过场黑闪被撤回，本版在**定位并修复**该问题后重新发布（根因见下）。
+
 **最终状态（真机验收）**：平滑 ✓、**无过场黑闪** ✓、按键输入 + 界外点击 ✓、
 合帧走 blit 快路径 ✓，性能优于 v0.2.0 与 v0.2.1。
 
@@ -117,7 +122,35 @@
 | D-022 合帧优化 | 中 | 合帧回到较慢路径（约 16ms/轮） |
 | `loop_probe` / `dump_scenario` / `blackframe_probe` 等诊断 | 中 | 实现存于本地 `git stash@{0}` |
 
-### v0.2.3 计划（主线：DLL 输入模拟 + 小游戏）
+### v0.2.3 计划（主线：**视频通路** —— `MOV/*.mpg` 播放）
+
+> 决定（2026-10-04）：小游戏 / DLL 那条线**后移**到 v0.2.4 或 v0.3.0，v0.2.3 先做**视频通路**。
+> 这里说的"视频"是**影片播放**（`MOV/*.mpg`），与"实时动画渲染"（D-023 已修）是两回事。
+
+**现状**：`src/modules/module_mov.cc` 的 7 条指令**全部注册为 `AddUnsupportedOpcode`**：
+
+| 指令 | opcode | 现状 |
+| --- | --- | --- |
+| `movPlay` | 0 | 未实现（空操作） |
+| `movPlayEx` | 1 | 未实现 |
+| `movLoop` | 2 | 未实现 |
+| `movWait` | 3 | 未实现 |
+| `movPlaying` | 4 | 未实现 |
+| `movStop` | 5 | 未实现 |
+| `movPlayExC` | 20 | 未实现 |
+
+后果：开场影片（LBEX 的 `MOV/op00.mpg`、KW 的 MOV 资源）在 RLVM 里**完全不播**。
+这是**独立的功能缺口**，与帧率/动画平滑度无关（见 `docs/FRAMERATE-INVESTIGATION.md` 第 7 节）。
+
+**方向**：Android 侧用 **MediaCodec** 解码 + 把帧回填进引擎的 Surface（再由 GL 侧呈现），
+把上面 7 条指令接到这条通路上；其中 `movWait` 需要与引擎的长操作/时序配合
+（可参考 `long_operations/wait_long_operation.*` 的写法）。
+
+**第一步（勘察，先读后写）**：读 `module_mov.cc` 现有桩与上游对 MOV 的注释、
+确认影片文件格式（`MOV/*.mpg`，注意 RealLive 用的是旧 MPEG-1 变体）与
+MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状。
+
+### v0.2.4 / v0.3.0 计划（DLL 输入模拟 + 小游戏，后移）
 
 打包处理——主线是「让 DLL 驱动的玩法真正能玩」，其余顺带：
 
