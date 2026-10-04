@@ -67,6 +67,7 @@
 #include "systems/base/surface.h"
 #include "systems/base/system.h"
 #include "systems/base/system_error.h"
+#include "android/text_encoding.h"
 #include "systems/base/text_system.h"
 #include "utilities/exception.h"
 #include "utilities/lazy_array.h"
@@ -435,6 +436,12 @@ void GraphicsSystem::RemoveRenderable(Renderable* renderable) {
 void GraphicsSystem::SetWindowSubtitle(const std::string& cp932str,
                                        int text_encoding) {
   subtitle_ = cp932str;
+  // Android 移植（D-033）：顺手留一份 CP932 归一化的副本给存档标题用。
+  // 只在来源不是 CP932 时更新——菜单/存档场景会按 CP932 重新设置一次副标题，
+  // 那次是恒等转换，若照抄会把正确的转换结果冲掉。
+  if (text_encoding != 0) {
+    subtitle_cp932_ = rlvm_android::NormalizeTitleToCP932(cp932str, text_encoding);
+  }
 }
 
 // -----------------------------------------------------------------------

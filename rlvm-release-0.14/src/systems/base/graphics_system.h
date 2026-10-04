@@ -267,6 +267,9 @@ class GraphicsSystem : public EventListener {
 
   // Returns the current window subtitle, in native encoding.
   const std::string& window_subtitle() const { return subtitle_; }
+  // Android 移植（D-033）：副标题的 **CP932 归一化副本**，供存档标题使用。
+  // 对话框里的副标题要按当前场景编码显示（保持原样），而存档要的是 CP932。
+  const std::string& window_subtitle_cp932() const { return subtitle_cp932_; }
 
   // Wether we should display the subtitle.
   bool should_display_subtitle() const { return display_subtitle_; }
@@ -506,6 +509,9 @@ class GraphicsSystem : public EventListener {
 
   // cp932 encoded subtitle string
   std::string subtitle_;
+  // 见 window_subtitle_cp932()。只在「设置副标题的场景不是 CP932」时更新，
+  // 免得菜单场景按 CP932 重新设置时把正确的转换结果冲掉（D-033）。
+  std::string subtitle_cp932_;
 
   // Controls whether we render the interface (this can be
   // temporarily toggled by the user at runtime)
