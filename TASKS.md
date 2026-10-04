@@ -150,6 +150,16 @@
 确认影片文件格式（`MOV/*.mpg`，注意 RealLive 用的是旧 MPEG-1 变体）与
 MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状。
 
+
+**v0.2.3 进展（2026-10-04）**
+
+- **M3a（影片解码通路）已通过**：自写 MPEG-PS 解复用的 PES 包头修正（无 PTS/DTS 的包必须多跳
+  1 字节标记）后，解出的 ES 与 ffmpeg 逐字节一致；设备解出第 1 帧 Y=235 均匀纯白
+  （`zero=0/480000`），与地面真值吻合。证据见 `dev-log/MOV-VIDEO-M3A.jsonl` 与 `docs/DECISIONS.md` D-027。
+- 平台 `AMediaExtractor` 不支持 MPEG-1 PS（只有 `m2p/ts` 扩展），**确认走自写解复用**。
+- 下一步：M3b（解码到纹理 + 按 `movPlayEx` 矩形上屏 + `movWait/movPlaying/movStop`），
+  M4（MP2 音频 + 点击跳过 + 时序）。
+
 ### v0.2.4 / v0.3.0 计划（DLL 输入模拟 + 小游戏，后移）
 
 打包处理——主线是「让 DLL 驱动的玩法真正能玩」，其余顺带：

@@ -635,3 +635,37 @@
   必须连带验证黑闪。
 - **最终状态**：平滑 ✓、无黑闪 ✓、输入（按键 + 界外点击）✓、合帧走 blit 快路径 ✓，
   真机确认**性能优于 v0.2.0 与 v0.2.1**。
+
+## D-027 MOV 影片通路（v0.2.3 / M3a）：自写 MPEG-PS 解复用 + 平台解码器，根因在 PES 包头
+
+**日期**：2026-10-04　**状态**：M3a 验证通过
+
+**背景**：`MOV/*.mpg`（LBEX 与 Kud Wafter 都是 **MPEG-1 程序流**，800x600@29.97，90~223MB）
+在 RLVM 里 7 条 `mov*` 指令全是 `AddUnsupportedOpcode`，这一路要新做。
+
+**结论（按证据，逐条都可复现）**
+
+1. **平台解复用器用不了**：本机只有注册扩展名 `m2p m2ts mts ts` 的 `MPEG2-PS/TS Extractor`，
+   `AMediaExtractor_setDataSource(path)` 对 `.mpg` / 改名后的 `.m2p` 一律返回 `-10002`(UNSUPPORTED)
+   → **必须自己解 PS**。
+   附带坑：路径式 `setDataSource` 是让**解复用服务进程**去开文件，App 私有目录
+   `Android/data/<pkg>/files` 别的 uid 读不到，会同样报 `-10002`；正解是**自己开 fd 再
+   `AMediaExtractor_setDataSourceFd`**（将来接 SAF 也是这个姿势，SAF 给的正是 fd）。
+2. **解码器没问题**：MTK `c2.mtk.mpeg2.decoder` 能正确解 MPEG-1。用 ffmpeg 把同一份影片
+   转封成 TS，再加 MP4 / 合成 MPEG-1 / 合成 MPEG-2 三个控件，全部走平台通路解码正确。
+3. **根因是自写 PS 解复用的 PES 包头少跳 1 字节。**
+   - 视频 PES 载荷结构：`[0xFF 填充]<61 39>[PTS/DTS?]<ES>`，头长由第 3 字节高 4 位定：
+     `0x2 → +5（PTS）`、`0x3 → +10（PTS+DTS）`、**其它（本片恒为 `0x0F`）→ +1（标记字节）**。
+   - 原来写成 `0x00 → +0`，于是**每个无 PTS/DTS 的包都往 ES 里多塞 1 字节**
+     （KW：39,458 个包 = ES 多出 39,458 字节），单 slice 图片从错位处开始崩，
+     解码器只写出图片上半部分（Y 平面 68% 是 0）→ 症状就是"残帧 / 下半屏黑"。
+   - **判定手段**：`ffmpeg -i op00.mpg -map 0:v:0 -c copy -f mpeg1video ff.m1v`，
+     修正后解出的 ES 与它**逐字节完全一致**（86,606,495 字节）。
+   - 本机 `imageio_ffmpeg` 自带的 ffmpeg 可直接当地面真值：真值前 30 帧是纯白渐出（255→214），
+     设备解出第 1 帧 Y=235 均匀白、第 11~30 帧 228→198，两者吻合。
+4. **MediaCodec 输入契约**：一个输入缓冲必须装**一个完整访问单元**（按 `00 00 01 00` 切帧）；
+   按固定字节数切块喂会让 MTK 解出残帧，按帧喂后 `zero=0/480000`。
+5. `csd-0`（76 字节序列头）与宽高提示给不给都一样（A/B 实测），不是变量。
+
+**遗留**：M3b 把这条通路接到引擎（解码到 SurfaceTexture/纹理 → 按 `movPlayEx(name,x,y,w,h)`
+矩形叠加，并实现 `movWait` / `movPlaying` / `movStop`）；M4 做 MP2 音频（PES 0xC0）、点击跳过与时序。

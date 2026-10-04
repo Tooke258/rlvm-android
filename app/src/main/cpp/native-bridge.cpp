@@ -250,6 +250,16 @@ struct DiagOptions {
   // v0.2.3 影片探针：mov_probe=MOV/op00.mpg 时，在引擎启动时跑一次
   // 「MPEG-PS 解复用 + AMediaCodec(video/mpeg2)」的最小闭环，结果写进报告。
   std::string mov_probe;
+  // M3a 对照：用平台 AMediaExtractor 解同一个 .mpg（值是设备上的路径，
+  // 若只给文件名则视为诊断目录下的文件）。见 android/mov_probe.h。
+  std::string mov_probe_path;
+  // 诊断用：指定解码器名（空 = 按 video/mpeg2 自动挑）。例如
+  // `mov_codec=c2.android.mpeg2.decoder` 换软解，跟 MTK 硬解做 A/B。
+  std::string mov_codec;
+  // 诊断用：是否给解码器 csd-0/宽高提示（默认给）。mov_csd=0 时不给，
+  // 让硬解自己从码流认 MPEG-1（部分硬解给了 MPEG-2 风格 csd 会按错语法解）。
+  // 0=不给；1=给；2=两种都跑（A/B，一次引擎启动出两组结果）
+  int mov_csd = 1;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -298,6 +308,12 @@ DiagOptions LoadDiagOptions() {
       options.dirty_gate = (number != 0);
     } else if (key == "mov_probe") {
       options.mov_probe = value;  // 值是"游戏文件标识"，例如 MOV/op00.mpg
+    } else if (key == "mov_probe_path") {
+      options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
+    } else if (key == "mov_codec") {
+      options.mov_codec = value;  // 解码器名；空 = 按 video/mpeg2 自动挑
+    } else if (key == "mov_csd") {
+      options.mov_csd = number;  // 0=不给 csd；1=给；2=给/不给都跑一遍
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -682,7 +698,47 @@ void RunEngineOn(System& system,
   // v0.2.3 影片探针（M2）：只跑一次，把「PS 解复用 + AMediaCodec」的结果写进报告，
   // 不影响引擎本身的运行。见 android/mov_probe.h。
   if (!diag.mov_probe.empty()) {
-    report += rlvm_android::RunMovProbe(diag.mov_probe);
+    std::string mov_out_dir;
+    {
+      std::lock_guard<std::mutex> lock(g_diag_mutex);
+      mov_out_dir = g_diag_dir;
+    }
+    if (diag.mov_csd == 2) {
+      report += "==== mov_probe A：给 csd-0 ====\n";
+      report += rlvm_android::RunMovProbe(diag.mov_probe, mov_out_dir,
+                                          diag.mov_codec, true);
+      report += "==== mov_probe B：不给 csd-0 ====\n";
+      report += rlvm_android::RunMovProbe(diag.mov_probe, mov_out_dir,
+                                          diag.mov_codec, false);
+    } else {
+      report += rlvm_android::RunMovProbe(diag.mov_probe, mov_out_dir,
+                                          diag.mov_codec, diag.mov_csd != 0);
+    }
+  }
+  // v0.2.3 影片探针（M3a 对照）：让**平台**去解复用 MPEG-PS。
+  if (!diag.mov_probe_path.empty()) {
+    std::string mov_out_dir;
+    {
+      std::lock_guard<std::mutex> lock(g_diag_mutex);
+      mov_out_dir = g_diag_dir;
+    }
+    std::string mov_path = diag.mov_probe_path;
+    // 允许逗号分隔多个文件，一次引擎启动把 A/B/C 都跑出来。
+    size_t from = 0;
+    while (from <= mov_path.size()) {
+      const size_t comma = mov_path.find(',', from);
+      std::string one = mov_path.substr(
+          from, comma == std::string::npos ? std::string::npos : comma - from);
+      if (!one.empty()) {
+        if (one.find('/') == std::string::npos && !mov_out_dir.empty()) {
+          one = mov_out_dir + "/" + one;  // 只给文件名 = 诊断目录下的文件
+        }
+        report += "==== mov_extract: " + one + " ====\n";
+        report += rlvm_android::RunMovExtractProbe(one, mov_out_dir);
+      }
+      if (comma == std::string::npos) break;
+      from = comma + 1;
+    }
   }
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
