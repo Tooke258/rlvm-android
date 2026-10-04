@@ -424,6 +424,7 @@ add_library(rlvm SHARED
     android/game_file_system.cpp
     android/jni_saf_backend.cpp
     android/log_redirect.cc
+    android/mov_probe.cpp        # v0.2.3 影片通路探针（PS 解复用 + AMediaCodec）
     android/saf_file_system.cpp
     # SDL 音频转换的最小兼容层：供 vendor/xclannad/wavfile.cc 使用
     compat/sdl_shim/sdl_audio_compat.cpp
@@ -468,6 +469,7 @@ target_link_libraries(rlvm
     freetype                    # 文字渲染
     ${log_lib}
     ${android_lib}
+    mediandk                    # v0.2.3 影片解码探针用的 AMediaCodec
     ${z_lib}
     ${aaudio_lib}
 )

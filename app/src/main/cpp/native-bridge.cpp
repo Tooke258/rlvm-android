@@ -38,6 +38,7 @@
 #include "android/game_file_system.h"
 #include "android/jni_saf_backend.h"
 #include "android/log_redirect.h"
+#include "android/mov_probe.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
@@ -246,6 +247,9 @@ struct DiagOptions {
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
   // 机理见 android_system.cpp 里 g_dirty_gate 的注释。写 dirty_gate=1 可打开做 A/B。
   bool dirty_gate = false;
+  // v0.2.3 影片探针：mov_probe=MOV/op00.mpg 时，在引擎启动时跑一次
+  // 「MPEG-PS 解复用 + AMediaCodec(video/mpeg2)」的最小闭环，结果写进报告。
+  std::string mov_probe;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -292,6 +296,8 @@ DiagOptions LoadDiagOptions() {
       options.blit_fast = (number != 0);
     } else if (key == "dirty_gate") {
       options.dirty_gate = (number != 0);
+    } else if (key == "mov_probe") {
+      options.mov_probe = value;  // 值是"游戏文件标识"，例如 MOV/op00.mpg
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -672,6 +678,12 @@ void RunEngineOn(System& system,
   SetBlitStatsEnabled(diag.blit_stats);
   SetBlitFastEnabled(diag.blit_fast);
   SetDirtyGateEnabled(diag.dirty_gate);
+
+  // v0.2.3 影片探针（M2）：只跑一次，把「PS 解复用 + AMediaCodec」的结果写进报告，
+  // 不影响引擎本身的运行。见 android/mov_probe.h。
+  if (!diag.mov_probe.empty()) {
+    report += rlvm_android::RunMovProbe(diag.mov_probe);
+  }
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 
