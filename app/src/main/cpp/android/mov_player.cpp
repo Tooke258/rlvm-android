@@ -150,6 +150,7 @@ struct MovPlayer::Impl {
   std::string file_id;
   int x = 0, y = 0, w = 0, h = 0;
   int max_ms = 0;
+  bool loop = false;  // movLoop(2)：放完从头再来，直到 movStop
 
   std::thread worker;
   std::atomic<bool> stop{false};
@@ -207,7 +208,7 @@ MovPlayer& MovPlayer::Instance() {
 }
 
 bool MovPlayer::Play(const std::string& file_id, int x, int y, int w, int h,
-                     int max_ms) {
+                     int max_ms, bool loop) {
   // 同一部影片正在播时不要推倒重来：KW/LBEX 的 OP 场景会连着调
   // `movPlayEx("OP00",...)` 与 `movPlayExC("OP00",...)`，重启一次会看到明显顿挫。
   if (playing() && impl_->file_id == file_id) {
@@ -238,6 +239,7 @@ bool MovPlayer::Play(const std::string& file_id, int x, int y, int w, int h,
     impl_->w = w;
     impl_->h = h;
     impl_->max_ms = max_ms;
+    impl_->loop = loop;
     impl_->queue.clear();
     impl_->has_current = false;
     impl_->clock_start_ms = 0;
@@ -670,7 +672,24 @@ void MovPlayer::Impl::DecodeLoop(int fd) {
       __android_log_print(ANDROID_LOG_INFO, kTag, "mov: 到达 max_ms，停止");
       break;
     }
-    if (!ensure(4)) break;  // EOF
+    if (!ensure(4)) {  // EOF
+      if (!loop || stop) break;
+      // movLoop(2)：放完从头再来。回到文件开头、清掉解复用状态（解码器保留，
+      // 重新喂一遍序列头没问题）。音频源已在引擎里持续播放，这里只是重新喂 ES，
+      // 环形缓冲里残留的尾巴最多造成一次听感上的极小重叠（几秒量级）。
+      if (::lseek(fd, 0, SEEK_SET) < 0) {
+        loop = false;
+        break;
+      }
+      buf.clear();
+      pos = 0;
+      au.clear();
+      au_scan = 0;
+      saw_first_picture = false;
+      au_audio_hint.clear();
+      AppendAppLogLine("mov: 循环重播 " + file_id);
+      continue;
+    }
     const uint8_t* p = buf.data() + pos;
     if (!(p[0] == 0 && p[1] == 0 && p[2] == 1)) {
       ++pos;

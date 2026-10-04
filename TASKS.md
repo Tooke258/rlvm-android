@@ -192,6 +192,15 @@ MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状
 | --- | --- | --- |
 | 高（主线） | **LB 棒球小游戏（`PT00.dll`）** | `systems/base/little_busters_pt00dll.cc` 目前只记录调用并 `return 0`；小游戏默认被 `machine/game_hacks.cc` 的 `LB_SkipBaseball` 跳过（开关 `SetLBSkipBaseball`，由 `rlvm-diag.txt` 的 `lb_minigame=1` 打开） |
 | 高（主线） | **DLL 输入模拟**：给 `PT00` 这类要读鼠标/键盘的 DLL 提供输入通道，并预留**可脚本化的模拟输入**以便自动化验证 | 同上 |
+
+**v0.2.3 之后的小尾巴（A 项，已完成）**
+
+- `movWait` 的超时参数（`MovWaitLongOperation` 带 `timeout_ms`，>0 到点即返回；`movPlayExC` 用 0）。
+- `movLoop(2)` 实现为循环播放（EOF 时回到文件头继续，直到 `movStop`）；真机 `mov_test_loop=1`
+  验证到 `mov: 循环重播 MOV/OP00.mpg`（第二遍累计 4036 帧后被 135 秒上限截断）。
+- 脚本路径（SEEN514 的 `movPlayEx`/`movPlayExC`）**尚未在游戏内验证**：KW 的新游戏开头并不经过
+  OP 场景（我点了 START 走了一段没遇到）。等你玩到那儿时看应用日志里有没有 `mov: 起播` 即可确认。
+
 | 高（顺带） | **直接杀进程会丢 `global.sav.gz`（槽位占用标记 `intG[1050+槽]` + 配置）** | **已完成（v0.2.3）**：挂起/退后台时在引擎线程落盘 + 60 秒定期兜底，见 D-032 |
 | 中 | 引擎标准存档 UI 缺失（`Platform::InvokeSyscomStandardUI` 为空） | D-025 |
 | 中 | `exec_ignore_force_wait` 是否保留：做一次 A/B | `docs/FRAMERATE-INVESTIGATION.md` 6.5 |

@@ -271,6 +271,7 @@ struct DiagOptions {
   // 或完整的游戏文件标识），用于在没有脚本触发点的游戏里肉眼验证上屏。
   std::string mov_test;
   int mov_test_ms = 0;  // > 0 时播这么久就停
+  bool mov_test_loop = false;  // 自测也用循环播放（验 movLoop 的通路）
   // D-033 自检：跑一次「GBK→CP932」编码链的逐步诊断（进 report 与应用日志）。
   bool enc_selftest = false;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
@@ -334,6 +335,8 @@ DiagOptions LoadDiagOptions() {
       if (number > 0) options.mov_test_ms = number;
     } else if (key == "enc_selftest") {
       options.enc_selftest = (number != 0);
+    } else if (key == "mov_test_loop") {
+      options.mov_test_loop = (number != 0);
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -777,7 +780,7 @@ void RunEngineOn(System& system,
     system.sound().BgmStop();
     system.sound().WavStopAll();
     const bool mov_ok = rlvm_android::MovPlayer::Instance().Play(
-        mov_id, 0, 0, 799, 599, diag.mov_test_ms);
+        mov_id, 0, 0, 799, 599, diag.mov_test_ms, diag.mov_test_loop);
     report += std::string("mov_test: ") + (mov_ok ? "起播 " : "打不开 ") +
               mov_id + "\n";
     rlvm_android::AppendAppLogLine(std::string("mov_test: ") +

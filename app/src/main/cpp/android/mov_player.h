@@ -31,7 +31,8 @@ class MovPlayer {
             int y,
             int w,
             int h,
-            int max_ms = 0);
+            int max_ms = 0,
+            bool loop = false);
 
   // 停播并回收解码线程（mvStop / 关引擎时调用）。
   void Stop();

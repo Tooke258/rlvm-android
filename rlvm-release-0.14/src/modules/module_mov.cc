@@ -28,6 +28,7 @@
 #include "modules/module_mov.h"
 
 #include <string>
+#include <chrono>
 
 // 平台相关实现（Android）：影片播放器。上游的 mov 模块从来没实现过，这一层
 // 是 rlvm-android 新加的，见 docs/DECISIONS.md D-027 与 dev-log/MOV-VIDEO-M3A.jsonl。
@@ -75,19 +76,40 @@ struct MovStop : public RLOp_Void_Void {
 
 // movWait(3)：等影片放完。实现成 LongOperation——每次过游戏循环问一次播放器，
 // 放完（或本来就)就返回，脚本继续。
+// 等影片放完的长操作；timeout_ms > 0 时到点也返回（movWait 的超时参数）。
 class MovWaitLongOperation : public LongOperation {
  public:
-  bool operator()(RLMachine& machine) override {
-    return !rlvm_android::MovPlayer::Instance().playing();
+  explicit MovWaitLongOperation(int timeout_ms) : timeout_ms_(timeout_ms) {
+    if (timeout_ms > 0) {
+      deadline_ms_ =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count() +
+          timeout_ms;
+    }
   }
+
+  bool operator()(RLMachine& machine) override {
+    if (!rlvm_android::MovPlayer::Instance().playing()) return true;
+    if (timeout_ms_ > 0) {
+      const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+      if (now >= deadline_ms_) return true;  // 到点：不再等，脚本继续
+    }
+    return false;
+  }
+
+ private:
+  int timeout_ms_ = 0;
+  long long deadline_ms_ = 0;
 };
 
 // 参数是可选的等待上限（毫秒）；0/缺省 = 一直等到放完。
 struct MovWait : public RLOp_Void_1<DefaultIntValue_T<0>> {
   void operator()(RLMachine& machine, int timeout_ms) {
-    (void)timeout_ms;  // TODO(v0.2.3)：需要超时语义时再实现
     if (!rlvm_android::MovPlayer::Instance().playing()) return;
-    machine.PushLongOperation(new MovWaitLongOperation);
+    machine.PushLongOperation(new MovWaitLongOperation(timeout_ms));
   }
 };
 
@@ -107,7 +129,7 @@ struct MovPlayExC : public MovPlaySignature {
     rlvm_android::MovPlayer& player = rlvm_android::MovPlayer::Instance();
     player.Play(MovieFileId(name), x, y, w, h);
     if (player.playing()) {
-      machine.PushLongOperation(new MovWaitLongOperation);
+      machine.PushLongOperation(new MovWaitLongOperation(/*timeout_ms=*/0));
     }
   }
 };
@@ -119,12 +141,24 @@ struct MovPlaying : public RLOp_Void_1<IntReference_T> {
   }
 };
 
+/**
+ * movLoop(2)：循环播放（放完从头再来，直到 movStop）。
+ * 目标游戏里没有调用点，参数形状按与 movPlayEx 一致实现（写进 dev-log）。
+ */
+struct MovLoop : public MovPlaySignature {
+  void operator()(RLMachine& machine, std::string name, int x, int y, int w,
+                  int h) {
+    rlvm_android::MovPlayer::Instance().Play(MovieFileId(name), x, y, w, h, 0,
+                                             /*loop=*/true);
+  }
+};
+
 }  // namespace
 
 MovModule::MovModule() : RLModule("Mov", 1, 26) {
   AddOpcode(0, 0, "movPlay", new MovPlay);
   AddOpcode(1, 0, "movPlayEx", new MovPlayEx);
-  AddUnsupportedOpcode(2, 0, "movLoop");
+  AddOpcode(2, 0, "movLoop", new MovLoop);
   AddOpcode(3, 0, "movWait", new MovWait);
   AddOpcode(4, 0, "movPlaying", new MovPlaying);
   AddOpcode(5, 0, "movStop", new MovStop);
