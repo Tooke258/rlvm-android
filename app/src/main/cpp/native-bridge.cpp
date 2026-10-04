@@ -243,8 +243,9 @@ struct DiagOptions {
   bool blit_stats = false;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
-  // 诊断：dirty_gate=0 退回 v0.2.0 的"每轮无条件合帧"。
-  bool dirty_gate = true;
+  // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
+  // 机理见 android_system.cpp 里 g_dirty_gate 的注释。写 dirty_gate=1 可打开做 A/B。
+  bool dirty_gate = false;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
