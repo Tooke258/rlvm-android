@@ -398,3 +398,175 @@
 - **语义影响**：只动 Android 后端（`android_system.*` / `native-bridge.cpp` / Kotlin UI），
   未改 `libreallive` / `machine` 语义。
 - **状态**：已执行并验证
+
+---
+
+## D-022 合帧改为脏标记驱动 + 合成快路径（性能）
+
+- **背景**：主循环此前每轮无条件 `Refresh()`：全屏背景 + 所有对象 + 文字的重合成
+  白吃时间（实测每轮 ~16ms，其中 blit 占 11ms+）。
+- **决策**：
+  1. **合帧闸门**：与上游 `SDLGraphicsSystem::ExecuteGraphicsSystem` 一致，只在
+     `screen_needs_refresh()` 时合成一帧，合成后 `OnScreenRefreshed()` 清标记。
+     诊断开关 `dirty_gate=0` 可退回旧行为做 A/B。
+  2. **整面不透明快路径**：`AndroidSurface` 维护 `pixels_opaque_`（整面 alpha 是否
+     全 255，图片加载时与包围盒共用一次扫描算出），命中时 `BlitToSurface` 走整行
+     `memcpy`。关键是**目标侧状态要正确传播**：`DC0`/帧缓冲都是靠 blit 写入的，
+     若无条件失效该标志，背景层永远拿不到快路径。
+  3. **`CaptureFrame` 只在内容哈希变化时调用**：否则 GL 线程每轮重传 1.9MB 纹理。
+  4. **包围盒裁剪**：源图层"整屏大小、内容只占一角"时把源矩形裁到保守包围盒。
+- **验证**：静止场景 `loop dt` 6.2ms（`run` 0.02ms）；动画场景合帧从 16ms 降到
+  11ms/轮。**注意：这些优化没有改变"动画台阶"症状**（内容变化率仍是 8.5/s），
+  说明瓶颈不在合成——见 D-023。
+- **语义影响**：只动 Android 后端渲染层，未改 `libreallive` / `machine` 语义。
+- **状态**：已执行；动画台阶问题另见 D-023
+
+---
+
+## D-023 动画台阶感：根因是计时基点（绝对时钟 vs 相对 tick），已修复并真机验证
+
+- **真正根因（2026-10-04 定位并验证）**：Android 后端的 `NowMillis()`
+  （`app/src/main/cpp/android/android_system.cpp`）返回的是 `steady_clock` 的
+  **绝对**毫秒（自开机起算，量级 **10⁹**），而 RLVM 的帧计数器把 tick 存进
+  **`float`**（`systems/base/frame_counter.h` 的 `float time_at_last_check_`）。
+  IEEE-754 单精度只有 24 位有效位：在 `[2³⁰, 2³¹)` 区间 ULP = `2⁷ = **128ms**`。
+  于是 `ms_elapsed` 只能取 0 或 128 → 计数器每次推进
+  `128 / 0.1 = **1280**`（正好是全量程 10000 的 12.8%）→ 每秒只推进 `1000/128 ≈ **8 次**`
+  → alpha 每级跳 32/255 → **8 级台阶**。
+  - PC 原生没有此问题，因为 `SDL_GetTicks()` 返回的是「自 `SDL_Init` 起的毫秒数」
+    （10⁵~10⁶ 量级），float 在该量级的分辨率是微秒级。
+  - **严重程度随设备开机时长变化**（ULP = 2^(指数−23)）：开机 <12.4 天时 ULP=64ms
+    （约 15 级），12.4–24.8 天时 ULP=128ms（8 级）。这解释了该症状为何"稳定又不能复现"。
+- **修复**：`NowMillis()` 改成**相对进程起点**的毫秒（对齐 `SDL_GetTicks()` 语义），
+  只改平台后端，未触碰任何指令语义。
+- **真机验证（Redmi K40 游戏版 / LBEX，2026-10-04）**：
+
+  | 指标 | 修复前 | 修复后 |
+  | --- | --- | --- |
+  | `FrameCounter` 值推进次数 | 5 / 8 次每秒 | 451 / 522 / 588 次每秒 |
+  | 内容变化率（`content changed`） | 8.3 /s | 92 ~ 123 /s |
+  | alpha 每级步长 | 32 / 255 | 3 ~ 4 / 255 |
+  | 合帧 vs 内容变化 | 124.7/s 合帧、仅 8.3/s 有变化（94% 重复劳动） | 121.7/s 合帧 = 121.7/s 变化（1:1） |
+
+  用户真机确认：开屏 logo/淡变**已平滑**。
+- **对早期结论的更正**：下面那条 `force_wait` 因果链**是误判**——8 级台阶与
+  `force_wait` 无关（修复计时基点后，即使仍忽略 `force_wait` 也已平滑）。
+  `exec_ignore_force_wait` 目前仍为默认 true；它是否还有必要，建议用
+  `rlvm-diag.txt` 的 `exec_ignore_force_wait=0` 做一次 A/B 后再定（见
+  `docs/FRAMERATE-INVESTIGATION.md` 第 6.3 节）。
+- **上游脆弱性提示（不改上游）**：`FrameCounter` 用 `float` 存 tick 本身是隐患，
+  任何"返回绝对大数值时钟"的后端都会踩到。我们在后端守住 `GetTicks()` 的契约
+  （小数值、单调、相对起点）即可，并在 `NowMillis()` 里留了注释防止回退。
+
+### 早期排查记录（已被上面的根因取代）
+
+- **症状**：开屏实时渲染动画（警告淡变、Key logo）有明显阶梯感；PC 端平滑。
+- **已确认的因果链**（完整证据、数据、复现方法见
+  [`docs/FRAMERATE-INVESTIGATION.md`](FRAMERATE-INVESTIGATION.md)）：
+  1. 脚本 `SEEN9011` 用 `InitFrame(counter, 0, 10000, 1000)` 要求 **10000 级 /
+     1000ms** 的淡变（每级 0.1ms，本该完全平滑）；
+  2. 插值公式（`index_series` → `Interpolate`）与 `change_interval` 计算**都正确**；
+  3. 但脚本每圈要 **128ms** 才转完，于是 1000ms 只跑出 **8 级台阶**；
+  4. 原因是脚本每圈调用的 `refresh()` 指令 = `GraphicsSystem::ForceRefresh()`，
+     它在 `SCREENUPDATEMODE_MANUAL` 下执行 `system().set_force_wait(true)`，
+     而主循环 exec 的退出条件含 `!system.force_wait()` → **每轮提前结束**。
+- **当时的决策（已被上面根因取代）**：主循环忽略 `force_wait`
+  （`exec_ignore_force_wait`，默认 true）。
+- **状态**：**根因已定位、已修复、已真机验证**（见本文档开头）。
+- **附带确认**：`MOV/op00.mpg` 开场影片因 `module_mov.cc` 全为 `AddUnsupportedOpcode`
+  而不被播放——这是**独立的功能缺口**，与台阶问题无关。
+- **语义影响**：只动 Android 后端主循环；上游 `ForceRefresh`/`force_wait` 的语义
+  本身未改。
+
+---
+
+## D-024 无平台 GUI 时，存档回退到游戏自带脚本路径
+
+- **背景**：LBEX 的 `GAMEEXE.INI` 是 `SYSTEMCALL_SAVE_MOD=0` +
+  `SYSTEMCALL_SAVE=9999,10`。按上游逻辑，`save_mod != 1` 时
+  `System::InvokeSaveOrLoad`（`systems/base/system.cc`）会走
+  `platform_->InvokeSyscomStandardUI()`——也就是 GCNPlatform 的 Guichan 存档对话框。
+  本移植**从未调用 `SetPlatform`**（`platform_` 为 null），于是点击存档**静默无操作**。
+- **决策**：`save_mod != 1` 且**没有 platform** 时，回退到游戏自带的脚本路径
+  （`SYSTEMCALL_SAVE` 指向的场景 + 入口点）。桌面版有 platform，行为完全不变。
+- **真机验证（2026-10-04，Redmi K40 游戏版 / LBEX）**：
+  - **写入**：`/…/files/.rlvm/KEY_リトルバスターズ！ＥＸ/save000.sav.gz` 正常生成
+    （1390 B，zlib 流，解压后 35724 B，`boost` 文本档头 + CP932 标题 + 时间戳齐全）。
+  - **持久化**：**重启 APP 后文件仍在**，`global.sav.gz` 一并保留。
+  - **读取**：重启后引擎枚举槽位时，`SaveExists(slot=0)` 与 `SaveInfo(slot=0)`
+    都返回 1（游戏存档菜单的实际调用点，见下）。**LOAD 界面能列出该槽位**，
+    「重启后 LOAD 列表为空」的现象不再复现。
+  - 结论：**写入侧、持久化侧、读取/列表侧三处都通了**。
+- **机制定位（2026-10-04，基于整库 351 个场景的反汇编）**：LBEX 的存档/读档**完全不经过
+  `SYSCOM`**，因此不经过 `System::InvokeSaveOrLoad`。实证链：
+  1. 右键菜单走 `System::ShowSyscomMenu`：`CANCELCALL_MOD=1` → `farcall(9020, 0)`
+     （即游戏自带的菜单场景，不是引擎标准菜单）。
+  2. `SEEN9020` 自身不含存档逻辑，靠 `farcall` 拉出各子界面：`9109`（菜单项动画/分页）、
+     **`9023`（存档/读档界面）**、`8260`（另一个子界面）。
+  3. `SEEN9023` 全部用引擎指令完成存/读：
+     - 列槽位：`SaveInfo(槽号, …)`（1413，内部再调 `SaveExists`(1409)）；
+     - 存档：`save_always(槽号)`（3107）；
+     - 读档：`load_always(槽号)`（3109）。
+  4. 全库检索：**没有任何场景调用** `menu_save`(3000) / `menu_load`(3001) /
+     `menu_save_always`(3100) / `menu_load_always`(3101)；而上游 `System::InvokeSyscom`
+     **只有** `InvokeSyscomAsOp` 一个调用者（`general_operations.cc:138`）。
+
+  ⇒ **`System::InvokeSaveOrLoad` 对 LBEX 不可达，本条决策引入的脚本回退是死代码。**
+  之前「改了才存得下来」的观察属于**归因错误**——真正生效的是早已提交的读钩子
+  （`utilities/file.cc` 的 `GameFileExists` / `ReadGameFileAll`）加上游戏自带脚本；
+  另外 `SEEN9999` 在 LBEX 里根本不存在（TOC 最小索引 513），
+  `SYSTEMCALL_SAVE/LOAD=9999,10/11` 是**悬空场景号**，Farcall 只会抛异常。
+- **建议**：把 `systems/base/system.cc` 这处回退**还原成上游写法**，保持「上游基线可审、
+  不留未经证实的行为改动」。将来若遇到确实依赖引擎标准存档 UI 的作品，再带证据加回来。
+- **顺带确认的引擎缺口（LBEX 实际用到、RLVM 未实现）**——整库反汇编统计：
+
+  | 指令 | 出现的场景 | 影响 |
+  | --- | --- | --- |
+  | Sys 2055 / 2056 | 9010（启动）、9024（config 菜单） | 一对 0/1 设置：2005 是 getter（9024 读回）、2055 是 setter。未实现 ⇒ config 里该项永远读回默认值 |
+  | Sys 2005 | 9024 | 同上（getter） |
+  | Sys 300 / 1231 / 3503 | 9012 / 9013（引擎标准菜单场景）、9517 / 8731 / 8754 / 8757 | 标准 syscom 菜单链路用到 |
+  | EventLoop 1203 / 1204 / 1205 | 9020 / 9109 | 菜单场景用到（1200–1202 已实现：文字窗 override 的 show/hide/clear） |
+  | `InvokeSyscom(9)` | 9024 | = `SYSCOM_FONT_SELECTION`，本移植无 platform ⇒ 静默无操作 |
+- **新增诊断工具（长期保留）**：`rlvm-diag.txt` 支持
+  `dump_scenario=<场景号>[,<场景号>…]` 与 `dump_scenario=all`，把指定/全部场景
+  反汇编成 RLVM 源码形式写到应用外部文件目录，用来逆向系统脚本。见
+  `app/src/main/cpp/native-bridge.cpp` 的 `DumpScenarioToFile()` /
+  `DumpAllScenariosToFile()`。默认关闭，不写诊断文件时行为与以前一致。
+- **语义影响**：只改 `systems/base/system.cc` 的平台适配层与 Android 侧诊断，
+  未改脚本语义。
+- **状态**：存档/读档链路**已验证可用**；本条回退**已验证对 LBEX 不可达**，
+  已于 2026-10-04 **还原为上游写法**（`git status` 对 `systems/base/system.cc` 为空）。
+  通用性边界与接入条件见 **D-025**。
+
+---
+
+## D-025 存档链路：通用性边界与接入条件
+
+- **结论**：本移植的存档/读档**不含任何作品特判**，对新作品"接入即可用"的
+  **前提是游戏自带存档界面脚本**（绝大多数 RealLive 作品都是这样）。
+- **两层结构**：
+  1. **指令层（RLVM 自带，未改）**：`SaveExists(1409)` / `SaveDate(1410)` /
+     `SaveTime(1411)` / `SaveDateTime(1412)` / `SaveInfo(1413)` / `GetSaveFlag(1414)` /
+     `LatestSave(1421)` / `save(3007)` / `save_always(3107)` / `load(3009)` /
+     `load_always(3109)`，见 `src/modules/module_sys_save.cc`。
+     文件名为 `save%03d.sav.gz`，目录为 `System::GameSaveDirectory()`
+     = `$HOME/.rlvm/<REGNAME>`（`REGNAME` 取自 `Gameexe.ini`，**天然按作品隔离**）。
+  2. **平台 I/O 层（本移植）**：`src/utilities/file.cc` 的
+     `WriteGameFile` / `ReadGameFileAll` / `GameFileExists`，配 `native-bridge.cpp`
+     的两个 fd 钩子——**绝对路径走 posix**（存档目录位于应用外部文件目录，是真实路径），
+     **相对路径走 SAF**（游戏资源）。全部由路径/标识驱动，**无作品分支**。
+- **接入条件**：
+  - **必需**：作品脚本自己实现存档/读档界面。LBEX（`SEEN9010` → `9020` → `9023`，
+    用 `SaveInfo` + `save_always` + `load_always`）与 Kud Wafter 已验证。
+  - **当前缺口**：若作品把存/读**交给引擎标准界面**（`SYSTEMCALL_*_MOD=0` 且脚本自己
+    不画界面），本移植**无法工作**——因为移植里**没有任何 `Platform` 实现**
+    （`SetPlatform` 从未被调用，`Platform::InvokeSyscomStandardUI` 是空的）。
+    这正是上游 GCNPlatform/Guichan 承担的部分；要补需另行立项。
+- **验证口径（写入 / 固化 / 读取）**：
+  - **写入**：`save000.sav.gz` 生成，且 zlib 解压后是完整的 boost 文本档（含
+    `CURRENT_LOCAL_VERSION`、`SaveGameHeader`、local memory、machine system 等）。
+  - **固化**：重启 App 后文件仍在（`global.sav.gz` 同样保留）。
+  - **读取**：引擎枚举槽位时 `SaveExists`/`SaveInfo` 返回 1，且游戏内 LOAD 界面列出该槽位。
+  LBEX 三项均已真机实测通过（见 `dev-log/LBEX-SAVE-LOAD.jsonl`）。
+- **已归档的误判**：见 D-024。
+- **状态**：通用链路已确认；唯一缺口是"引擎标准存档 UI"（未实现）。

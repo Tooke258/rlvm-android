@@ -1,5 +1,9 @@
 # RLVM Android 封装 — 进度交接文档
 
+> ⚠️ **本文写于 2026-09-19（v0.1.0 时代），部分内容已过时。**
+> **最新交接请看 [`docs/HANDOFF-2026-10-04.md`](HANDOFF-2026-10-04.md)**
+> （含 v0.2.x 之后的全部状态、未提交改动清单，以及 LBEX 存档的待办）。
+
 > 生成时间：2026-09-19 18:00 +08:00
 > 用途：上下文被压缩或换人接手时，靠这份文档恢复全部关键结论。
 > 配套阅读：`docs/ARCHITECTURE.md`（源码分析）、`docs/ENVIRONMENT.md`（工具链）、
@@ -71,7 +75,8 @@
 | 若干未实现操作码 | Sys 2055 / 2056 / 300 / 1231 / 3503、Os 120；目前一律「跳过继续」，未见功能受损 |
 | PNG / JPEG 解码 | 解码器存在但被 `#if HAVE_LIBPNG/JPEG` 排除；RealLive 原生格式用不到 |
 | ~~44.1kHz 重采样~~ | **已修复**（D-017）：自建 `ResamplingSource`，44.1kHz→48kHz 线性插值 |
-| 存档读写经 SAF | 未实现 |
+| ~~存档读写经 SAF~~ | **已实现**（见 D-025）：RLVM 存档指令 + `utilities/file.cc` 的 `WriteGameFile`/`ReadGameFileAll`/`GameFileExists` fd 钩子（绝对路径走 posix、相对路径走 SAF）；LBEX 的写入/固化/读取三项已真机验收 |
+| **直接杀进程后存档"列不出来"** | 槽位文件 `save%03d.sav.gz` **确实写入成功**，但游戏用于标记"槽位已占用"的 `intG[1050+槽]` 属于 **global memory**，而 global memory 目前**只在引擎正常停止时**才落盘（`RunEngineOn` 末尾；上游对应 `RLVMInstance::Run` 末尾）→ 直接杀进程会丢掉这个标记，LOAD 列表（`SEEN9023` 判定 `intG[1050+n]==1`）便列不出来。修法：把落盘时机扩展到"挂起/退到后台"（复用 `setEngineSuspended`），详见 `dev-log/LBEX-SAVE-LOAD.jsonl` |
 | 引擎生命周期 | 只有"跑一段"，没有启动/暂停/恢复/退出 |
 
 ## 5. 「首屏全黑」的根因与修复（已解决）

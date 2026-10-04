@@ -102,6 +102,12 @@ object NativeBridge {
     external fun getFrameSize(): Int
 
     /**
+     * 当前帧序号（O(1)，不拷贝像素）。GL 线程先问它：序号没变就直接返回，
+     * 免得每帧白拷 1.9MB、还把引擎线程堵在与渲染线程相同的锁上。
+     */
+    external fun getFrameSerial(): Int
+
+    /**
      * 把当前帧复制到 [buffer]（需为直接缓冲区，容量 >= 宽*高*4，RGBA8888）。
      * 返回帧序号；与上次相同表示没有新帧。失败返回 -1。
      */

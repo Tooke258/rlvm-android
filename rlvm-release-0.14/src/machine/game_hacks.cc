@@ -39,6 +39,10 @@ using std::ref;
 
 namespace {
 
+// 默认 true = 与上游行为一致（跳过棒球小游戏）。由 app 层按诊断开关设置，
+// 见头文件里的 SetLBSkipBaseball()。
+bool g_skip_lb_baseball = true;
+
 void PBRIDE_ResetAutoMode(RLMachine& machine) {
   // During the first ending credits, if you click to skip them, the draw mode
   // doesn't automatically get reset to DrawAuto. RealLive.exe takes care of
@@ -51,10 +55,16 @@ void PBRIDE_ResetAutoMode(RLMachine& machine) {
 void LB_SkipBaseball(RLMachine& machine) {
   // Baseball is a weird minigame that requires talking to a DLL. :( We will
   // *never* emulate it properly without reverse engineering what the DLL does.
+  //
+  // 逆向期间可以关掉这条跳过（见 SetLBSkipBaseball）：那时脚本会继续跑进小游戏，
+  // 我们能借 LittleBustersPT00DLL 的调用记录枚举脚本实际用到的 func。
+  if (!g_skip_lb_baseball) return;
   machine.ReturnFromFarcall();
 }
 
 }  // namespace
+
+void SetLBSkipBaseball(bool skip) { g_skip_lb_baseball = skip; }
 
 void AddGameHacks(RLMachine& machine) {
   std::string diskmark = machine.system().gameexe()("DISKMARK");

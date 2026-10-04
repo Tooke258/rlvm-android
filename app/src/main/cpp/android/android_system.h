@@ -25,6 +25,14 @@ class AndroidGraphicsSystem;
 class Gameexe;
 class RLMachine;
 
+// 合帧策略（性能修复，见 D-022）：
+//   true（默认）——与上游 SDL 后端一致：只在**屏幕被标记为脏**时才合成一帧，
+//                  合成后立刻清掉脏标记（sdl_graphics_system.cc:373 的语义）；
+//   false       ——退回旧行为：主循环每轮无条件合成一帧。设备侧诊断文件
+//                  写 dirty_gate=0 即可切回去做对比。
+void SetDirtyGateEnabled(bool enabled);
+bool IsDirtyGateEnabled();
+
 class AndroidEventSystem : public EventSystem {
  public:
   explicit AndroidEventSystem(Gameexe& gexe);

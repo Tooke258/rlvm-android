@@ -129,6 +129,9 @@ class RlvmRenderer : GLSurfaceView.Renderer {
     }
     private var lastSerial = -1
 
+    /** 纹理是否已经按当前尺寸分配过（决定用 glTexImage2D 还是 glTexSubImage2D）。 */
+    private var textureAllocated = false
+
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         positionHandle = GLES30.glGetAttribLocation(program, "aPosition")
@@ -208,8 +211,16 @@ class RlvmRenderer : GLSurfaceView.Renderer {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
-    /** 如果 native 侧有新帧就重新分配缓冲并上传纹理。 */
+    /**
+     * 如果 native 侧有新帧就重新分配缓冲并上传纹理。
+     *
+     * 关键：**先问帧序号**（一次 JNI，只读一个整数），序号没变就直接返回。
+     * 以前这里每帧都调 `copyFrameToBuffer`：那是 1.9MB 的 memcpy，而且和引擎线程
+     * 抢同一把互斥锁——120 次/秒 ≈ 230MB/s 的无谓拷贝把引擎的合成时间吃掉了。
+     */
     private fun uploadFrameIfChanged() {
+        val serial = NativeBridge.getFrameSerial()
+        if (serial == 0 || serial == lastSerial) return
         val packed = NativeBridge.getFrameSize()
         if (packed == 0) return
         val width = packed ushr 16
@@ -221,20 +232,37 @@ class RlvmRenderer : GLSurfaceView.Renderer {
             frameHeight = height
             pixels = ByteBuffer.allocateDirect(width * height * 4)
                 .order(ByteOrder.nativeOrder())
-            lastSerial = -1
+            textureAllocated = false
         }
 
         val buffer = pixels ?: return
-        val serial = NativeBridge.copyFrameToBuffer(buffer)
-        if (serial < 0 || serial == lastSerial) return
-        lastSerial = serial
+        val got = NativeBridge.copyFrameToBuffer(buffer)
+        if (got < 0) return
+        lastSerial = got
 
         buffer.position(0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture)
-        GLES30.glTexImage2D(
-            GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, frameWidth, frameHeight, 0,
-            GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
-        )
+        if (textureAllocated) {
+            // 尺寸没变时用 SubImage 更新，避免每帧重新分配纹理（移动 GPU 上代价很高）。
+            GLES30.glTexSubImage2D(
+                GLES30.GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
+            )
+        } else {
+            GLES30.glTexImage2D(
+                GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, frameWidth, frameHeight, 0,
+                GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buffer
+            )
+            GLES30.glTexParameteri(
+                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(
+                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(
+                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+            GLES30.glTexParameteri(
+                GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+            textureAllocated = true
+        }
         // 逐帧打日志会拖慢 GL 线程（logcat 是同步 I/O），只在开头和偶尔抽样时打。
         uploadCount++
         if (uploadCount <= 3 || uploadCount % 300 == 0) {

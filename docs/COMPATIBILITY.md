@@ -47,6 +47,25 @@ rlBabel 是关键：RealLive 允许游戏调用外部 DLL，补丁借此改变�
 `RLVMInstance::DoUserNameCheck()` 处理「先跑日文原版、再装补丁」导致 global memory 中名字乱码的情况，
 会弹窗让用户选择重置还是带着坏名字继续。Android 侧需要把这个对话框接起来。
 
+### 4.1 通用性边界（见 `docs/DECISIONS.md` D-025）
+
+本移植的存/读档**不含任何作品特判**，能被"接入即可用"的前提是**游戏脚本自带存档界面**：
+
+| 层 | 内容 | 是否有作品特判 |
+| --- | --- | --- |
+| 指令层（RLVM 自带，未改） | `SaveExists(1409)` / `SaveInfo(1413)` / `save(3007)` / `save_always(3107)` / `load(3009)` / `load_always(3109)` …，文件名 `save%03d.sav.gz`，目录 `$HOME/.rlvm/<REGNAME>` | 无（`REGNAME` 取自 Gameexe，天然按作品隔离） |
+| 平台 I/O 层（本移植） | `utilities/file.cc` 的 `WriteGameFile` / `ReadGameFileAll` / `GameFileExists` + 两个 fd 钩子：**绝对路径走 posix**（存档目录是应用外部文件目录的真实路径），**相对路径走 SAF**（游戏资源） | 无（路径/标识驱动） |
+
+**接入条件**：作品脚本自己实现存/读档界面（LBEX 走 `SEEN9010` → `9020` → `9023`，
+用 `SaveInfo` + `save_always` + `load_always`；Kud Wafter 同样已验证）。
+
+**当前缺口**：若作品把存/读**交给引擎标准界面**（`SYSTEMCALL_*_MOD=0` 且脚本不自己画），
+本移植**点不动**——因为移植里没有任何 `Platform` 实现（`SetPlatform` 从未调用，
+`Platform::InvokeSyscomStandardUI` 为空）。这是待立项的功能项。
+
+**验收口径**：写入（`save%03d.sav.gz` 生成且解压为完整 boost 文本档）→ 固化（重启 App
+后仍在）→ 读取（`SaveExists`/`SaveInfo` 返回 1 且 LOAD 界面列出该槽位）。
+
 ## 5. 当前 Android 端的支持边界
 
 | 能力 | 状态 |

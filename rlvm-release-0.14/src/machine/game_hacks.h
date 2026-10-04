@@ -32,4 +32,10 @@ class RLMachine;
 // Adds game specific hacks that execute at certain seen/line pairs.
 void AddGameHacks(RLMachine& machine);
 
+// Little Busters / LBEX 的棒球小游戏实现塞在 PT00.dll 里（RLVM 尚未逆向）。
+// 默认与上游一致：在那个 seen/line 上直接 ReturnFromFarcall（跳过小游戏）。
+// 传 false 则**不跳过**，让脚本继续跑进小游戏流程——逆向 PT00 时用它来收集
+// "脚本到底调用了哪些 DLL func、参数是什么"（配合 little_busters_pt00dll.cc 的调用记录）。
+void SetLBSkipBaseball(bool skip);
+
 #endif  // SRC_MACHINE_GAME_HACKS_H__

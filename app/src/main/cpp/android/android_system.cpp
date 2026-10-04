@@ -3,6 +3,7 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <functional>
@@ -22,11 +23,22 @@
 
 namespace {
 
+// 合帧策略：见头文件 SetDirtyGateEnabled() 的说明。默认与上游 SDL 后端一致（脏标记驱动）。
+std::atomic<bool> g_dirty_gate{true};
+
 // 引擎只要求时间单调递增，与真实时钟起点无关。
+// 计时**基点**不是小事：上游 RLVM 的帧计数器把 tick 存进 float
+// （frame_counter.h 的 `float time_at_last_check_`），float 只有 24 位尾数。
+// SDL 的 SDL_GetTicks() 返回"自 SDL_Init 以来的毫秒数"（量级 10^4~10^6），
+// float 在该量级的分辨率是微秒级，够用；而 steady_clock 的**绝对**毫秒是 10^9
+// 量级，float 在那里的分辨率退化成 **128ms**，于是 ms_elapsed 只能取 0 或 128，
+// 帧计数器每 128ms 才推进一次（10000 级/1000ms 的淡变只剩 8 级台阶、每级 32/255）。
+// 这里对齐 SDL 语义：返回相对进程起点的小数值，而不是绝对时钟。
 unsigned int NowMillis() {
   using namespace std::chrono;
+  static const steady_clock::time_point origin = steady_clock::now();
   return static_cast<unsigned int>(
-      duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+      duration_cast<milliseconds>(steady_clock::now() - origin).count());
 }
 
 /** 取 UTF-8 串的第一个码点。 */
@@ -43,6 +55,10 @@ bool FirstCodepoint(const std::string& text, uint32_t& codepoint) {
 }
 
 }  // namespace
+
+void SetDirtyGateEnabled(bool enabled) { g_dirty_gate.store(enabled); }
+
+bool IsDirtyGateEnabled() { return g_dirty_gate.load(); }
 
 // ---------------------------------------------------------------------------
 // AndroidEventSystem
@@ -738,8 +754,20 @@ void AndroidSystem::Run(RLMachine& machine) {
     platform()->Run(machine);
 
   // 上游由 SDL 的视频事件驱动重绘；Android 侧没有这种事件源，
-  // 因此每轮主循环主动合成一帧。GL 线程按自己的节奏取走最新的一帧。
-  graphics_->Refresh(nullptr);
+  // 因此合帧由主循环触发——但**必须与上游一样只在脏标记置位时合成**（D-022）：
+  // 上游 SDLGraphicsSystem::ExecuteGraphicsSystem 里是
+  //   `if (is_responsible_for_update() && screen_needs_refresh()) { Refresh(); OnScreenRefreshed(); }`
+  // 只有屏幕被标记为脏才做一次全屏 CPU 合成，合完清标记。
+  //
+  // 此前我们每轮无条件 Refresh()：全屏背景 + 所有对象 + 文字每轮重合成一遍，
+  // 白吃主循环时间；而 RealLive 有大量"每帧推进一步"的动画（对象位移、闪烁、菜单
+  // 光标、场景过渡…），主循环被拖慢的观感就是"动画渲染很慢"。
+  //
+  // 设备侧诊断文件写 dirty_gate=0 可以退回旧行为做对比。
+  if (!IsDirtyGateEnabled() || graphics_->screen_needs_refresh()) {
+    graphics_->Refresh(nullptr);
+    graphics_->OnScreenRefreshed();  // 上游在 Refresh 之后清脏标记
+  }
 }
 
 GraphicsSystem& AndroidSystem::graphics() { return *graphics_; }
