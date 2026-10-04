@@ -765,6 +765,10 @@ void RunEngineOn(System& system,
     if (mov_id.find('/') == std::string::npos) {
       mov_id = "MOV/" + mov_id + ".mpg";
     }
+    // 自测不受脚本控制：真实 OP 场景里脚本本来会先 bgmStop，这里替它做掉，
+    // 否则游戏 BGM 会和影片声音叠在一起（真机反馈过）。
+    system.sound().BgmStop();
+    system.sound().WavStopAll();
     const bool mov_ok = rlvm_android::MovPlayer::Instance().Play(
         mov_id, 0, 0, 799, 599, diag.mov_test_ms);
     report += std::string("mov_test: ") + (mov_ok ? "起播 " : "打不开 ") +

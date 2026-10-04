@@ -299,6 +299,13 @@ void MovPlayer::CompositeInto(Surface& dst) {
     }
     if (impl_->clock_start_ms == 0) return;
     const long long now = SteadyMs() - impl_->clock_start_ms;
+    // 放完后的收尾：影片已经结束、队列也空了、最后一帧也展示过了 → 收起画面，
+    // 让屏幕回到游戏。不收的话最后一帧会一直贴在帧缓冲上（看起来像"卡住"）。
+    if (impl_->finished.load() && impl_->queue.empty() &&
+        impl_->has_current && now >= impl_->current.pts_ms + 120) {
+      impl_->has_current = false;
+      return;
+    }
     // 取「最后一帧 pts <= 当前时刻」；更早的丢掉（渲染跟不上时自动跳帧）。
     while (!impl_->queue.empty()) {
       const bool last_one =
