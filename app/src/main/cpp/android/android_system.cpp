@@ -271,6 +271,12 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
       fonts.Rasterize(codepoint, font_size, italic, false);
   if (glyph == nullptr) return Size(0, 0);
 
+  // 目标表面尺寸：行高夹紧要按它算（见下面 baseline 的说明）。
+  int target_size_h = -1;
+  if (const AndroidSurface* probe_target =
+          dynamic_cast<const AndroidSurface*>(destination.get())) {
+    target_size_h = probe_target->GetSize().height();
+  }
   static int rendered = 0;
   if (++rendered <= 5) {
     // 关键判据：字形位图里到底有没有墨迹。既然已经确认「文本窗口在合成、坐标也对」，
@@ -297,9 +303,30 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
 
   // 按**基线**摆放字形：insertion_point 的 y 是这一行的顶部，先加 ascent 得到基线，
   // 再减去 bitmap_top 得到位图顶。按位图左上角摆会让不同高度的字各自贴顶线。
-  const int baseline = insertion_point_y + glyph->ascent;
+  // 但 FreeType 报的行高（asc+desc）经常**大于**游戏给这一行的盒子（真机探针：
+  // size=18 时 asc=21 desc=6=27，而 LOAD 列表那一行的文本表面只有 165x18），
+  // 照原样加 ascent 会把基线推到盒子中线以下——看上去就是「文字顶部贴中线」。
+  // 这里把行高**按盒子夹紧**：盒子够高（对话框那种）时数值不变，只修正这类紧凑行。
+  int line_ascent = glyph->ascent;
+  int line_descent = glyph->descent;
+  if (target_size_h > 0 && line_ascent + line_descent > target_size_h) {
+    const int total = line_ascent + line_descent;
+    line_ascent = std::max(1, target_size_h * line_ascent / total);
+    line_descent = target_size_h - line_ascent;
+  }
+  const int baseline = insertion_point_y + line_ascent;
   const int origin_x = insertion_point_x + glyph->bearing_x;
-  const int origin_y = baseline - glyph->bearing_y;
+  int origin_y = baseline - glyph->bearing_y;
+  // 再把位图夹回盒子内：夹紧行高后，个别字形会稍微跑到盒子上沿外（真机反馈：
+  // 「顶上被截断了一点」）——这行把它压回盒子里，保持"行顶对齐"的观感。
+  if (target_size_h > 0) {
+    const int box_top = insertion_point_y;
+    const int box_bottom = insertion_point_y + target_size_h;
+    if (origin_y < box_top) origin_y = box_top;
+    if (glyph->height <= target_size_h && origin_y + glyph->height > box_bottom) {
+      origin_y = box_bottom - glyph->height;
+    }
+  }
 
   // 与上游 SDLTextSystem 相同的做法：阴影先画在 (+2, +2)，再把字形画在原点。
   if (shadow_colour != nullptr && font_shadow() != 0) {
@@ -311,7 +338,7 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
 
   // 返回「推进量 × 行高」：调用方用宽度推进插入点、用高度换行。
   // 返回位图尺寸会让每个字的推进量各不相同（字距忽宽忽窄）。
-  return Size(glyph->advance, glyph->ascent + glyph->descent);
+  return Size(glyph->advance, line_ascent + line_descent);
 }
 
 int AndroidTextSystem::GetCharWidth(int size, uint16_t codepoint) {
