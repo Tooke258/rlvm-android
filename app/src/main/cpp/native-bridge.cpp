@@ -98,6 +98,8 @@ std::atomic<bool> g_stop_requested{false};
 // 推进字节码、音频回调照样出声——用户看到的就是「黑屏之后游戏还在跑」。挂起期间既
 // 不推进指令也不合成新帧，音频同时被打成静音并停掉数据回调；置回 false 后从原位置继续。
 std::atomic<bool> g_engine_suspended{false};
+// 挂起期间是否已经落过 global memory（每挂起一次只落一次）。
+std::atomic<bool> g_suspend_flushed{false};
 
 // 文本容器（例如合并了汉化的 SEEN 归档）在游戏目录树内的相对路径。
 // 空 = 用游戏目录里的 Seen.txt。UI 线程写入、引擎线程读取，所以加锁。
@@ -817,6 +819,8 @@ void RunEngineOn(System& system,
   g_stop_requested.store(false);
   int executed = 0;
   int frames_presented = 0;
+  // global memory 的定期落盘兜底（见下面循环里的说明）。
+  unsigned int last_global_flush = system.event().GetTicks();
   std::string stop_reason = "instruction budget exhausted";
 
   while (executed < max_instructions) {
@@ -827,9 +831,23 @@ void RunEngineOn(System& system,
     // 挂起（黑屏/应用进后台，见 SetEngineSuspended）：完全不推进——不跑 system.Run
     // （不合成新帧）、不执行字节码，只让出 CPU 等唤醒。音频侧同时静音并暂停回调。
     if (g_engine_suspended.load()) {
+      // 挂起（黑屏/进后台）时把 global memory 落盘（v0.2.3 / M4 顺带）：
+      // 游戏用来标记「槽位已占用」的 intG[1050+槽] 与 Config 都在 global memory 里，
+      // 而它原本只在**引擎正常停止**时写盘——从最近任务直接杀掉进程就丢，LOAD 列表
+      // 会列不出来（任务日志.md §16）。这里复用挂起通道，在引擎线程落一次盘。
+      if (!g_suspend_flushed.exchange(true)) {
+        try {
+          Serialization::saveGlobalMemory(machine);
+          rlvm_android::AppendAppLogLine("suspend: global memory 已落盘");
+        } catch (const std::exception& e) {
+          rlvm_android::AppendAppLogLine(
+              std::string("suspend: global memory 落盘失败：") + e.what());
+        }
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
       continue;
     }
+    g_suspend_flushed.store(false);  // 恢复运行 → 下次挂起再落一次
     if (machine.halted()) {
       stop_reason = "machine halted";
       break;
@@ -889,6 +907,18 @@ void RunEngineOn(System& system,
     } while (!machine.CurrentLongOperation() && !system.force_wait() &&
              (now - slice_start < 10));
     system.set_force_wait(false);
+
+    // global memory 的**兜底**落盘（60 秒一次）：挂起那一笔是主要保障，这一笔防的是
+    // 「没走到挂起就被杀」——最多丢 60 秒内的槽位标记/Config 改动。17KB 的写入，
+    // 开销可以忽略。
+    if (system.event().GetTicks() - last_global_flush >= 60000) {
+      try {
+        Serialization::saveGlobalMemory(machine);
+      } catch (const std::exception&) {
+        // 落盘失败不打断游戏（路径不可写时挂起那一笔也会打日志）。
+      }
+      last_global_flush = system.event().GetTicks();
+    }
   }
 
   // 影片：引擎循环结束就收摊（停解码线程、释放解码器与 fd）。

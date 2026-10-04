@@ -184,7 +184,7 @@ MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状
 | --- | --- | --- |
 | 高（主线） | **LB 棒球小游戏（`PT00.dll`）** | `systems/base/little_busters_pt00dll.cc` 目前只记录调用并 `return 0`；小游戏默认被 `machine/game_hacks.cc` 的 `LB_SkipBaseball` 跳过（开关 `SetLBSkipBaseball`，由 `rlvm-diag.txt` 的 `lb_minigame=1` 打开） |
 | 高（主线） | **DLL 输入模拟**：给 `PT00` 这类要读鼠标/键盘的 DLL 提供输入通道，并预留**可脚本化的模拟输入**以便自动化验证 | 同上 |
-| 高（顺带） | **直接杀进程会丢 `global.sav.gz`**：槽位文件已写入，但"槽位已占用"的 global memory 标记与配置改动丢失 → LOAD 列表列不出来。修法：在挂起/退到后台时于引擎线程落盘 | `dev-log/LBEX-SAVE-LOAD.jsonl`；`docs/PROGRESS.md` 已知缺口 |
+| 高（顺带） | **直接杀进程会丢 `global.sav.gz`（槽位占用标记 `intG[1050+槽]` + 配置）** | **已完成（v0.2.3）**：挂起/退后台时在引擎线程落盘 + 60 秒定期兜底，见 D-032 |
 | 中 | 引擎标准存档 UI 缺失（`Platform::InvokeSyscomStandardUI` 为空） | D-025 |
 | 中 | `exec_ignore_force_wait` 是否保留：做一次 A/B | `docs/FRAMERATE-INVESTIGATION.md` 6.5 |
 | 低 | T7.3 备份项：面板显示当前文本容器文件名；`docs/PROGRESS.md` 与实际能力对齐 | 本文件 T7.3 |

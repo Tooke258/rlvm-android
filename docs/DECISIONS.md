@@ -795,3 +795,32 @@ wait(2200) ; ShowCursor ; ...                                        // 影片�
 
 **注**：自测（`mov_test`）仍是"并行"的——它本来就不受脚本控制，所以自测会先
 `BgmStop`/`WavStopAll` 替脚本做掉声音清理（见 D-030 补充）。
+
+## D-032 存档标识符与 global memory 落盘时机（v0.2.3）
+
+**日期**：2026-10-04　**状态**：真机通过
+
+**背景**：此前把「重启后 LOAD 列表为空」查到「槽位文件写好了、但游戏看不到」为止，剩下的
+缺口是：不走「停止引擎」而是从最近任务直接杀进程时，槽位文件 `save%03d.sav.gz` 已写入，
+但**槽位占用标记**没落盘（任务日志.md §16、TASKS.md 待办）。
+
+**查实（存档标识符到底是什么）**
+
+- 标记不是文件的存在性，而是 **global memory 里的 `intG[1050 + 槽]`**。
+- 实证：设备上 `.rlvm/KEY_クドわふたー/global.sav.gz`（raw zlib，解压 18,075B）解析成
+  `intG[0..1999]` 后，`intG[1050]/[1051]/[1055]/[1056] = 1`，与该目录里实际存在的
+  `save000/001/005/006.sav.gz` **完全对应**，其余槽为 0。
+
+**修法（按当时定的方向）**
+
+1. **挂起/退到后台时在引擎线程落盘**：引擎循环的 `g_engine_suspended` 分支第一次进入时调
+   `Serialization::saveGlobalMemory(machine)`（每次挂起只落一次），并写应用日志
+   `suspend: global memory 已落盘`。
+2. **60 秒定期兜底**：防「没走到挂起就被杀」，最多丢 60 秒内的槽位标记/Config 改动；
+   global memory 只有 ~17KB，写入开销可忽略。
+
+**真机验证**：前台跑满 60 秒后 `global.sav.gz` mtime 更新（定期那一笔）；按 Home 退后台后
+应用日志出现 `suspend: global memory 已落盘`，mtime 同步更新。
+
+**仍未做**：引擎标准存档 UI（`Platform::InvokeSyscomStandardUI`）；硬杀（SIGKILL/`am force-stop`）
+时无法拦截，只能靠上述两笔兜住绝大多数路径。
