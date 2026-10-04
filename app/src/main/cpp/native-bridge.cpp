@@ -1224,6 +1224,14 @@ void TouchEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint action, jfloat x, jfloat
   AndroidSystem* system = g_current_system.load();
   if (system == nullptr) return;  // 引擎没在跑，忽略
 
+  // 影片播放中点一下 = 跳过（v0.2.3 / M4）。这一下**不转发**给脚本，
+  // 否则跳过影片的同时还会顺手推进一句对话。
+  if (action == 0 /* TOUCH_DOWN */ && rlvm_android::MovPlayer::Instance().playing()) {
+    rlvm_android::MovPlayer::Instance().Stop();
+    rlvm_android::AppendAppLogLine("mov: 点击跳过影片");
+    return;
+  }
+
   // buttons 为 0 时退回诊断文件的缺省值（1=左键 2=右键 3=两者）。
   const int resolved = buttons != 0 ? static_cast<int>(buttons)
                                     : g_touch_buttons.load();

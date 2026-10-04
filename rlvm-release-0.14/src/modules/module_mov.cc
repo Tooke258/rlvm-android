@@ -91,6 +91,27 @@ struct MovWait : public RLOp_Void_1<DefaultIntValue_T<0>> {
   }
 };
 
+/**
+ * movPlayExC(20)：起播并**等它放完**才让脚本继续。
+ *
+ * 依据：KW/LBEX 的 SEEN514 里这一段之后紧跟 `wait(2200)` + ShowCursor——只有当
+ * ExC 阻塞到影片结束，这个顺序才说得通；否则剧情会在 OP 还挂在屏幕上时往下走
+ * （真机上"自测和主页面并行"就是这种感觉，那是因为自测不受脚本控制）。
+ * 播放中点击可以跳过：native 侧停掉播放器，这个长操作下一轮就返回 true。
+ *
+ * 注：C 后缀的准确含义尚未证实（可能是 clear / complete），按「播完才继续」实现。
+ */
+struct MovPlayExC : public MovPlaySignature {
+  void operator()(RLMachine& machine, std::string name, int x, int y, int w,
+                  int h) {
+    rlvm_android::MovPlayer& player = rlvm_android::MovPlayer::Instance();
+    player.Play(MovieFileId(name), x, y, w, h);
+    if (player.playing()) {
+      machine.PushLongOperation(new MovWaitLongOperation);
+    }
+  }
+};
+
 // movPlaying(4)：把「是否在播」写进目标变量。
 struct MovPlaying : public RLOp_Void_1<IntReference_T> {
   void operator()(RLMachine& machine, IntReferenceIterator dest) {
@@ -107,5 +128,5 @@ MovModule::MovModule() : RLModule("Mov", 1, 26) {
   AddOpcode(3, 0, "movWait", new MovWait);
   AddOpcode(4, 0, "movPlaying", new MovPlaying);
   AddOpcode(5, 0, "movStop", new MovStop);
-  AddOpcode(20, 0, "movPlayExC", new MovPlayEx);
+  AddOpcode(20, 0, "movPlayExC", new MovPlayExC);
 }
