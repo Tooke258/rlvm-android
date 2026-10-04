@@ -88,6 +88,14 @@ class MainActivity : Activity() {
     // 浮动按键栏（v0.2.1 T7.2）：默认隐藏的输入层 + 它的开关按钮。
     private lateinit var inputOverlay: FrameLayout
     private lateinit var inputPadButton: Button
+    // ---- 日志与「影片自测」开关（v0.2.3）----------------------------------
+    // 面板里的日志区太小、而且重启就没了；现在日志同时落盘到
+    // <外部文件目录>/rlvm-log.txt，启动时读回来，点「日志」是全屏可复制的视图。
+    // native 侧（影片起播/结束等）也写同一个文件，见 android/app_log.h。
+    private lateinit var logOverlay: LinearLayout
+    private lateinit var logFile: File
+    private lateinit var movTestButton: Button
+    private var movTestEnabled = false
     // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
     private var cursorX = -1f
     private var cursorY = -1f
@@ -108,6 +116,11 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
             setPadding(24, 24, 24, 24)
         }
+        // 日志落盘：写 <外部文件目录>/rlvm-log.txt（native 侧也写这个文件），
+        // 启动时把末尾读回面板，避免「重启就看不到刚才发生了什么」。
+        logFile = File(getExternalFilesDir(null) ?: filesDir, "rlvm-log.txt")
+        restoreLogFromFile()
+        movTestEnabled = readDiagSwitch("mov_test").isNotEmpty()
 
         val pickButton = Button(this).apply {
             text = getString(R.string.pick_directory)
@@ -213,12 +226,43 @@ class MainActivity : Activity() {
             addView(buttonRow(stopButton, orientationButton))
             addView(buttonRow(pathButton, fitButton))
             addView(buttonRow(pickContainerButton, containerButton))
-            addView(buttonRow(inputPadButton, android.view.View(this@MainActivity)))
+            val logButton = Button(this@MainActivity).apply {
+                text = "日志"
+                setOnClickListener { showLogOverlay(true) }
+            }
+            addView(buttonRow(inputPadButton, logButton))
+            movTestButton = Button(this@MainActivity).apply {
+                setOnClickListener { toggleMovTest() }
+            }
+            updateMovTestButtonLabel()
+            addView(buttonRow(movTestButton, android.view.View(this@MainActivity)))
+        }
+
+        // ---- 全屏日志层：面板里放不下日志，这里给它整屏 + 复制/清空 --------------
+        logOverlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xF0000000.toInt())
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            addView(buttonRow(
+                Button(this@MainActivity).apply {
+                    text = "复制日志"
+                    setOnClickListener { copyLogToClipboard() }
+                },
+                Button(this@MainActivity).apply {
+                    text = "清空"
+                    setOnClickListener { clearLog() }
+                },
+                Button(this@MainActivity).apply {
+                    text = "关闭"
+                    setOnClickListener { showLogOverlay(false) }
+                }
+            ))
             addView(
                 ScrollView(this@MainActivity).apply { addView(output) },
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
             )
+            visibility = android.view.View.GONE
         }
 
         // ---- 浮动按键栏（v0.2.1 T7.2）：默认关闭的输入层 --------------------
@@ -397,6 +441,9 @@ class MainActivity : Activity() {
             ballSize, ballSize, Gravity.END or Gravity.CENTER_VERTICAL)
         ballParams.rightMargin = dp(6)
         root.addView(ball, ballParams)
+        // 日志层最后加 = 在最上层（需要时盖住面板与游戏）。
+        root.addView(logOverlay, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // 初始状态明确为「收起」：直接 GONE，连布局都不参与。
         panelOpen = false
         panel.visibility = android.view.View.GONE
@@ -832,8 +879,84 @@ class MainActivity : Activity() {
     private var downTimeMs = 0L
 
     private fun log(text: String) {
+        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+            .format(java.util.Date())
+        val line = "[$stamp] $text"
         runOnUiThread {
-            output.text = "${output.text}\n$text"
+            output.text = "${output.text}\n$line"
         }
+        runCatching { logFile.appendText("$line\n") }
+    }
+
+    /** 启动时把日志文件末尾读回面板（重启后还能看到刚才发生了什么）。 */
+    private fun restoreLogFromFile() {
+        val tail = runCatching {
+            if (logFile.exists()) logFile.readText().takeLast(64 * 1024) else ""
+        }.getOrDefault("")
+        if (tail.isNotEmpty()) {
+            output.text = "……（上次运行留下的日志）\n$tail"
+        }
+    }
+
+    private fun showLogOverlay(show: Boolean) {
+        logOverlay.visibility = if (show) android.view.View.VISIBLE else android.view.View.GONE
+    }
+
+    private fun copyLogToClipboard() {
+        runCatching {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("rlvm-log", output.text))
+            "日志已复制到剪贴板（${output.text.length} 字）"
+        }.onSuccess { log(it) }.onFailure { log("复制日志失败：${it.message}") }
+    }
+
+    private fun clearLog() {
+        runCatching { logFile.writeText("") }
+        output.text = ""
+        log("日志已清空")
+    }
+
+    private fun updateMovTestButtonLabel() {
+        movTestButton.text = if (movTestEnabled) "影片自测：开" else "影片自测：关"
+    }
+
+    /**
+     * 影片自测开关（v0.2.3）：打开后写 `mov_test=OP00` 到诊断文件，下次点
+     * 「运行 SAF 引擎」时引擎启动就自动播 MOV/OP00.mpg（.mpg 是游戏自己的影片）。
+     * 目的：游戏自己的触发点在脚本 SEEN514（OP 场景），跑不到那里时也能验证上屏。
+     */
+    private fun toggleMovTest() {
+        movTestEnabled = !movTestEnabled
+        val ok = runCatching {
+            writeDiagSwitch("mov_test", if (movTestEnabled) "OP00" else null)
+            true
+        }.getOrDefault(false)
+        updateMovTestButtonLabel()
+        when {
+            !ok -> log("影片自测开关写入失败（诊断文件不可写？）")
+            movTestEnabled -> log("影片自测已开：下次「运行 SAF 引擎」启动时会自动播 MOV/OP00.mpg")
+            else -> log("影片自测已关：影片只在游戏脚本调用 movPlayEx 时播（SEEN514）")
+        }
+    }
+
+    /** 读诊断开关（rlvm-diag.txt）的值；不存在返回空串。 */
+    private fun readDiagSwitch(key: String): String {
+        val dir = getExternalFilesDir(null) ?: return ""
+        return runCatching {
+            File(dir, "rlvm-diag.txt").readLines()
+                .firstOrNull { it.startsWith("$key=") }
+                ?.substringAfter("=")?.trim().orEmpty()
+        }.getOrDefault("")
+    }
+
+    /** 改诊断开关：只动这一行，其它行原样保留；value = null 表示删掉这一行。 */
+    private fun writeDiagSwitch(key: String, value: String?) {
+        val dir = getExternalFilesDir(null) ?: return
+        val f = File(dir, "rlvm-diag.txt")
+        val lines = if (f.exists()) f.readLines().toMutableList() else mutableListOf()
+        lines.removeAll { it.startsWith("$key=") }
+        if (value != null) lines.add("$key=$value")
+        f.writeText(lines.joinToString("\n") + "\n")
     }
 }

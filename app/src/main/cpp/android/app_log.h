@@ -1,0 +1,23 @@
+// 应用日志文件（v0.2.3）
+//
+// 为什么需要：真机上看不到 logcat（config GUI 迭代后 App 面板里的日志是唯一入口），
+// 而 native 侧的关键事件（影片起播/解码结束、熔断等）原本只进 logcat，用户看不到。
+// 这里提供一个「同时写 logcat + 追加到 <外部文件目录>/rlvm-log.txt」的入口，
+// Kotlin 侧的 log() 也写同一个文件，面板里的「日志」视图直接显示它。
+
+#ifndef RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_
+#define RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_
+
+#include <string>
+
+namespace rlvm_android {
+
+// 应用启动时告诉 native 日志文件放哪（一般是 <外部文件目录>/rlvm-log.txt）。
+void SetAppLogFile(const std::string& path);
+
+// 写一行：照旧进 logcat，同时追加到上面的日志文件。
+void AppendAppLogLine(const std::string& line);
+
+}  // namespace rlvm_android
+
+#endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_

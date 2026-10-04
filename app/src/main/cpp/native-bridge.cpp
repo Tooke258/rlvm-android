@@ -40,6 +40,7 @@
 #include "android/log_redirect.h"
 #include "android/mov_probe.h"
 #include "android/mov_player.h"
+#include "android/app_log.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
@@ -768,6 +769,8 @@ void RunEngineOn(System& system,
         mov_id, 0, 0, 799, 599, diag.mov_test_ms);
     report += std::string("mov_test: ") + (mov_ok ? "起播 " : "打不开 ") +
               mov_id + "\n";
+    rlvm_android::AppendAppLogLine(std::string("mov_test: ") +
+                                   (mov_ok ? "起播 " : "打不开 ") + mov_id);
   }
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
@@ -1148,6 +1151,8 @@ void SetDiagnosticsDir(JNIEnv* env, jobject /*thiz*/, jstring jdir) {
   g_diag_dir = JStringToUtf8(env, jdir);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "diagnostics dir = %s",
                       g_diag_dir.c_str());
+  // native 侧的关键日志也落一份到应用日志文件（用户看不到 logcat）。
+  rlvm_android::SetAppLogFile(g_diag_dir + "/rlvm-log.txt");
   // 上游 System::GetHomeDirectory() 依赖 HOME/HOMEDRIVE/USERPROFILE，而 Android
   // 一个都没有——缺它会在"计算存档目录"时抛
   // "Could not find location of home directory."，存档与 Config 全部失败。

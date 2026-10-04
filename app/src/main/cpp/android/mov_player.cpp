@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "android/android_graphics.h"
+#include "android/app_log.h"
 #include "systems/base/rect.h"
 #include "utilities/file.h"
 
@@ -157,6 +158,7 @@ bool MovPlayer::Play(const std::string& file_id, int x, int y, int w, int h,
   const int fd = OpenGameFileFd(file_id);
   if (fd < 0) {
     __android_log_print(ANDROID_LOG_WARN, kTag, "mov: 打不开 %s", file_id.c_str());
+    AppendAppLogLine("mov: 打不开 " + file_id + "（OpenGameFileFd 返回 -1）");
     return false;
   }
 
@@ -180,6 +182,9 @@ bool MovPlayer::Play(const std::string& file_id, int x, int y, int w, int h,
   impl_->worker = std::thread([this, fd]() { impl_->DecodeLoop(fd); });
   __android_log_print(ANDROID_LOG_INFO, kTag, "mov: play %s rect=%d,%d %dx%d",
                       file_id.c_str(), x, y, w, h);
+  AppendAppLogLine("mov: 起播 " + file_id + " 矩形 " + std::to_string(x) + "," +
+                   std::to_string(y) + " " + std::to_string(w) + "x" +
+                   std::to_string(h));
   return true;
 }
 
@@ -530,6 +535,9 @@ void MovPlayer::Impl::DecodeLoop(int fd) {
   __android_log_print(ANDROID_LOG_INFO, kTag,
                       "mov: 解码线程结束（帧=%lld，丢=%lld）", decoded.load(),
                       dropped);
+  AppendAppLogLine("mov: 播放结束 " + file_id + " 解出帧=" +
+                   std::to_string(decoded.load()) + " 跳过=" +
+                   std::to_string(dropped));
 }
 
 }  // namespace rlvm_android

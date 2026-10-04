@@ -82,6 +82,8 @@ Start-Sleep -Seconds 7
 | `time_budget_ms=N` | 单次运行的执行时间片，缺省 0（**不限时**，靠「停止引擎」收尾） |
 | `max_instructions=N` | 指令条数上限 |
 | `frame_log_every=N` | 每 N 帧打一条帧日志；**缺省 0 = 不打**，1 = 每帧打（要扫全屏统计非黑像素，只有在排查渲染时开） |
+| `mov_test=OP00` | **影片自测**（v0.2.3）：引擎启动就自动播 `MOV/OP00.mpg`（App 面板上的「影片自测」按钮会写这一行）。用于游戏自己的触发点（脚本 SEEN514）跑不到时验证上屏 |
+| `mov_test_ms=N` | 影片自测的时长上限（毫秒）；不写 = 整片播完 |
 
 **注意**：应用默认不限时运行，报告只在「停止引擎」或达到 `time_budget_ms` /
 `max_instructions` 时才打印。自动化验证请显式设置 `time_budget_ms`。
