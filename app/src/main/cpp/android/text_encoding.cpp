@@ -48,15 +48,13 @@ std::string HexPreview(const std::string& bytes, size_t max) {
 
 std::string NormalizeTitleToCP932(const std::string& title, int encoding) {
   if (title.empty() || encoding == 0) return title;  // 已经是 CP932
-  // 真机实测（D-033）：cp932toUnicode(title, encoding) 对 GBK 字节是**恒等**（它按
-  // CP932 位解，参数只管宽度/字形变换）。真正的 GBK↔JIS 转换在 rlBabel 的代码页设置里：
-  // Cp936::JisEncodeString 按 GBK 位读入、写出 JIS(≈CP932) 字节。
+  // 真机实测（D-033，两步死路都踩过）：
+  // ① cp932toUnicode(title, encoding) 永远按 CP932 位解（参数只管宽度变换）→ 对 GBK 恒等；
+  // ② Cp936::JisEncodeString 输出的是 rlBabel 内部 JIS 表示，不是 CP932 字节形式。
+  // 正确路线 = 源编码 → Unicode（Cp936::ConvertString，查 gbk_to_uni[]）→ CP932 字节
+  // （本文件下面的 Cp932Table()）。
   const Codepage& cp = Cp::instance(encoding);
-  std::vector<char> buf(title.size() * 2 + 8, 0);
-  cp.JisEncodeString(title.c_str(), buf.data(), buf.size() - 1);
-  const std::string converted(buf.data());
-  if (!converted.empty() && converted != title) return converted;
-  const std::wstring ws = cp932toUnicode(title, encoding);
+  const std::wstring ws = cp.ConvertString(title);
   if (ws.empty()) return title;
   const auto& table = Cp932Table();
   std::string out;
