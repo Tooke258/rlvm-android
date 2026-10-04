@@ -241,6 +241,10 @@ struct DiagOptions {
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
   bool blit_stats = false;
+  // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
+  bool blit_fast = true;
+  // 诊断：dirty_gate=0 退回 v0.2.0 的"每轮无条件合帧"。
+  bool dirty_gate = true;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -283,6 +287,10 @@ DiagOptions LoadDiagOptions() {
       options.audio_selftest = (number != 0);
     } else if (key == "blit_stats") {
       options.blit_stats = (number != 0);
+    } else if (key == "blit_fast") {
+      options.blit_fast = (number != 0);
+    } else if (key == "dirty_gate") {
+      options.dirty_gate = (number != 0);
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -661,6 +669,8 @@ void RunEngineOn(System& system,
   g_frame_log_every = diag.frame_log_every;
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);
+  SetBlitFastEnabled(diag.blit_fast);
+  SetDirtyGateEnabled(diag.dirty_gate);
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 
@@ -670,6 +680,8 @@ void RunEngineOn(System& system,
             ToDisplayUtf8(gameexe("REGNAME").ToString("")) + "\")\n";
   report += "diagnostics: trace=" + std::string(diag.trace ? "on" : "off") +
             " blit_stats=" + std::string(diag.blit_stats ? "on" : "off") +
+            " blit_fast=" + std::string(diag.blit_fast ? "on" : "off") +
+            " dirty_gate=" + std::string(diag.dirty_gate ? "on" : "off") +
             " time_budget_ms=" + std::to_string(diag.time_budget_ms) +
             " max_instructions=" + std::to_string(max_instructions) +
             " frame_log_every=" + std::to_string(diag.frame_log_every) + "\n";

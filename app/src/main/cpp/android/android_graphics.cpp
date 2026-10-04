@@ -26,6 +26,9 @@ GraphicsBlitStats g_blit_stats;
 // 需要时用诊断文件里的 blit_stats=1 打开。
 bool g_blit_stats_enabled = false;
 
+// D-022 的 blit 优化开关（诊断用）：false = 退回保守路径（不裁剪、不走 memcpy）。
+bool g_blit_fast_enabled = true;
+
 // 「谁把屏幕标脏」的统计（诊断用）：见头文件 SetDirtyStatsEnabled 的说明。
 bool g_dirty_stats_enabled = false;
 uint64_t g_dirty_counts[5] = {0, 0, 0, 0, 0};
@@ -315,7 +318,8 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
   // 不必逐像素扫过。实测这一条把一次合成从 ~7ms 降到亚毫秒级。
   Rect src_rect = src;
   Rect dst_rect = dst;
-  if (content_x0_ < content_x1_ && content_y0_ < content_y1_) {
+  if (g_blit_fast_enabled && content_x0_ < content_x1_ &&
+      content_y0_ < content_y1_) {
     const int nx0 = std::max(src.x(), content_x0_);
     const int ny0 = std::max(src.y(), content_y0_);
     const int nx1 = std::min(src.x() + src.width(), content_x1_);
@@ -382,7 +386,8 @@ void AndroidSurface::BlitToSurface(Surface& dest_surface,
 
     // 整行都不透明时直接整段拷贝：这是背景层与全屏推屏最常见的情形。
     // 源面已确认整面 alpha 全 255 时同样成立——原逐像素路径此时走的也是 d = s。
-    if (base_alpha == 255 && (!use_src_alpha || pixels_opaque_)) {
+    if (g_blit_fast_enabled && base_alpha == 255 &&
+        (!use_src_alpha || pixels_opaque_)) {
       const size_t count = static_cast<size_t>(x_end - x_begin);
       std::memcpy(d_row + x_begin, s_row + x_begin, count * sizeof(uint32_t));
       local_pixels += count;
@@ -503,6 +508,8 @@ GraphicsBlitStats TakeGraphicsBlitStats() {
 }
 
 void SetBlitStatsEnabled(bool enabled) { g_blit_stats_enabled = enabled; }
+
+void SetBlitFastEnabled(bool enabled) { g_blit_fast_enabled = enabled; }
 
 void SetDirtyStatsEnabled(bool enabled) { g_dirty_stats_enabled = enabled; }
 

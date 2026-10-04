@@ -45,6 +45,12 @@ GraphicsBlitStats TakeGraphicsBlitStats();
 void SetBlitStatsEnabled(bool enabled);
 
 /**
+ * 诊断开关：关闭 D-022 的 blit 优化（“内容包围盒裁剪”与“不透明整行 memcpy”），
+ * 退回保守的逐像素 alpha 合成。用于二分过场黑闪。默认 true（使用优化）。
+ */
+void SetBlitFastEnabled(bool enabled);
+
+/**
  * 「谁把屏幕标脏」的统计（诊断帧率用）。
  *
  * 合帧改成脏标记驱动（D-022）之后，如果实际合帧率明显低于主循环轮次，就必须分清
