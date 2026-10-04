@@ -76,14 +76,29 @@
 - 实际内容比预定计划多两项：**实时动画平滑度的根因修复**（D-023）与
   **存档链路收口**（D-024 还原 / D-025 通用性边界）。
 
-### v0.2.2 候选待办
+### v0.2.2 计划（主线：DLL 输入模拟 + 小游戏）
 
-| 优先级 | 事项 | 依据 |
+打包处理——主线是「让 DLL 驱动的玩法真正能玩」，其余顺带：
+
+| 优先级 | 事项 | 依据 / 现状 |
 | --- | --- | --- |
-| 高 | **直接杀进程会丢 `global.sav.gz`**：槽位文件已写入，但"槽位已占用"的 global memory 标记与配置改动丢失 → LOAD 列表列不出来。修法：在挂起/退到后台时于引擎线程落盘 | `dev-log/LBEX-SAVE-LOAD.jsonl`；`docs/PROGRESS.md` 已知缺口 |
-| 中 | **引擎标准存档 UI 缺失**（`Platform::InvokeSyscomStandardUI` 为空）→ 把存档交给引擎界面的作品点不动 | D-025 |
-| 中 | `exec_ignore_force_wait` 是否保留：用 `rlvm-diag.txt` 做一次 A/B | `docs/FRAMERATE-INVESTIGATION.md` 6.5 |
+| 高（主线） | **LB 棒球小游戏（`PT00.dll`）** | `systems/base/little_busters_pt00dll.cc` 目前只记录调用并 `return 0`；小游戏默认被 `machine/game_hacks.cc` 的 `LB_SkipBaseball` 跳过（开关 `SetLBSkipBaseball`，由 `rlvm-diag.txt` 的 `lb_minigame=1` 打开） |
+| 高（主线） | **DLL 输入模拟**：给 `PT00` 这类要读鼠标/键盘的 DLL 提供输入通道，并预留**可脚本化的模拟输入**以便自动化验证 | 同上 |
+| 高（顺带） | **直接杀进程会丢 `global.sav.gz`**：槽位文件已写入，但"槽位已占用"的 global memory 标记与配置改动丢失 → LOAD 列表列不出来。修法：在挂起/退到后台时于引擎线程落盘 | `dev-log/LBEX-SAVE-LOAD.jsonl`；`docs/PROGRESS.md` 已知缺口 |
+| 中 | 引擎标准存档 UI 缺失（`Platform::InvokeSyscomStandardUI` 为空） | D-025 |
+| 中 | `exec_ignore_force_wait` 是否保留：做一次 A/B | `docs/FRAMERATE-INVESTIGATION.md` 6.5 |
 | 低 | T7.3 备份项：面板显示当前文本容器文件名；`docs/PROGRESS.md` 与实际能力对齐 | 本文件 T7.3 |
+
+**取证手段（已就绪，不必先写代码）**：
+
+1. `rlvm-diag.txt` 设 `lb_minigame=1` → 脚本真正进入小游戏，`little_busters_pt00dll.cc`
+   的调用记录器把 `func` / 4 个参数 / 场景与行号打进 logcat；
+2. 用 `dump_scenario` 反汇编小游戏所在场景，从**脚本怎么用返回值**反推每个 `func` 的语义
+   —— 这条路径不依赖原版 `PT00.dll`。
+
+注意取证的一个天花板：记录器只能看到「DLL 返回 0」时脚本走到的分支，某些分支可能因此
+永不触发；所以第 2 步（读脚本）是必要的补充，不能只靠调用日志。
+
 
 ### T7.1 点击补齐：未渲染区域也要能推进文字（已完成）
 
