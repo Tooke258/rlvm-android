@@ -139,6 +139,19 @@ MovPlayer& MovPlayer::Instance() {
 
 bool MovPlayer::Play(const std::string& file_id, int x, int y, int w, int h,
                      int max_ms) {
+  // 同一部影片正在播时不要推倒重来：KW/LBEX 的 OP 场景会连着调
+  // `movPlayEx("OP00",...)` 与 `movPlayExC("OP00",...)`，重启一次会看到明显顿挫。
+  if (playing() && impl_->file_id == file_id) {
+    std::lock_guard<std::mutex> lock(impl_->m);
+    impl_->x = x;
+    impl_->y = y;
+    impl_->w = w;
+    impl_->h = h;
+    __android_log_print(ANDROID_LOG_INFO, kTag,
+                        "mov: %s 已在播，忽略重复起播（只更新矩形）",
+                        file_id.c_str());
+    return true;
+  }
   Stop();  // 一次只放一个影片
 
   const int fd = OpenGameFileFd(file_id);
