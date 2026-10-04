@@ -17,6 +17,7 @@
 
 #include "android/android_graphics.h"
 #include "android/app_log.h"
+#include "android/audio_engine.h"
 #include "systems/base/rect.h"
 #include "utilities/file.h"
 
@@ -74,7 +75,25 @@ void I420ToRgbaScaled(const uint8_t* y, const uint8_t* u, const uint8_t* v,
   }
 }
 
-// au 里从 from 起找下一个 picture 起始码（00 00 01 00）。
+// MPEG-1/2 音频帧头（0xFFEx）：解析出取样率与声道数——配置 Android 音频解码器
+// 时这两项是必需的，不给就会 configure 失败（看起来像"没有解码器"）。
+bool ParseMp2Header(const uint8_t* p, size_t n, int* rate, int* channels) {
+  for (size_t i = 0; i + 4 <= n; ++i) {
+    if (p[i] != 0xFF || (p[i + 1] & 0xE0) != 0xE0) continue;
+    const int version = (p[i + 1] >> 3) & 0x03;  // 3=MPEG-1, 2=MPEG-2, 0=MPEG-2.5
+    const int layer = (p[i + 1] >> 1) & 0x03;    // 2=Layer II, 1=Layer III
+    const int sridx = (p[i + 2] >> 2) & 0x03;
+    const int mode = (p[i + 3] >> 6) & 0x03;     // 3 = 单声道
+    if (layer == 0 || sridx == 3) continue;      // 非法组合
+    static const int kMpeg1Rates[3] = {44100, 48000, 32000};
+    static const int kMpeg2Rates[3] = {22050, 24000, 16000};
+    *rate = (version == 3) ? kMpeg1Rates[sridx] : kMpeg2Rates[sridx];
+    *channels = (mode == 3) ? 1 : 2;
+    return true;
+  }
+  return false;
+}
+
 size_t FindPictureStart(const std::vector<uint8_t>& b, size_t from) {
   if (b.size() < 4) return std::string::npos;
   const size_t last = b.size() - 4;
@@ -90,6 +109,38 @@ struct Frame {
   std::vector<uint8_t> rgba;  // 已经转成「目标矩形大小」的 RGBA
   int w = 0, h = 0;
   long long pts_ms = 0;
+};
+
+/**
+ * 影片音频源（v0.2.3 / M4）：把解码出来的 PCM 塞进环形缓冲，交给 AudioEngine
+ * 当普通音源用（外面再套一层 ResamplingSource 把 44.1kHz 重采样到 48kHz）。
+ *
+ * 关键点：**在影片还没放完之前 ReadFrames 绝不返回 0**——AudioEngine 把「0 帧」
+ * 当成音源结束，会让通道提前收摊。数据没跟上时用静音顶上（听感上是极短的空白，
+ * 但时间轴不会错位）。
+ */
+class MovieAudioSource : public AudioSource {
+ public:
+  explicit MovieAudioSource(size_t capacity_frames) : ring_(capacity_frames) {}
+
+  // 影片解码线程调用：写入 PCM（16-bit、双声道）。
+  size_t Push(const int16_t* pcm, size_t frames) { return ring_.Write(pcm, frames); }
+  size_t Space() const { return ring_.Space(); }
+  void MarkEnded() { ended_.store(true); }
+  bool ended() const { return ended_.load(); }
+
+  size_t ReadFrames(int16_t* out, size_t frames) override {
+    const size_t got = ring_.Read(out, frames);
+    if (got > 0) return got;
+    if (ended_.load()) return 0;  // 影片放完且缓冲排空：正常收尾
+    std::memset(out, 0, frames * kAudioChannels * sizeof(int16_t));
+    return frames;  // 还没数据：给静音，别让通道以为放完了
+  }
+  bool Rewind() override { return false; }
+
+ private:
+  FrameRing ring_;
+  std::atomic<bool> ended_{false};
 };
 
 }  // namespace
@@ -117,6 +168,23 @@ struct MovPlayer::Impl {
   // 显示用表面（只有引擎线程碰它）
   std::shared_ptr<AndroidSurface> surface;
   int surface_w = 0, surface_h = 0;
+
+  // ---- 影片音频（M4）----
+  // source 交给 AudioEngine 之后由它持有；解码线程用裸指针往环形缓冲推 PCM。
+  std::unique_ptr<MovieAudioSource> audio_source;
+  MovieAudioSource* audio_source_raw = nullptr;
+  std::atomic<bool> audio_started{false};
+  std::atomic<bool> audio_failed{false};
+  int audio_src_channels = 2;
+  // 音频解码线程用（只在解码线程里碰）
+  AMediaCodec* audio_codec = nullptr;
+  AMediaFormat* audio_fmt = nullptr;
+
+  // 影片解码线程拿到音频输出格式后调：起播音频通道（带重采样）。
+  void StartAudioIfNeeded(int rate, int channels, int encoding);
+  // 把一段 PCM（解码器输出）推给音频源；ring 满时等引擎线程消费。
+  void PushPcm(const uint8_t* pcm, size_t bytes);
+  void PushLoop(MovieAudioSource* dst, const int16_t* pcm, size_t frames);
 
   int QueueDepth() {
     std::lock_guard<std::mutex> lock(m);
@@ -175,6 +243,12 @@ bool MovPlayer::Play(const std::string& file_id, int x, int y, int w, int h,
     impl_->clock_start_ms = 0;
     impl_->dropped = 0;
   }
+  // 音频：先把源准备好（真正起播要等解码器报出取样率/声道数）。
+  impl_->audio_started = false;
+  impl_->audio_failed = false;
+  impl_->audio_src_channels = 2;
+  impl_->audio_source.reset(new MovieAudioSource(kAudioSampleRate * 2));  // 2 秒
+  impl_->audio_source_raw = impl_->audio_source.get();
   impl_->decoded = 0;
   impl_->stop = false;
   impl_->finished = false;
@@ -194,6 +268,11 @@ void MovPlayer::Stop() {
     impl_->cv.notify_all();
     impl_->worker.join();
   }
+  // 音频通道要在解码线程停掉之后再关（源对象归 AudioEngine 所有）。
+  AudioEngine::Instance().Stop(kMovieAudioChannel);
+  impl_->audio_source_raw = nullptr;
+  impl_->audio_source.reset();
+  impl_->audio_started = false;
   std::lock_guard<std::mutex> lock(impl_->m);
   impl_->alive = false;
   impl_->queue.clear();
@@ -254,6 +333,82 @@ void MovPlayer::CompositeInto(Surface& dst) {
                                 255, false);
 }
 
+void MovPlayer::Impl::StartAudioIfNeeded(int rate, int channels, int encoding) {
+  if (audio_started.load() || audio_failed.load()) return;
+  if (rate <= 0 || channels <= 0) return;
+  // 只认 16-bit PCM；单声道复制成双声道（引擎的混音是固定的双声道）。
+  if (encoding != 0 && encoding != 2) {
+    AppendAppLogLine("mov: 音频 PCM 编码 " + std::to_string(encoding) +
+                     " 不支持，只有画面");
+    audio_failed = true;
+    return;
+  }
+  if (channels != 1 && channels != 2) {
+    AppendAppLogLine("mov: 音频 " + std::to_string(channels) + " 声道不支持，只有画面");
+    audio_failed = true;
+    return;
+  }
+  std::unique_ptr<MovieAudioSource> src = std::move(audio_source);
+  if (src == nullptr) return;
+  audio_src_channels = channels;
+  audio_started = true;
+  // AudioEngine 是**懒启动**的（游戏放第一段声音时才开 AAudio 流），影片可能比
+  // 它更早出声，所以这里要自己保证引擎起来了，否则通道根本不存在（Play 直接返回）。
+  AudioEngine& engine = AudioEngine::Instance();
+  if (!engine.Start()) {
+    AppendAppLogLine("mov: 音频引擎启动失败（" + engine.LastError() +
+                     "），本片只有画面");
+    audio_failed = true;
+    audio_started = false;
+    return;
+  }
+  // 用现成的 ResamplingSource 把影片的取样率转到引擎的 48kHz（BGM 也是这条路）。
+  auto source = std::unique_ptr<AudioSource>(
+      new ResamplingSource(std::move(src), rate, kAudioSampleRate));
+  engine.Play(kMovieAudioChannel, std::move(source), false, 255);
+  AppendAppLogLine("mov: 音频起播 " + std::to_string(rate) + "Hz " +
+                   std::to_string(channels) + "ch → 48kHz");
+}
+
+void MovPlayer::Impl::PushPcm(const uint8_t* pcm, size_t bytes) {
+  MovieAudioSource* dst = audio_source_raw;
+  if (dst == nullptr || pcm == nullptr || bytes < 2) return;
+  const int16_t* in = reinterpret_cast<const int16_t*>(pcm);
+  const size_t in_channels = static_cast<size_t>(audio_src_channels);
+  const size_t frames = bytes / 2 / in_channels;
+  std::vector<int16_t> stereo;
+  if (in_channels == 2) {
+    PushLoop(dst, in, frames);
+  } else {
+    stereo.resize(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+      stereo[i * 2] = in[i];
+      stereo[i * 2 + 1] = in[i];
+    }
+    PushLoop(dst, stereo.data(), frames);
+  }
+}
+
+// 环形缓冲满时等音频引擎消费（解码线程自己不能一直空转）。
+void MovPlayer::Impl::PushLoop(MovieAudioSource* dst, const int16_t* pcm,
+                               size_t frames) {
+  size_t off = 0;
+  int guard = 0;
+  while (off < frames && !stop.load()) {
+    const size_t put = dst->Push(pcm + off * kAudioChannels, frames - off);
+    off += put;
+    if (put == 0 && ++guard > 2000) break;  // 熔断：约 20 秒还没消费完
+    if (put == 0) {
+      std::unique_lock<std::mutex> lock(m);
+      cv.wait_for(lock, std::chrono::milliseconds(10), [&]() {
+        return stop.load() || dst->Space() > 0;
+      });
+    } else {
+      guard = 0;
+    }
+  }
+}
+
 void MovPlayer::Impl::DecodeLoop(int fd) {
   AMediaCodec* codec = nullptr;
   AMediaFormat* fmt = nullptr;
@@ -264,6 +419,7 @@ void MovPlayer::Impl::DecodeLoop(int fd) {
   std::vector<uint8_t> buf;  // PS 读缓冲
   size_t pos = 0;
   std::vector<uint8_t> au;  // 当前访问单元（ES 字节）
+  std::vector<uint8_t> au_audio_hint;  // 头几 KB 音频 ES：用来解 MP2 帧头
   size_t au_scan = 0;
   bool saw_first_picture = false;
   const long long t0 = SteadyMs();
@@ -410,6 +566,97 @@ void MovPlayer::Impl::DecodeLoop(int fd) {
     return off >= n;
   };
 
+  // ---- 音频（M4）-------------------------------------------------------
+  // 与视频共用同一个解复用游标：音画天然对应到同一个文件位置。
+  auto ensure_audio_codec = [&]() -> bool {
+    if (audio_codec != nullptr) return true;
+    if (audio_failed.load()) return false;
+    // 先解析 MP2 帧头：Android 的音频解码器 configure 必须要 sample-rate /
+    // channel-count，不给就会失败（现象是「一个解码器都建不起来」）。
+    int rate = 0, channels = 0;
+    if (!ParseMp2Header(au_audio_hint.data(), au_audio_hint.size(), &rate,
+                        &channels)) {
+      return false;  // 还没拿到完整帧头，等下一包
+    }
+    static const char* kMimes[] = {"audio/mpeg", "audio/mpeg-L2", "audio/mp3"};
+    for (const char* mime : kMimes) {
+      AMediaCodec* c = AMediaCodec_createDecoderByType(mime);
+      if (c == nullptr) continue;
+      AMediaFormat* f = AMediaFormat_new();
+      AMediaFormat_setString(f, AMEDIAFORMAT_KEY_MIME, mime);
+      AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_SAMPLE_RATE, rate);
+      AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_CHANNEL_COUNT, channels);
+      media_status_t st = AMediaCodec_configure(c, f, nullptr, nullptr, 0);
+      if (st == AMEDIA_OK) st = AMediaCodec_start(c);
+      if (st == AMEDIA_OK) {
+        audio_codec = c;
+        audio_fmt = f;
+        AppendAppLogLine(std::string("mov: 音频解码器 = ") + mime + "  " +
+                         std::to_string(rate) + "Hz " +
+                         std::to_string(channels) + "ch");
+        return true;
+      }
+      AppendAppLogLine(std::string("mov: 音频解码器 ") + mime +
+                       " configure 失败 -> " + std::to_string((int)st));
+      AMediaCodec_delete(c);
+      AMediaFormat_delete(f);
+    }
+    AppendAppLogLine("mov: 没有能解这款 MP2 的音频解码器，本片只出画面");
+    audio_failed = true;
+    return false;
+  };
+
+  auto drain_audio = [&]() {
+    if (audio_codec == nullptr) return;
+    for (int g = 0; g < 64 && !stop; ++g) {
+      AMediaCodecBufferInfo info;
+      const ssize_t ob = AMediaCodec_dequeueOutputBuffer(audio_codec, &info, 0);
+      if (ob == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+        AMediaFormat* of = AMediaCodec_getOutputFormat(audio_codec);
+        int rate = 0, ch = 0, enc = 2;
+        if (of != nullptr) {
+          AMediaFormat_getInt32(of, AMEDIAFORMAT_KEY_SAMPLE_RATE, &rate);
+          AMediaFormat_getInt32(of, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
+          if (!AMediaFormat_getInt32(of, AMEDIAFORMAT_KEY_PCM_ENCODING, &enc)) {
+            enc = 2;
+          }
+          AMediaFormat_delete(of);
+        }
+        StartAudioIfNeeded(rate, ch, enc);
+        continue;
+      }
+      if (ob < 0) break;
+      size_t cap = 0;
+      uint8_t* buf = AMediaCodec_getOutputBuffer(audio_codec, (size_t)ob, &cap);
+      if (buf != nullptr && info.size > 0) {
+        PushPcm(buf + info.offset, static_cast<size_t>(info.size));
+      }
+      AMediaCodec_releaseOutputBuffer(audio_codec, (size_t)ob, false);
+    }
+  };
+
+  auto feed_audio = [&](const uint8_t* data, size_t n) -> bool {
+    size_t off = 0;
+    int fail = 0;
+    while (off < n && !stop) {
+      if (++fail > kFeedFailMax) return false;  // 熔断
+      const ssize_t ib = AMediaCodec_dequeueInputBuffer(audio_codec, 5000);
+      if (ib < 0) {
+        drain_audio();
+        continue;
+      }
+      size_t cap = 0;
+      uint8_t* in = AMediaCodec_getInputBuffer(audio_codec, (size_t)ib, &cap);
+      if (in == nullptr || cap == 0) continue;
+      const size_t put = std::min(cap, n - off);
+      std::memcpy(in, data + off, put);
+      AMediaCodec_queueInputBuffer(audio_codec, (size_t)ib, 0, put, 0, 0);
+      off += put;
+      drain_audio();
+    }
+    return off >= n;
+  };
+
   // ---- 主循环：PS 解复用 -----------------------
   while (!stop) {
     if (max_ms > 0 && SteadyMs() - t0 > max_ms) {
@@ -431,11 +678,33 @@ void MovPlayer::Impl::DecodeLoop(int fd) {
       const size_t len = (buf[pos + 4] << 8) | buf[pos + 5];
       if (!ensure(6 + len)) break;
       pos += 6 + len;
-    } else if (sc >= 0xC0 && sc <= 0xDF) {  // 音频（M4 再处理）
+    } else if (sc >= 0xC0 && sc <= 0xDF) {  // 音频 PES（M4）
       if (!ensure(6)) break;
       const size_t len = (buf[pos + 4] << 8) | buf[pos + 5];
+      if (len == 0) {
+        pos += 4;
+        continue;
+      }
       if (!ensure(6 + len)) break;
-      pos += 6 + len;
+      size_t q = pos + 6;
+      const size_t end = pos + 6 + len;
+      while (q < end && buf[q] == 0xFF) ++q;  // pack 层填充
+      if (q + 2 < end && (buf[q] & 0xC0) == 0x40) {
+        // 音频 PES 头与视频同构：2 字节 +（PTS/DTS 或 1 字节标记）
+        const uint8_t nib = (buf[q + 2] >> 4) & 0x0F;
+        q += 2 + (nib == 0x2 ? 5 : (nib == 0x3 ? 10 : 1));
+      }
+      if (q < end) {
+        if (audio_codec == nullptr && !audio_failed.load() &&
+            au_audio_hint.size() < 4096) {
+          au_audio_hint.insert(au_audio_hint.end(), buf.begin() + q,
+                               buf.begin() + end);
+        }
+        if (ensure_audio_codec()) {
+          feed_audio(buf.data() + q, end - q);
+        }
+      }
+      pos = end;
     } else if (sc >= 0xE0 && sc <= 0xEF) {  // 视频 PES
       if (!ensure(6)) break;
       const size_t len = (buf[pos + 4] << 8) | buf[pos + 5];
@@ -529,6 +798,28 @@ void MovPlayer::Impl::DecodeLoop(int fd) {
     AMediaCodec_delete(codec);
   }
   if (fmt != nullptr) AMediaFormat_delete(fmt);
+  // 音频收尾：把最后的 PCM 拉干净，再告诉音源「没有更多数据了」——
+  // 之后 MovieAudioSource 会在环形缓冲排空后正常收尾。
+  if (audio_codec != nullptr) {
+    const ssize_t ib = AMediaCodec_dequeueInputBuffer(audio_codec, 20000);
+    if (ib >= 0) {
+      AMediaCodec_queueInputBuffer(audio_codec, (size_t)ib, 0, 0, 0,
+                                   AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+    }
+    for (int i = 0; i < 100 && !stop.load(); ++i) {
+      drain_audio();
+      if (audio_source_raw == nullptr) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    AMediaCodec_stop(audio_codec);
+    AMediaCodec_delete(audio_codec);
+    audio_codec = nullptr;
+  }
+  if (audio_fmt != nullptr) {
+    AMediaFormat_delete(audio_fmt);
+    audio_fmt = nullptr;
+  }
+  if (audio_source_raw != nullptr) audio_source_raw->MarkEnded();
   ::close(fd);
   finished = true;
   alive = false;

@@ -576,8 +576,9 @@ bool AudioEngine::Start() {
   if (running_.load()) return true;
 
   if (channels_.empty()) {
-    channels_.reserve(kAudioMaxChannels);
-    for (int i = 0; i < kAudioMaxChannels; ++i) {
+    // +1：最后一路（kMovieAudioChannel）是影片音频专用的，见 audio_engine.h。
+    channels_.reserve(kAudioMaxChannels + 1);
+    for (int i = 0; i <= kMovieAudioChannel; ++i) {
       auto channel = std::unique_ptr<Channel>(new Channel());
       channel->ring.reset(new FrameRing(kRingFrames));
       channels_.push_back(std::move(channel));

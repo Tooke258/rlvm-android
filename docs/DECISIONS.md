@@ -727,3 +727,28 @@ mov_test: 起播 MOV/OP00.mpg
 ```
 
 **注意**：`mov_test` 开着时每次启动引擎都会播影片；看完记得在面板里关掉。
+
+## D-030 MOV 影片音频（v0.2.3 / M4）：直接复用现有 AAudio 混音通路
+
+**日期**：2026-10-04　**状态**：真机通过
+
+**结论：可以复用，而且几乎没有新造轮子。** 影片音频走的是和 BGM/语音同一条链：
+`AudioSource` → `ResamplingSource`（44.1kHz→48kHz）→ `AudioEngine` 的通道 → AAudio 回调混音。
+
+- 解复用：音频 PES（`0xC0..0xDF`）与视频共用同一个游标，头结构与视频同构
+  （`[0xFF 填充] <2 字节> [PTS/DTS 或 1 字节标记] <ES>`），所以音画天然对齐到同一个文件位置。
+- 解码：MediaCodec（mime 依次试 `audio/mpeg` / `audio/mpeg-L2` / `audio/mp3`；本机 MTK 的
+  `audio/mpeg` 就能解这款 MPEG-1 Layer II）。**必须**先给 `sample-rate` / `channel-count`，
+  这两项从 MP2 帧头（`0xFFEx`）解析——不给的话 configure 全失败，现象像「没有解码器」。
+- 播放：`MovieAudioSource`（内置 FrameRing，2 秒容量）+ 现成的 `ResamplingSource`，
+  用 `AudioEngine::Play`。AudioEngine 新增一路**影片专用通道** `kMovieAudioChannel`
+  （= `kAudioMaxChannels`，游戏用 0..31），混音回调无需改动（它本来就遍历 `channels_`）。
+- 关键细节：`MovieAudioSource::ReadFrames` 在影片结束前**绝不返回 0**（引擎把 0 当音源结束），
+  数据没跟上时用静音顶住时间轴；影片结束（`MarkEnded`）后环形缓冲排空即自然收尾。
+- 另一个坑：`AudioEngine` 是懒启动的（游戏放第一段声音才开 AAudio 流），影片可能更早出声，
+  所以起播前要自己 `AudioEngine::Start()`。
+
+**真机证据**：`mov: 音频起播 44100Hz 2ch → 48kHz` → `AAudio stream started` →
+播放期间 `active_channels=1 peak_in_window=25886`（真实波形）；25 秒到点后自动收尾。
+
+**余项**：点击跳过、`movPlayExC` 的 C 语义、`movWait` 超时、音画同步细调（当前都按系统时钟）。

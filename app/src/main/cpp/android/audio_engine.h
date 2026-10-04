@@ -27,6 +27,9 @@ namespace rlvm_android {
 constexpr int kAudioSampleRate = 48000;
 constexpr int kAudioChannels = 2;
 constexpr int kAudioMaxChannels = 32;
+// 影片音频专用的混音通道（v0.2.3 / M4）：游戏自己用 0..31，多出来的这一路留给
+// MOV 播放器，避免和 BGM/SE/语音的通道号抢。
+constexpr int kMovieAudioChannel = kAudioMaxChannels;
 
 /** 交错立体声 16-bit PCM 的帧数统计。 */
 class FrameRing {

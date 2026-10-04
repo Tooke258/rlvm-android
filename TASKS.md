@@ -169,6 +169,13 @@ MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状
 - 真机：`mov_test=OP00` 自测开关起播 KW 的 OP，全屏正常、内容在动，引擎仍 ~123fps。
 - 还剩：M4（MP2 音频 + 点击跳过 + `movPlayExC` 语义）、以及用脚本触发点（SEEN514）复核一遍。
 
+**v0.2.3 进展之三（2026-10-04）：M4 影片音频通过**
+
+- 影片音频直接复用现有音频通路（AudioSource → ResamplingSource → AudioEngine → AAudio），
+  只新增一路影片专用混音通道 kMovieAudioChannel；见 docs/DECISIONS.md D-030。
+- 真机：OP 播放期间 active_channels=1、peak_in_window≈2 万（真实波形），到点自动收尾。
+- 余项：点击跳过、movPlayExC 的 C 语义、movWait 超时、音画同步细调。
+
 ### v0.2.4 / v0.3.0 计划（DLL 输入模拟 + 小游戏，后移）
 
 打包处理——主线是「让 DLL 驱动的玩法真正能玩」，其余顺带：
