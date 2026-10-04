@@ -41,6 +41,7 @@
 #include "android/mov_probe.h"
 #include "android/mov_player.h"
 #include "android/app_log.h"
+#include "android/text_encoding.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
@@ -270,6 +271,8 @@ struct DiagOptions {
   // 或完整的游戏文件标识），用于在没有脚本触发点的游戏里肉眼验证上屏。
   std::string mov_test;
   int mov_test_ms = 0;  // > 0 时播这么久就停
+  // D-033 自检：跑一次「GBK→CP932」编码链的逐步诊断（进 report 与应用日志）。
+  bool enc_selftest = false;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -329,6 +332,8 @@ DiagOptions LoadDiagOptions() {
       options.mov_test = value;  // 例：mov_test=OP00 或 mov_test=MOV/OP00.mpg
     } else if (key == "mov_test_ms") {
       if (number > 0) options.mov_test_ms = number;
+    } else if (key == "enc_selftest") {
+      options.enc_selftest = (number != 0);
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -777,6 +782,12 @@ void RunEngineOn(System& system,
               mov_id + "\n";
     rlvm_android::AppendAppLogLine(std::string("mov_test: ") +
                                    (mov_ok ? "起播 " : "打不开 ") + mov_id);
+  }
+  // D-033 自检：编码链逐步诊断（enc_selftest=1）。一次运行就能定位是哪一步断了。
+  if (diag.enc_selftest) {
+    const std::string selftest = rlvm_android::RunEncodingSelfTest();
+    report += selftest;
+    rlvm_android::AppendAppLogLine(selftest);
   }
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
