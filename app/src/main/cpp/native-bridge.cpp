@@ -65,7 +65,9 @@ std::vector<uint32_t> g_frame_pixels;
 int g_frame_width = 0;
 int g_frame_height = 0;
 unsigned int g_frame_serial = 0;
-int g_frame_log_every = 1;
+// 逐帧日志的缺省值：**关闭**（0）。开着时每帧要扫 48 万像素统计非黑像素数，
+// 在真机上是最没意义的一笔开销；排查渲染问题时再用 frame_log_every=N 打开。
+int g_frame_log_every = 0;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -274,7 +276,8 @@ struct DiagOptions {
   // 自动化测试需要在报告里拿到结果时，用 diag 文件设一个有限值。
   int time_budget_ms = 0;
   int max_instructions = 0;  // 0 表示沿用调用方传入的值
-  int frame_log_every = 1;
+  // 0 = 不打逐帧日志（缺省，见上面 g_frame_log_every 的说明）
+  int frame_log_every = 0;
 };
 
 /** 读取并解析诊断文件；文件不存在时返回缺省值。 */
@@ -356,8 +359,12 @@ void CaptureFrame(AndroidGraphicsSystem& graphics) {
 
   // 非黑像素数：用于区分「引擎产出的帧本身是空的」与「呈现环节没显示出来」。
   // 帧日志可以按间隔抽样：逐帧输出在长时间运行时会淹没真正重要的诊断信息。
-  if (g_frame_log_every <= 1 ||
-      (g_frame_serial % static_cast<unsigned int>(g_frame_log_every)) == 1u) {
+  // 0 = 完全不打（缺省）；1 = 每帧打；N>1 = 每 N 帧打一条。
+  const bool log_this_frame =
+      g_frame_log_every == 1 ||
+      (g_frame_log_every > 1 &&
+       (g_frame_serial % static_cast<unsigned int>(g_frame_log_every)) == 1u);
+  if (log_this_frame) {
     // 注意：非黑像素统计要扫全屏 48 万像素，只在真的要打印时才做——
     // 之前它每帧都跑，是这个渲染管线里最没意义的一笔开销。
     size_t non_black = 0;

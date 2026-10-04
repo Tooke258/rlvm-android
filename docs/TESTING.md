@@ -81,7 +81,7 @@ Start-Sleep -Seconds 7
 | `blit_stats=1` | 打开合成统计（逐像素累加，默认关闭；只在排查渲染问题时开） |
 | `time_budget_ms=N` | 单次运行的执行时间片，缺省 0（**不限时**，靠「停止引擎」收尾） |
 | `max_instructions=N` | 指令条数上限 |
-| `frame_log_every=N` | 每 N 帧打一条帧日志，缺省 1（每帧） |
+| `frame_log_every=N` | 每 N 帧打一条帧日志；**缺省 0 = 不打**，1 = 每帧打（要扫全屏统计非黑像素，只有在排查渲染时开） |
 
 **注意**：应用默认不限时运行，报告只在「停止引擎」或达到 `time_budget_ms` /
 `max_instructions` 时才打印。自动化验证请显式设置 `time_budget_ms`。
