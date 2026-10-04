@@ -852,3 +852,18 @@ Unicode→CP932 字节表（只建一次）。注意转换失败（CP932 没有�
 
 **附带问题**：同一 UI 里文字顶部贴在本行中线上（整体下坠半个行高）——字体垂直锚点问题，
 待定位 `android/font_engine.cpp` 与 TextWindow 的 y 语义。
+### D-033 复盘（存档标题乱码，两版都没修好）
+
+| 尝试 | 做法 | 结果 |
+| --- | --- | --- |
+| 一 | `saveGameTo` 里按 `machine.GetTextEncoding()` 转 CP932 | 无效：存档菜单是 CP932 场景，那一刻编码=0，转换是空操作 |
+| 二 | `SetWindowSubtitle` 时留 CP932 副本（条件 `text_encoding != 0`） | 仍乱码 |
+
+**待确认的三种可能**（下一次加一行诊断即可定性，看应用日志不用 adb）：
+① 副标题来源不是 `sys:title`（另有 setter），副本根本没被更新；
+② 对话场景的 `scenario->encoding()` 也返回 0（容器编码是在别处整体探测的，显示路径不用 `GetTextEncoding()`）→ 条件永不成立；
+③ `cp932toUnicode(text, encoding)` 对非 0 编码码返回空/垃圾 → 按设计回退原样。
+
+**诊断打印**：`machine.GetTextEncoding()` / `scenario->encoding()` / 副标题原始字节 hex / `subtitle_cp932_` 字节 hex。
+
+**教训**：编码适配要锚在**数据产生的地方**；「显示正常」不等于 `GetTextEncoding()` 正确——显示路径很可能走的是容器级编码，两条路不是一个来源。
