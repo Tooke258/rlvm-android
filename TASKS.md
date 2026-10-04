@@ -64,10 +64,26 @@
 | T6.2 | Profiler 优化 | 优化报告 + 补丁 | 帧率、内存达标 | TODO |
 | T6.3 | 发布配置 | `release/` 文档 | 可生成 AAB | TODO |
 
-## v0.2.1 预定更新计划（2026-10-04 拟定）
+## v0.2.1 发布记录（2026-10-04）
 
 > 版本策略：0.1.0 = 首个可用版；0.2.0 = 黑屏挂起 + 文本容器切换 + 中文数据兼容。
 > 0.2.1 聚焦"操作完整性"：先把点击补齐，再把按键通道做出来（默认不启用）。
+
+**发布状态：已发布。** tag `v0.2.1` = 提交 `bb07128`，Release 附 `app-release.apk`。
+
+- 仓库：https://github.com/Tooke258/rlvm-android
+- Release：https://github.com/Tooke258/rlvm-android/releases/tag/v0.2.1
+- 实际内容比预定计划多两项：**实时动画平滑度的根因修复**（D-023）与
+  **存档链路收口**（D-024 还原 / D-025 通用性边界）。
+
+### v0.2.2 候选待办
+
+| 优先级 | 事项 | 依据 |
+| --- | --- | --- |
+| 高 | **直接杀进程会丢 `global.sav.gz`**：槽位文件已写入，但"槽位已占用"的 global memory 标记与配置改动丢失 → LOAD 列表列不出来。修法：在挂起/退到后台时于引擎线程落盘 | `dev-log/LBEX-SAVE-LOAD.jsonl`；`docs/PROGRESS.md` 已知缺口 |
+| 中 | **引擎标准存档 UI 缺失**（`Platform::InvokeSyscomStandardUI` 为空）→ 把存档交给引擎界面的作品点不动 | D-025 |
+| 中 | `exec_ignore_force_wait` 是否保留：用 `rlvm-diag.txt` 做一次 A/B | `docs/FRAMERATE-INVESTIGATION.md` 6.5 |
+| 低 | T7.3 备份项：面板显示当前文本容器文件名；`docs/PROGRESS.md` 与实际能力对齐 | 本文件 T7.3 |
 
 ### T7.1 点击补齐：未渲染区域也要能推进文字（已完成）
 
