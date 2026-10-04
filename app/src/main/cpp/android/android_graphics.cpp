@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "android/game_file_system.h"
+#include "android/mov_player.h"
 #include "systems/base/colour.h"
 #include "systems/base/system.h"
 #include "systems/base/system_error.h"
@@ -638,7 +639,14 @@ void AndroidGraphicsSystem::BeginFrame() {
   if (frame_buffer_) frame_buffer_->Fill(RGBAColour(0, 0, 0, 255));
 }
 
-void AndroidGraphicsSystem::EndFrame() { ++frame_count_; }
+void AndroidGraphicsSystem::EndFrame() {
+  // 影片（v0.2.3 / M3b）：解码在后台线程，这里把「当前该显示的帧」贴到帧缓冲
+  // 最上层。没有影片在放时这个调用几乎不花钱（一次队列空判断）。
+  if (frame_buffer_) {
+    rlvm_android::MovPlayer::Instance().CompositeInto(*frame_buffer_);
+  }
+  ++frame_count_;
+}
 
 void AndroidGraphicsSystem::MarkScreenAsDirty(GraphicsUpdateType type) {
   GraphicsSystem::MarkScreenAsDirty(type);

@@ -669,3 +669,29 @@
 
 **遗留**：M3b 把这条通路接到引擎（解码到 SurfaceTexture/纹理 → 按 `movPlayEx(name,x,y,w,h)`
 矩形叠加，并实现 `movWait` / `movPlaying` / `movStop`）；M4 做 MP2 音频（PES 0xC0）、点击跳过与时序。
+
+## D-028 MOV 影片上屏（v0.2.3 / M3b）：后台解码线程 + 引擎合帧时 CPU 合成
+
+**日期**：2026-10-04　**状态**：真机通过
+
+- 新文件 `app/src/main/cpp/android/mov_player.{h,cpp}`：自写 PS 解复用（D-027 的修正版）
+  + 按访问单元喂 `video/mpeg2` 解码器（CPU 输出 I420）+ YUV→RGBA（带最近邻缩放）
+  → 后台线程帧队列。
+- 上屏点选在 **`AndroidGraphicsSystem::EndFrame()`**：把「当前该显示的帧」用
+  `AndroidSurface::SetPixelsFromRGBA` + `BlitToSurface` 贴到 `movPlayEx` 给的矩形，
+  **完全不动 GL 侧**（Kotlin 渲染器照旧上传帧缓冲，D-022 的内容哈希闸门自然看到变化）。
+  代价是每帧一次 CPU 转换 + 一次 memcpy（800x600 毫秒级）；要省 CPU 再上 SurfaceTexture。
+- 时序/节流：解码线程最多领先 3 帧（mutex + 条件变量）；引擎线程按墙钟取
+  「最后一帧 pts ≤ now」，更早的丢掉（渲染跟不上就跳帧）。影片时钟从「第一帧可用」起算，
+  避免解码器预热期白屏。
+- 脚本层（`src/modules/module_mov.cc`，上游那个文件此前 7 条全是 `AddUnsupportedOpcode`）：
+  实现 `movPlay`(0)/`movPlayEx`(1)/`movWait`(3)/`movPlaying`(4)/`movStop`(5)/`movPlayExC`(20)，
+  `movLoop`(2) 仍 unsupported。参数形状由两个游戏的脚本 dump 反推：LBEX 与 KW 都只有
+  `op<1:026:00001,0>("OP00",0,0,799,599)` 与 `op<1:026:00020,0>(...)` 两个调用点；
+  `movPlay` 没有调用点，暂按同样的 5 参数实现。`movWait` 用 `DefaultIntValue_T<0>` 兼容 0/1 参数。
+- 自测开关：`rlvm-diag.txt` 里 `mov_test=OP00`（可加 `mov_test_ms=N`）→ 引擎启动即起播，
+  方便在没有脚本触发点的存档/路线里验证（KW 的调用点在 OP 那一段，跑不到就看不到）。
+- 真机证据：KW 全屏播 OP，两次截图内容完全不同（蓝天+粉圆 → 山景+日文歌词），
+  引擎循环仍 ~123fps（frames=2400 / 19.5s），rss +~10MB。
+- 遗留：MP2 音频（M4）；`movPlayExC` 的 C 语义未证实；`movWait` 超时参数未实现；
+  CPU 合成若成瓶颈再换 SurfaceTexture。

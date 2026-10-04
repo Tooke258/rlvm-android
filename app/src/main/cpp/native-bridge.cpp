@@ -39,6 +39,7 @@
 #include "android/jni_saf_backend.h"
 #include "android/log_redirect.h"
 #include "android/mov_probe.h"
+#include "android/mov_player.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
@@ -260,6 +261,10 @@ struct DiagOptions {
   // 让硬解自己从码流认 MPEG-1（部分硬解给了 MPEG-2 风格 csd 会按错语法解）。
   // 0=不给；1=给；2=两种都跑（A/B，一次引擎启动出两组结果）
   int mov_csd = 1;
+  // v0.2.3 / M3b 影片上屏自测：引擎启动时直接起播这个影片（值是 MOV 下的文件名，
+  // 或完整的游戏文件标识），用于在没有脚本触发点的游戏里肉眼验证上屏。
+  std::string mov_test;
+  int mov_test_ms = 0;  // > 0 时播这么久就停
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -314,6 +319,10 @@ DiagOptions LoadDiagOptions() {
       options.mov_codec = value;  // 解码器名；空 = 按 video/mpeg2 自动挑
     } else if (key == "mov_csd") {
       options.mov_csd = number;  // 0=不给 csd；1=给；2=给/不给都跑一遍
+    } else if (key == "mov_test") {
+      options.mov_test = value;  // 例：mov_test=OP00 或 mov_test=MOV/OP00.mpg
+    } else if (key == "mov_test_ms") {
+      if (number > 0) options.mov_test_ms = number;
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -740,6 +749,19 @@ void RunEngineOn(System& system,
       from = comma + 1;
     }
   }
+
+  // v0.2.3 / M3b 影片上屏（自测开关）：引擎启动时直接起播一部影片，方便在没有
+  // 脚本触发点的游戏里肉眼验证（KW 的脚本只调 movPlayEx，触发点在 OP 那一段）。
+  if (!diag.mov_test.empty()) {
+    std::string mov_id = diag.mov_test;
+    if (mov_id.find('/') == std::string::npos) {
+      mov_id = "MOV/" + mov_id + ".mpg";
+    }
+    const bool mov_ok = rlvm_android::MovPlayer::Instance().Play(
+        mov_id, 0, 0, 799, 599, diag.mov_test_ms);
+    report += std::string("mov_test: ") + (mov_ok ? "起播 " : "打不开 ") +
+              mov_id + "\n";
+  }
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 
@@ -854,6 +876,14 @@ void RunEngineOn(System& system,
              (now - slice_start < 10));
     system.set_force_wait(false);
   }
+
+  // 影片：引擎循环结束就收摊（停解码线程、释放解码器与 fd）。
+  rlvm_android::MovPlayer::Instance().Stop();
+  report += "mov frames decoded = " +
+            std::to_string(rlvm_android::MovPlayer::Instance().decoded_frames()) +
+            " dropped = " +
+            std::to_string(rlvm_android::MovPlayer::Instance().dropped_frames()) +
+            "\n";
 
   report += "instructions executed = " + std::to_string(executed) + "\n";
   report += "frames presented = " + std::to_string(frames_presented) + "\n";

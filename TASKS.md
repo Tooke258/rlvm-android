@@ -160,6 +160,15 @@ MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状
 - 下一步：M3b（解码到纹理 + 按 `movPlayEx` 矩形上屏 + `movWait/movPlaying/movStop`），
   M4（MP2 音频 + 点击跳过 + 时序）。
 
+
+**v0.2.3 进展之二（2026-10-04）：M3b 影片上屏通过**
+
+- 实现 `android/mov_player.{h,cpp}`（后台解码线程 + 帧队列 + CPU 合成）与
+  `module_mov.cc` 的 `movPlay/movPlayEx/movWait/movPlaying/movStop/movPlayExC`；
+  上屏点在 `AndroidGraphicsSystem::EndFrame()`，见 `docs/DECISIONS.md` D-028。
+- 真机：`mov_test=OP00` 自测开关起播 KW 的 OP，全屏正常、内容在动，引擎仍 ~123fps。
+- 还剩：M4（MP2 音频 + 点击跳过 + `movPlayExC` 语义）、以及用脚本触发点（SEEN514）复核一遍。
+
 ### v0.2.4 / v0.3.0 计划（DLL 输入模拟 + 小游戏，后移）
 
 打包处理——主线是「让 DLL 驱动的玩法真正能玩」，其余顺带：
