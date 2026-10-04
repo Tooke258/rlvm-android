@@ -44,6 +44,26 @@ GraphicsBlitStats TakeGraphicsBlitStats();
  */
 void SetBlitStatsEnabled(bool enabled);
 
+/**
+ * 「谁把屏幕标脏」的统计（诊断帧率用）。
+ *
+ * 合帧改成脏标记驱动（D-022）之后，如果实际合帧率明显低于主循环轮次，就必须分清
+ * "游戏本来就没标脏"和"我们漏标了"。这里按 GraphicsUpdateType（DC0 / HIK / 对象 /
+ * 文字 / 鼠标）分别计数：SetDirtyStatsEnabled(true) 打开，TakeDirtyStatsSummary()
+ * 读取并清零，返回一行可读文本。
+ */
+void SetDirtyStatsEnabled(bool enabled);
+std::string TakeDirtyStatsSummary();
+
+/** 合成成本：blit 调用数 / 写入像素数 / 累计耗时（µs）；读取即清零。 */
+void TakeBlitCostSummary(uint64_t& calls, uint64_t& pixels, uint64_t& time_us);
+
+/** 合成路径计数（fast=整行 memcpy / slow=逐像素 alpha 处理）；读取即清零。 */
+void TakeBlitPathSummary(uint64_t& fast_calls, uint64_t& slow_calls);
+
+/** 这一秒里最慢的一次 blit（µs）及其矩形描述；读取即清零。 */
+std::string TakeBlitWorstSummary(uint64_t& worst_us);
+
 // 像素格式固定为 0xAABBGGRR：在小端内存中即 R,G,B,A 字节序，
 // 与 OpenGL 的 GL_RGBA / GL_UNSIGNED_BYTE 直接对应，后续上传纹理无需转换。
 class AndroidSurface : public Surface {
@@ -121,8 +141,49 @@ class AndroidSurface : public Surface {
 
   const uint32_t* pixels() const { return pixels_.data(); }
 
+  // ---- 整面不透明标志（合成快路径的依据）------------------------------------
+  //
+  // 背景层、角色立绘这类资源几乎每个像素的 alpha 都是 255。上游 SDL 后端把这类
+  // 合成交给 GL，我们只能在 CPU 上逐像素做；而逐像素走 alpha 混合是 ~33ns/像素，
+  // 整屏一次就要十几毫秒，主循环因此掉到 40 帧/秒左右。
+  //
+  // 因此给每个表面维护一个「是否整面 alpha 全 255」的标志：为真时 blit 可以直接
+  // 整段 memcpy（~0.2ns/像素），画面逐像素等价（原路径在 eff_a==255 时也是 d = s）。
+  // 标志只在**可能改变 alpha** 的操作后重算或失效，宁可变保守（多走慢路径），
+  // 也不能出现画面错误。
+  bool pixels_opaque() const { return pixels_opaque_; }
+  void InvalidateOpaque() { pixels_opaque_ = false; }
+  void SetOpaque(bool opaque) { pixels_opaque_ = opaque; }
+
  private:
   bool Contains(int x, int y) const;
+
+  // ---- 内容包围盒（不透明区域的保守超集）------------------------------------
+  //
+  // 为什么需要：合成时源图层常常是"整屏大小、内容只占一角、其余全透明"（文字框、遮罩、
+  // 覆盖层都这样）。blit 会逐像素扫过整张源图，实测一次合成里 99.8% 的像素是透明的——
+  // 一次合成光扫描就要 ~7ms，主循环因此只能跑到 40~50 帧/秒，动画看起来"被抽帧"。
+  //
+  // 这里维护一个**保守超集**（只会比真实内容大、绝不会小），blit 时把源矩形裁到它上面；
+  // 因为只会裁掉确定全透明的部分，画面完全不变。
+  //   · 图像加载/整屏清零 → 重算精确包围盒；
+  //   · 局部绘制（Fill 区域、字形混合、blit 到目标）→ 用矩形并集扩展；
+  //   · 只改 RGB 的操作（ToneCurve/Invert/Mono/ApplyColour）不动 alpha → 包围盒不变。
+  void ComputeExactContentBounds();
+  void ExtendContentBounds(int x, int y, int width, int height);
+  void ResetContentBoundsToEmpty() { content_x0_ = content_y0_ = 0; content_x1_ = content_y1_ = 0; }
+  void ResetContentBoundsToFull() {
+    content_x0_ = content_y0_ = 0;
+    content_x1_ = size_.width();
+    content_y1_ = size_.height();
+  }
+
+  int content_x0_ = 0;
+  int content_y0_ = 0;
+  int content_x1_ = 0;  // 右开区间
+  int content_y1_ = 0;  // 下开区间
+  // 整面 alpha 是否全为 255（见 pixels_opaque()）。
+  bool pixels_opaque_ = false;
 
   Size size_;
   std::vector<uint32_t> pixels_;
@@ -158,6 +219,8 @@ class AndroidGraphicsSystem : public GraphicsSystem {
   std::shared_ptr<Surface> GetDC(int dc) override;
   std::shared_ptr<Surface> BuildSurface(const Size& size) override;
   ColourFilter* BuildColourFiller() override;
+  // 统计"谁把屏幕标脏"（诊断用，见文件头部 SetDirtyStatsEnabled）。
+  void MarkScreenAsDirty(GraphicsUpdateType type) override;
 
   // 当前帧缓冲（合成目标）。GL 线程通过它取像素。
   std::shared_ptr<AndroidSurface> frame_buffer() const { return frame_buffer_; }
