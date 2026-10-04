@@ -122,7 +122,15 @@
 | D-022 合帧优化 | 中 | 合帧回到较慢路径（约 16ms/轮） |
 | `loop_probe` / `dump_scenario` / `blackframe_probe` 等诊断 | 中 | 实现存于本地 `git stash@{0}` |
 
-### v0.2.3 计划（主线：**视频通路** —— `MOV/*.mpg` 播放）
+### v0.2.3（已发布）：影片通路 —— `MOV/*.mpg` 播放
+
+**发布**：tag `v0.2.3`（见 git tag），Release 附 `app-release.apk`：
+https://github.com/Tooke258/rlvm-android/releases/tag/v0.2.3
+
+> 内容：`MOV/*.mpg` 能看（自写 MPEG-PS 解复用 + 平台解码器 + 引擎合帧上屏）、能听（复用
+> AAudio 混音通路 + 影片专用通道）、能跳过；`movPlayExC` 按「播完才继续」实现。同时修掉
+> 存档标题编码（D-033）、文本垂直锚点（D-034）、杀进程丢槽位标记（D-032）。细节见
+> `任务日志.md` §18 与 `docs/DECISIONS.md` D-027~D-034。
 
 > 决定（2026-10-04）：小游戏 / DLL 那条线**后移**到 v0.2.4 或 v0.3.0，v0.2.3 先做**视频通路**。
 > 这里说的"视频"是**影片播放**（`MOV/*.mpg`），与"实时动画渲染"（D-023 已修）是两回事。

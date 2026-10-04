@@ -1,0 +1,5 @@
+{"type":"release","content":"v0.2.3 发布（影片通路 + 三处顺带修复）。tag `v0.2.3`，Release 附 `app-release.apk`：https://github.com/Tooke258/rlvm-android/releases/tag/v0.2.3","status":"pass"}
+{"type":"scope","content":"**影片（v0.2.3 主线）**：自写 MPEG-PS 解复用（修掉「PES 包头少跳 1 字节」的残帧根因，ES 与 ffmpeg 产物逐字节一致）+ 平台 `video/mpeg2` 解码（按访问单元喂）+ 引擎 `EndFrame()` 的 CPU 合成上屏；音频复用现有 AAudio 混音通路（影片专用通道 + ResamplingSource）；`movPlayEx` 异步、`movPlayExC` 播完才继续、点击跳过（整片实测 3472 帧 ≈116 秒、有声音、可跳过）。","status":"pass"}
+{"type":"scope","content":"**顺带修复**：D-032 杀进程丢槽位占用标记（`intG[1050+槽]` 在 global memory，现改为挂起落盘 + 60 秒兜底）；D-033 存档标题编码（汉化包混合编码：对话 GBK / 菜单 CP932 → 设置副标题时留 CP932 归一化副本）；D-034 文本垂直锚点（行高按游戏行盒夹紧 + 位图夹回盒内）。","status":"pass"}
+{"type":"scope","content":"**工具与可观测性**：`enc_selftest`（编码链自检，一次定位到「表漏 ASCII 导致整串回退」）、`mov_test`/`mov_test_ms`（影片自测，面板有开关）、App 面板「日志」全屏视图 + 日志落盘 `rlvm-log.txt`（native 关键事件也写）、`frame_log_every` 缺省改为 0=不打。","status":"pass"}
+{"type":"note","content":"已知遗留：旧存档里修复前写入的 GBK 标题仍会显示为半角片假名（测试数据，不修，重存即刷新）；`movPlayExC` 的 C 后缀语义仍未证实（按「播完才继续」实现）；`movLoop(2)` 仍是 unsupported；引擎标准存档 UI（`Platform::InvokeSyscomStandardUI`）仍缺。","status":"info"}
