@@ -68,6 +68,7 @@
 #include "systems/base/system.h"
 #include "systems/base/system_error.h"
 #include "android/text_encoding.h"
+#include "android/app_log.h"
 #include "systems/base/text_system.h"
 #include "utilities/exception.h"
 #include "utilities/lazy_array.h"
@@ -442,6 +443,11 @@ void GraphicsSystem::SetWindowSubtitle(const std::string& cp932str,
   if (text_encoding != 0) {
     subtitle_cp932_ = rlvm_android::NormalizeTitleToCP932(cp932str, text_encoding);
   }
+  // 临时诊断（D-033 复盘）：看副标题是谁设的、编码多少、转换有没有变。
+  rlvm_android::AppendAppLogLine(
+      "title-set: enc=" + std::to_string(text_encoding) + " raw=" +
+      rlvm_android::HexPreview(cp932str) + " cp932=" +
+      rlvm_android::HexPreview(subtitle_cp932_));
 }
 
 // -----------------------------------------------------------------------

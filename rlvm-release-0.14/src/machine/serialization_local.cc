@@ -40,6 +40,7 @@
 #include <sstream>
 
 #include "android/text_encoding.h"
+#include "android/app_log.h"
 
 #include "utilities/file.h"
 #include <iostream>
@@ -109,6 +110,11 @@ void saveGameTo(std::ostream& oss, RLMachine& machine) {
   // 显示成半角片假名（老存档就是 CP932，所以显示正常）。
   const SaveGameHeader header(
       machine.system().graphics().window_subtitle_cp932());
+  // 临时诊断（D-033 复盘）：存档那一刻的场景编码 + 实际写进去的标题字节。
+  rlvm_android::AppendAppLogLine(
+      "save-title: enc=" + std::to_string(machine.GetTextEncoding()) + " raw=" +
+      rlvm_android::HexPreview(machine.system().graphics().window_subtitle()) +
+      " used=" + rlvm_android::HexPreview(header.title));
 
   g_current_machine = &machine;
 

@@ -12,6 +12,9 @@ namespace rlvm_android {
 // 转不了（有字不在 CP932）时原样返回，宁可乱码也不丢字。
 std::string NormalizeTitleToCP932(const std::string& title, int encoding);
 
+// 诊断用：把字节串前 max 个字节打成十六进制（D-033 复盘用）。
+std::string HexPreview(const std::string& bytes, size_t max = 24);
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_TEXT_ENCODING_H_

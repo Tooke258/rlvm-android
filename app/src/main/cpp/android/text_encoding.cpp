@@ -1,6 +1,7 @@
 #include "android/text_encoding.h"
 
 #include <mutex>
+#include <cstdio>
 #include <unordered_map>
 
 #include "utilities/string_utilities.h"
@@ -30,6 +31,18 @@ const std::unordered_map<uint32_t, std::string>& Cp932Table() {
 }
 
 }  // namespace
+
+std::string HexPreview(const std::string& bytes, size_t max) {
+  std::string out;
+  const size_t n = bytes.size() < max ? bytes.size() : max;
+  char buf[4];
+  for (size_t i = 0; i < n; ++i) {
+    std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned char>(bytes[i]));
+    out += buf;
+  }
+  if (bytes.size() > n) out += "…(+" + std::to_string(bytes.size() - n) + ")";
+  return out.empty() ? std::string("(empty)") : out;
+}
 
 std::string NormalizeTitleToCP932(const std::string& title, int encoding) {
   if (title.empty() || encoding == 0) return title;  // 已经是 CP932
