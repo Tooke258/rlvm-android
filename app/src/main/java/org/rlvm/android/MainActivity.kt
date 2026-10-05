@@ -50,6 +50,8 @@ class MainActivity : Activity() {
         const val KEY_INPUT_PAD_ON = "input_pad_on"
         const val KEY_LANDSCAPE = "landscape"
         const val KEY_FIT_MODE = "fit_mode"
+        // 长按呼出右键的显式开关（v0.2.4 体验项）：默认沿用旧行为（开）。
+        const val KEY_LONG_PRESS_RIGHT = "long_press_right"
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
         // 指令上限也放宽到实际达不到的值，由「停止引擎」按钮负责收尾。
         const val MAX_INSTRUCTIONS = Int.MAX_VALUE
@@ -96,6 +98,12 @@ class MainActivity : Activity() {
     private lateinit var logFile: File
     private lateinit var movTestButton: Button
     private var movTestEnabled = false
+    // ---- v0.2.4 体验项 ------------------------------------------------------
+    // 运行/停止一体化（引擎只有一个，不能并行）；长按呼出右键的显式开关。
+    private lateinit var engineToggleButton: Button
+    private lateinit var longPressButton: Button
+    private var engineRunning = false
+    private var longPressRightClick = true
     // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
     private var cursorX = -1f
     private var cursorY = -1f
@@ -198,6 +206,17 @@ class MainActivity : Activity() {
 
         // ---- 悬浮球 + 侧边栏 -------------------------------------------------
         // 游戏画面应当占满屏幕；控制项与日志收进可滑出的侧栏，由小球开关。
+        // ---- v0.2.4 体验项：按钮复用与显式开关 ---------------------------------
+        // ① 运行/停止一体化：引擎只有一个、不能并行，合成一个按钮（复用 safButton）。
+        engineToggleButton = safButton
+        safButton.setOnClickListener { toggleEngine() }
+        updateEngineButtonLabel()
+        // ② 长按呼出右键做成显式开关（复用 stopButton 的位置）。
+        longPressButton = stopButton
+        longPressRightClick = prefs.getBoolean(KEY_LONG_PRESS_RIGHT, true)
+        stopButton.setOnClickListener { toggleLongPressRightClick() }
+        updateLongPressButtonLabel()
+
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
         // 球与侧栏的尺寸要在创建视图之前算好：球的拖动/贴边逻辑会用到它们。
@@ -749,12 +768,18 @@ class MainActivity : Activity() {
         log("--- SAF 运行 ---")
         // 每次开引擎都同步一次文本容器设置：开关可能刚被切过。
         applyTextContainer()
+        engineRunning = true
+        updateEngineButtonLabel()
         background {
             val report = runCatching {
                 NativeBridge.setSafBackend(SafFileSystem(applicationContext, treeUri))
                 NativeBridge.runScenarioSaf(MAX_INSTRUCTIONS)
             }.getOrElse { "SAF run failed: ${it.stackTraceToString()}" }
             log(report)
+            runOnUiThread {
+                engineRunning = false
+                updateEngineButtonLabel()
+            }
         }
     }
 
@@ -859,7 +884,9 @@ class MainActivity : Activity() {
             }
             MotionEvent.ACTION_MOVE -> TOUCH_MOVE
             MotionEvent.ACTION_UP -> {
-                longPress = System.currentTimeMillis() - downTimeMs >= 400
+                // 长按=右键 只有在开关打开时生效（v0.2.4：改成显式开关）。
+                longPress = longPressRightClick &&
+                    System.currentTimeMillis() - downTimeMs >= 400
                 TOUCH_UP
             }
             MotionEvent.ACTION_CANCEL -> TOUCH_UP
@@ -877,6 +904,42 @@ class MainActivity : Activity() {
 
     private var longPress = false
     private var downTimeMs = 0L
+
+    // ---- v0.2.4 体验项：运行/停止一体化 + 长按右键开关 ------------------------
+
+    /** 运行/停止按钮文案：引擎只有一个，不能并行，所以合成一个按钮。 */
+    private fun updateEngineButtonLabel() {
+        if (::engineToggleButton.isInitialized) {
+            engineToggleButton.text = if (engineRunning) "停止引擎" else "运行引擎"
+        }
+    }
+
+    private fun toggleEngine() {
+        if (engineRunning) {
+            NativeBridge.requestStop()
+            log("已请求停止引擎（引擎线程会在循环尾部收尾）")
+        } else {
+            runSafScenario()
+        }
+    }
+
+    private fun updateLongPressButtonLabel() {
+        if (::longPressButton.isInitialized) {
+            longPressButton.text = if (longPressRightClick) "长按右键：开" else "长按右键：关"
+        }
+    }
+
+    /** 长按呼出右键的显式开关（持久化）。关掉后长按也只发左键，右键走按键栏。 */
+    private fun toggleLongPressRightClick() {
+        longPressRightClick = !longPressRightClick
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_LONG_PRESS_RIGHT, longPressRightClick).apply()
+        updateLongPressButtonLabel()
+        log(
+            if (longPressRightClick) "长按=右键：开（短按仍是左键）"
+            else "长按=右键：关（长按也只发左键；右键可用按键栏的「右键」按钮）"
+        )
+    }
 
     private fun log(text: String) {
         val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
