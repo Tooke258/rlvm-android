@@ -1335,6 +1335,13 @@ int main(int argc, char **argv) {
       for (int k = 0; k < INTF_COUNT; ++k) { int v = (int)rd32(INTF_BASE + k * 4); fwrite(&v, sizeof(int), 1, o); }
       fclose(o);
       printf("# intD+intF 快照 -> %s\n", argv[i + 1]);
+    } else if (strcmp(argv[i], "--dump-image") == 0 && i + 1 < argc) {
+      /* 整个映像 0x30000 字节（含 .data 里被 pt00_prefix_sum_table 改过的表） */
+      FILE *oi = fopen(argv[i + 1], "wb");
+      if (!oi) { fprintf(stderr, "打不开 %s\n", argv[i + 1]); return 1; }
+      fwrite(gp(IMAGE_BASE), 1, 0x28000u, oi);
+      fclose(oi);
+      printf("# 映像快照 -> %s\n", argv[i + 1]);
     }
   }
   printf("# 结束于 eip=%08x（步数 %d）\n", cpu.eip, g_steps);

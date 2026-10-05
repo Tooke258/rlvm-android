@@ -306,6 +306,30 @@ intD[1136]（record+0x70）                  oracle=0                        emu
 **边界表**导致的选路不同。注意 `0x1001d370` 是 **double 0.6**（`fmull m64`，不是 `fmul m32`）——
 别把这里的 4 字节读法搞错。
 
+### 7.6 映像级对照（`--dump-image`，2026-10-05 续）
+
+两边都加了「把整个映像（0x28000 字节）写文件」的开关，用来一次性回答「**是表/常量不对，还是别的东西**」：
+
+```powershell
+oracle.exe <dll> <calls> out.bin --dump-image oracle_img.bin --seed seed.bin
+emu.exe    <dll> <calls> --dump e.bin --dump-image emu_img.bin --seed seed.bin
+```
+
+**结论（跑到 `func_load` 结束）**：
+
+| 区域 | 结果 |
+| --- | --- |
+| `.rdata` / `.data` 里的**所有表与常量**（动画表、折点表、`0x1001d370` 的 `0.6` 等） | **逐字节一致** ✓ |
+| PE 头（`0x10000000..0x10000FFF`） | 原生有、我们没搬（我们的 loader 不从 guest 0 开始映射头）——无害 |
+| IAT（`0x1001d000..`） | 两边桩地址不同——预期 |
+| 堆指针类字段（实体表 `100237C4` 等） | 地址不同——预期 |
+| **CRT 初始化副作用** | **不一致**：模块/工作目录字符串（`)E:\C_Mirror\Users\tooke\...`）、`_osfile` 类表、**TLS 索引**（原生 `1`，我们 `ffffffff`） |
+
+最后一行就是 §7.2 说的「emu 不跑 DllMain」的实锤：DLL 自带的静态 CRT 在原生侧由 `LoadLibrary`
+触发了初始化，我们这边完全没跑，于是这些 CRT 全局保持 0。**物理/坐标表都是对的**，所以剩下的
+`func 921`（球 B）差异不是表错，而是**运行期选路**——见 §7.5 的复位判定（`0x10014d78 call 0x10004380`
+→ `test eax,eax; jle` → 出界则 `call 0x10014f20` 复位）。
+
 ## 8. 相关但不同的问题（别混淆）
 
 | 项 | 状态 |

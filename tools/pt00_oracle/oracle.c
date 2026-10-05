@@ -122,9 +122,12 @@ int main(int argc, char **argv) {
 
   const char *seed_path = NULL;
   const char *out_path = NULL;
+  const char *image_path = NULL;
   for (int i = 3; i < argc; ++i) {
     if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
       seed_path = argv[++i];
+    } else if (strcmp(argv[i], "--dump-image") == 0 && i + 1 < argc) {
+      image_path = argv[++i];
     } else if (!out_path) {
       out_path = argv[i];
     }
@@ -245,6 +248,15 @@ int main(int argc, char **argv) {
   fclose(f);
 
   if (out_path) {
+    /* 映像快照：与 emu 的 --dump-image 对齐（整个 0x30000 字节） */
+    if (image_path) {
+      FILE *oi = fopen(image_path, "wb");
+      if (oi) {
+        fwrite((void *)mod, 1, 0x28000u, oi); /* 只到映像有效范围（0x30000 会越过映射 → AV） */
+        fclose(oi);
+        printf("# image snapshot -> %s\n", image_path);
+      }
+    }
     FILE *o = fopen(out_path, "wb");
     if (o) {
       fwrite(g_intd, sizeof(int), INTD_COUNT, o);
