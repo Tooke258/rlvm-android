@@ -113,6 +113,10 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       os << " | flags 700/710/734/740/771=" << GetD(machine, 700) << "/"
          << GetD(machine, 710) << "/" << GetD(machine, 734) << "/"
          << GetD(machine, 740) << "/" << GetD(machine, 771);
+      // 相位号一族（小游戏首次/演示阶段就是靠它分流；MAD 里由 SEEN7030 从
+      // farcall 参数 intL[2] 写入，所以这里必须看它们的真实值）。
+      os << " | phase 70..95=";
+      for (int i = 70; i <= 95; ++i) os << GetD(machine, i) << ",";
       std::cerr << os.str() << std::endl;
     }
   }
