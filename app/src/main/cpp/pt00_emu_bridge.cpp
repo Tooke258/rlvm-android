@@ -18,6 +18,7 @@ int pt00_emu_load_image(const void* data, unsigned size);
 int pt00_emu_call(int func, int a1, int a2, int a3, int a4);
 void pt00_emu_set_intd(const int* src, unsigned count);
 void pt00_emu_get_intd(int* dst, unsigned count);
+void pt00_emu_set_trace_ctx(int on, int max_lines);
 }
 
 namespace {
@@ -48,6 +49,8 @@ void Reset() {
   g_tried = false;
   g_ready = false;
 }
+
+void SetTraceCtx(bool on) { pt00_emu_set_trace_ctx(on ? 1 : 0, 800); }
 
 bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   if (!g_tried) {

@@ -17,6 +17,9 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4);
 // 诊断用：兼容层是否已经就绪（供日志/自检）。
 bool Available();
 
+// 取证：记录执行器对 ctx 块与低地址的读写（小游戏卡住时看 DLL 在找哪个引擎数组）。
+void SetTraceCtx(bool on);
+
 // 卸载状态（换游戏目录时用）。
 void Reset();
 

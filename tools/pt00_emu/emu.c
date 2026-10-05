@@ -42,6 +42,8 @@ static int g_trace = 0;
 static int g_trace_left = 0;
 static uint32_t g_trace_min = 0;
 static uint32_t g_insn_addr = 0; /* 当前指令的起始地址（UNIMPL 报点用，cpu.eip-1 会被操作数字节带偏） */
+static int g_trace_ctx = 0;      /* 打开后记录对 ctx 块（CTX_BASE..+0x100）与低地址的读写 */
+static int g_ctx_log_left = 0;
 
 /* CPU 状态（放前面：wr32 的写入日志要用 cpu.eip） */
 typedef struct {
@@ -85,12 +87,27 @@ static inline uint8_t *gp(uint32_t a) { return g_mem + (a - GUEST_BASE); }
 
 static uint8_t rd8(uint32_t a) { return in_guest(a, 1) ? *gp(a) : 0; }
 static uint32_t rd32(uint32_t a) {
+  if (g_trace_ctx && g_ctx_log_left > 0 &&
+      ((a >= CTX_BASE && a < CTX_BASE + 0x100) || a < 0x1000) &&
+      (a & 3) == 0) {
+    --g_ctx_log_left;
+    fprintf(stderr, "      CTXRD %08x = %08x @%08x\n", a,
+            in_guest(a, 4) ? *(uint32_t *)gp(a) : 0, cpu.eip);
+  }
   return in_guest(a, 4) ? *(uint32_t *)gp(a) : 0;
 }
 static void wr32(uint32_t a, uint32_t v) {
   if (g_trace && a >= INTD_BASE && a < INTD_BASE + 8000 && (a & 3) == 0) {
     fprintf(stderr, "      WRITE intD[%u]=%d @%08x\n", (a - INTD_BASE) / 4, (int)v,
             cpu.eip);
+  }
+  /* ctx 取证：DLL 要拿引擎的其它数组（intG/intL/…）一定会先从这个块里取指针，
+     所以把 ctx+0x00..0xFF 与低地址的访问记下来就能看出它想要什么。 */
+  if (g_trace_ctx && g_ctx_log_left > 0 &&
+      ((a >= CTX_BASE && a < CTX_BASE + 0x100) || a < 0x1000) &&
+      (a & 3) == 0) {
+    --g_ctx_log_left;
+    fprintf(stderr, "      CTXWR %08x = %08x @%08x\n", a, v, cpu.eip);
   }
   if (in_guest(a, 4)) *(uint32_t *)gp(a) = v;
 }
@@ -1242,6 +1259,13 @@ void pt00_emu_set_intd(const int *src, unsigned count) {
   for (unsigned i = 0; i < count; ++i) wr32(INTD_BASE + i * 4u, (uint32_t)src[i]);
 }
 
+/* 取证开关：记录 DLL 对 ctx 块（+0x00..+0xFF）与低地址的读写，最多 n 条。
+ * 用途：小游戏卡住时判断 DLL 是不是在找**别的引擎数组**（比如 intG）。 */
+void pt00_emu_set_trace_ctx(int on, int max_lines) {
+  g_trace_ctx = on;
+  g_ctx_log_left = max_lines > 0 ? max_lines : 400;
+}
+
 void pt00_emu_get_intd(int *dst, unsigned count) {
   for (unsigned i = 0; i < count; ++i) dst[i] = (int)rd32(INTD_BASE + i * 4u);
 }
@@ -1273,6 +1297,10 @@ int main(int argc, char **argv) {
    * **必须两边同种子**，否则起点不同、对照就是噪声（例如 emu 从全 0 起跑时
    * 实体记录 record[0]=0，func 71 第一句就 return，表现为"什么都不写"）。 */
   for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--trace-ctx") == 0) {
+      g_trace_ctx = 1;
+      g_ctx_log_left = 4000;
+    }
     if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
       FILE *sf = fopen(argv[i + 1], "rb");
       if (!sf) { fprintf(stderr, "打不开种子 %s\n", argv[i + 1]); return 1; }

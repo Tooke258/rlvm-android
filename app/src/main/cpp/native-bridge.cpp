@@ -63,6 +63,7 @@
 #include "systems/base/graphics_object.h"
 #include "systems/base/parent_graphics_object_data.h"
 #include "systems/base/little_busters_pt00dll.h"
+#include "pt00_emu_bridge.h"
 #include "utilities/file.h"
 #include "utilities/string_utilities.h"
 #include "utf8cpp/utf8.h"
@@ -267,6 +268,9 @@ struct DiagOptions {
   // 诊断：dump_scenes=7300,7450 → 引擎启动时把这几幕的脚本反汇编打到日志
   // （用来读小游戏那段循环在等什么；不需要真的走到小游戏）
   std::string dump_scenes;
+  // 取证：pt00_trace_ctx=1 → 记录 PT00 执行器对 ctx 块/低地址的读写，
+  // 看 DLL 是不是在找别的引擎数组（intG 那条通道）。
+  bool pt00_trace_ctx = false;
   bool dump_graphics = false;
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
@@ -354,6 +358,8 @@ DiagOptions LoadDiagOptions() {
       options.mov_probe = value;
     } else if (key == "dump_scenes") {
       options.dump_scenes = value;
+    } else if (key == "pt00_trace_ctx") {
+      options.pt00_trace_ctx = (number != 0);
     } else if (key == "mov_probe_path") {
       options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
     } else if (key == "mov_codec") {
@@ -1033,6 +1039,8 @@ void RunEngineOn(System& system,
 
   // 诊断：dump_scenes=7300,7450 → 把这几幕的脚本反汇编打到日志（引擎启动就做，
   // 不需要真的走到那一幕）。用来读「小游戏那几段循环到底在等什么」。
+  // 取证开关：让执行器记录对 ctx 块 / 低地址的读写（看 DLL 在找哪个引擎数组）
+  pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
   if (!diag.dump_scenes.empty()) {
     std::istringstream scs(diag.dump_scenes);
     std::string tok;
