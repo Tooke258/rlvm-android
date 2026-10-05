@@ -54,6 +54,15 @@ std::string MovieFileId(const std::string& name) { return "MOV/" + name + ".mpg"
 // 一起往前跑（表现为"影片播放没有中断游戏"）。影片本身就是要「等它放完」，
 // 所以在这里把这两种省时模式关掉。
 void ResetTimeSaversBeforeMovie(RLMachine& machine) {
+  // 先把「清之前」的状态记下来：这两个标志是不是开着、引擎此刻是不是处于
+  // 快进状态（ShouldFastForward 还包含「按住 Ctrl」这一路，按住 Ctrl 时它会是 1）。
+  const bool was_auto = machine.system().text().auto_mode();
+  const bool was_skip = machine.system().text().skip_mode();
+  const bool was_ff = machine.system().ShouldFastForward();
+  rlvm_android::AppendAppLogLine(
+      "mov-op: 影片前状态 auto=" + std::to_string(was_auto ? 1 : 0) +
+      " skip=" + std::to_string(was_skip ? 1 : 0) +
+      " ShouldFastForward=" + std::to_string(was_ff ? 1 : 0) + " → 全部清零");
   // Skip 与 Auto 都是引擎侧状态（TextSystem::skip_mode_ / auto_mode_，
   // 由 /sys:ClearSkipMode、/sys:SetAutoMode 设置）。影片开播前把两个都清掉：
   // 否则影片一被"点击跳过"打断，游戏会带着 Auto/Skip 状态继续一口气快进到
