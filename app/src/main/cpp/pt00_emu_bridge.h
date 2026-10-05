@@ -23,6 +23,9 @@ void SetTraceCtx(bool on);
 // 试验开关：每帧首（脚本调 72(0) 时）替脚本补调一次 CallDLL(0,31)「每帧主推进」。
 void SetTick31(bool on);
 
+// 逐调用诊断日志开关（默认关；logcat 是同步 I/O，开着会把小游戏越跑越慢）。
+void SetVerbose(bool on);
+
 // 卸载状态（换游戏目录时用）。
 void Reset();
 

@@ -28,6 +28,10 @@ constexpr int kIntDCount = 2000;
 bool g_tried = false;
 bool g_ready = false;
 bool g_tick31 = false;  // 试验开关：帧首替脚本补调 CallDLL(0,31)
+// 逐调用级别的诊断日志（相机回写、每 200 次调用的直方图等）。
+// **默认关**：logcat 是同步 I/O，小游戏每帧几十次调用时这种日志会把游戏本身拖成
+// 「越跑越慢」（实测），排查时再用 rlvm-diag.txt 里的 pt00_verbose=1 打开。
+bool g_verbose = false;
 std::vector<int> g_intd(kIntDCount);
 
 int GetD(RLMachine& machine, int index) {
@@ -59,6 +63,8 @@ void Reset() {
 void SetTraceCtx(bool on) { pt00_emu_set_trace_ctx(on ? 1 : 0, 800); }
 
 void SetTick31(bool on) { g_tick31 = on; }
+
+void SetVerbose(bool on) { g_verbose = on; }
 
 void DumpIntD(RLMachine& machine) {
   std::cerr << "[pt00] full intD[0..1999] (dump on demand), 16 per line:" << std::endl;
@@ -111,7 +117,7 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   static int g_func_counts[4096] = {0};
   if (func >= 0 && func < 4096) ++g_func_counts[func];
   static int logged_other = 0;
-  if (func != 70 && func != 71 && func != 72 && logged_other < 400) {
+  if (g_verbose && func != 70 && func != 71 && func != 72 && logged_other < 400) {
     ++logged_other;
     std::cerr << "[pt00] CallDLL func=" << func << " a=(" << a1 << "," << a2
               << "," << a3 << "," << a4 << ")" << std::endl;
@@ -191,8 +197,8 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
                 << tree.str() << std::endl;
     }
   }
-  // 每 200 次调用打一次 func 直方图：一眼看出「func=12（相机）到底有没有被调」。
-  if (call_count % 200 == 0) DumpFuncHistogram();
+  // func 直方图：默认只在需要时打（见 g_verbose）。
+  if (g_verbose && call_count % 2000 == 0) DumpFuncHistogram();
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
   pt00_emu_set_intd(g_intd.data(), kIntDCount);
@@ -220,7 +226,7 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       if (g_intd[i] != cam_before[i]) emu_changed = true;
       if (g_intd[i] != GetD(machine, i)) script_changed = true;
     }
-    if (emu_changed || script_changed) {
+    if ((emu_changed || script_changed) && g_verbose) {
       std::cerr << "[pt00] cam after func=" << func << " emu_changed="
                 << (emu_changed ? 1 : 0) << " script_changed="
                 << (script_changed ? 1 : 0) << " now=";

@@ -276,6 +276,8 @@ struct DiagOptions {
   bool pt00_trace_ctx = false;
   // 试验：pt00_tick31=1 → 每帧首替脚本补调一次 CallDLL(0,31)（原引擎的小游戏驱动）
   bool pt00_tick31 = false;
+  // 小游戏逐调用日志（默认关；见 pt00_emu_bridge.h 的 SetVerbose 注释）。
+  bool pt00_verbose = false;
   bool dump_graphics = false;
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
@@ -367,6 +369,8 @@ DiagOptions LoadDiagOptions() {
       options.pt00_trace_ctx = (number != 0);
     } else if (key == "pt00_tick31") {
       options.pt00_tick31 = (number != 0);
+    } else if (key == "pt00_verbose") {
+      options.pt00_verbose = (number != 0);
     } else if (key == "mov_probe_path") {
       options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
     } else if (key == "mov_codec") {
@@ -1135,6 +1139,7 @@ void RunEngineOn(System& system,
   // 取证开关：让执行器记录对 ctx 块 / 低地址的读写（看 DLL 在找哪个引擎数组）
   pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
   pt00emu::SetTick31(diag.pt00_tick31);
+  pt00emu::SetVerbose(diag.pt00_verbose);
   if (!diag.dump_scenes.empty()) {
     // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
     // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。
