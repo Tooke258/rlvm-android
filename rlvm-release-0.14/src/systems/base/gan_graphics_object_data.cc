@@ -278,39 +278,52 @@ std::shared_ptr<const Surface> GanGraphicsObjectData::CurrentSurface(
       // render something to the screen.
       return image_;
     }
+    // 动画帧明确要求「这一帧什么都不画」。
+    return std::shared_ptr<const Surface>();
   }
 
-  return std::shared_ptr<const Surface>();
+  // **没有在播动画时，真引擎仍然把它当普通 g00 对象显示**（GAN 只是行为/动画脚本，
+  // 真正上屏的是 g00 图像）。这里以前返回空 -> 对象被静默跳过：
+  // LBEX 小游戏的左视窗角色（`objOfFileGan(205, 40+i, "PT_YAA00", ...)`）就是这样
+  // 「对象存在、vis=1、但转储里连 Rendering 行都没有」。真机对照：PC 上同一时刻
+  // 「启动动画」的标志位 `intD[1000+i*36+26]` 同样是 0，人物却照常显示。
+  return image_;
 }
 
 Rect GanGraphicsObjectData::SrcRect(const GraphicsObject& go) {
-  const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
-  if (frame.pattern != -1) {
-    return image_->GetPattern(frame.pattern).rect;
+  if (current_set_ != -1 && current_frame_ != -1) {
+    const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
+    if (frame.pattern != -1) {
+      return image_->GetPattern(frame.pattern).rect;
+    }
+    return Rect();
   }
-
-  return Rect();
+  return image_->GetPattern(go.GetPattNo()).rect;
 }
 
 Point GanGraphicsObjectData::DstOrigin(const GraphicsObject& go) {
-  const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
-  return GraphicsObjectData::DstOrigin(go) - Size(frame.x, frame.y);
+  if (current_set_ != -1 && current_frame_ != -1) {
+    const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
+    return GraphicsObjectData::DstOrigin(go) - Size(frame.x, frame.y);
+  }
+  return GraphicsObjectData::DstOrigin(go);
 }
 
 int GanGraphicsObjectData::GetRenderingAlpha(const GraphicsObject& go,
                                              const GraphicsObject* parent) {
-  const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
-  if (frame.pattern != -1) {
-    // Calculate the combination of our frame alpha with the current object
-    // alpha.
-    float parent_alpha = parent ? (parent->GetComputedAlpha() / 255.0f) : 1;
-    return int(((frame.alpha / 255.0f) * (go.GetComputedAlpha() / 255.0f) *
-                parent_alpha) *
-               255);
-  } else {
-    // Should never happen.
-    return go.GetComputedAlpha();
+  if (current_set_ != -1 && current_frame_ != -1) {
+    const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
+    if (frame.pattern != -1) {
+      // Calculate the combination of our frame alpha with the current object
+      // alpha.
+      float parent_alpha = parent ? (parent->GetComputedAlpha() / 255.0f) : 1;
+      return int(((frame.alpha / 255.0f) * (go.GetComputedAlpha() / 255.0f) *
+                  parent_alpha) *
+                 255);
+    }
   }
+  // 没播动画（或该帧不画）时按普通对象算。
+  return go.GetComputedAlpha();
 }
 
 void GanGraphicsObjectData::ObjectInfo(std::ostream& tree) {
