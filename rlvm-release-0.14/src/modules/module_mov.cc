@@ -54,7 +54,12 @@ std::string MovieFileId(const std::string& name) { return "MOV/" + name + ".mpg"
 // 一起往前跑（表现为"影片播放没有中断游戏"）。影片本身就是要「等它放完」，
 // 所以在这里把这两种省时模式关掉。
 void ResetTimeSaversBeforeMovie(RLMachine& machine) {
+  // Skip 与 Auto 都是引擎侧状态（TextSystem::skip_mode_ / auto_mode_，
+  // 由 /sys:ClearSkipMode、/sys:SetAutoMode 设置）。影片开播前把两个都清掉：
+  // 否则影片一被"点击跳过"打断，游戏会带着 Auto/Skip 状态继续一口气快进到
+  // 下一章（真机反馈）。用户口径：宁可播完再手动重新打开这两个模式。
   machine.system().text().SetSkipMode(0);
+  machine.system().text().SetAutoMode(false);
   machine.system().clear_force_fast_forward();
   // 再补一刀：光清标志还不够——引擎跑字节码是「按时间片成批执行」的（一个片最多
   // 10ms，skip 状态下能冲过一整段剧情，真机表现是"影片开始了剧情还往后走了一截，
