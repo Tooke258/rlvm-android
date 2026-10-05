@@ -25,6 +25,19 @@ except Exception:  # noqa: BLE001
     _HAVE_HEXRAYS = False
 
 
+def _procname():
+    """IDA 8.x 里 processor 名在 ida_ida.inf_get_procname()；旧 API 作兜底。"""
+    try:
+        import ida_ida
+        return ida_ida.inf_get_procname()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return idaapi.get_inf_structure().procName
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
 def main():
     argv = getattr(idc, "ARGV", None) or sys.argv
     out_path = None
@@ -34,38 +47,68 @@ def main():
     if out_path is None:
         out_path = idc.get_input_file_path() + ".dump.txt"
 
+    # 批处理模式（-A）下脚本会在自动分析结束前被调用：不等到分析完成，
+    # IDA 只会认出入口那个函数、Hex-Rays 也没什么可反编译的。
+    try:
+        import ida_auto
+        ida_auto.auto_wait()
+    except Exception:  # noqa: BLE001
+        try:
+            idaapi.auto_wait()
+        except Exception:  # noqa: BLE001
+            pass
+
     with open(out_path, "w", encoding="utf-8", errors="replace") as f:
         def w(s=""):
             f.write(str(s) + "\n")
 
         w("== file ==")
         w("path      : %s" % idc.get_input_file_path())
-        w("processor : %s" % idaapi.get_processor_name())
-        w("imagebase : 0x%08X" % idaapi.get_imagebase())
-        w("entry     : 0x%08X" % idc.get_inf_attr(idc.INF_START_EA))
+        w("processor : %s" % _procname())
+        try:
+            w("imagebase : 0x%08X" % idaapi.get_imagebase())
+        except Exception as exc:  # noqa: BLE001
+            w("imagebase : ? (%s)" % exc)
+        try:
+            w("entry     : 0x%08X" % idc.get_inf_attr(idc.INF_START_EA))
+        except Exception as exc:  # noqa: BLE001
+            w("entry     : ? (%s)" % exc)
         w("")
 
         w("== imports ==")
-        for i in range(idaapi.get_import_module_qty()):
-            w("[%s]" % idaapi.get_import_module_name(i))
+        try:
+            for i in range(idaapi.get_import_module_qty()):
+                w("[%s]" % idaapi.get_import_module_name(i))
 
-            def cb(ea, name, ordinal):
-                w("  0x%08X  %s" % (ea, name or ("#%d" % ordinal)))
-                return True
+                def cb(ea, name, ordinal):
+                    w("  0x%08X  %s" % (ea, name or ("#%d" % ordinal)))
+                    return True
 
-            idaapi.enum_import_names(i, cb)
+                idaapi.enum_import_names(i, cb)
+        except Exception as exc:  # noqa: BLE001
+            w("// imports failed: %s" % exc)
         w("")
 
         w("== exports ==")
-        for _index, ordinal, ea, name in idautils.Entries():
-            w("  ord=%-5d ea=0x%08X  %s" % (ordinal, ea, name))
+        try:
+            for _index, ordinal, ea, name in idautils.Entries():
+                w("  ord=%-5d ea=0x%08X  %s" % (ordinal, ea, name))
+        except Exception as exc:  # noqa: BLE001
+            w("// exports failed: %s" % exc)
         w("")
 
-        funcs = list(idautils.Functions())
+        try:
+            funcs = list(idautils.Functions())
+        except Exception as exc:  # noqa: BLE001
+            funcs = []
+            w("// function enumeration failed: %s" % exc)
         w("== functions (%d) ==" % len(funcs))
         for ea in funcs:
-            end = idc.get_func_attr(ea, idc.FUNCATTR_END)
-            w("  0x%08X  size=%-6d %s" % (ea, end - ea, idc.get_func_name(ea)))
+            try:
+                end = idc.get_func_attr(ea, idc.FUNCATTR_END)
+                w("  0x%08X  size=%-6d %s" % (ea, end - ea, idc.get_func_name(ea)))
+            except Exception:  # noqa: BLE001
+                w("  0x%08X  ?" % ea)
         w("")
 
         ok = False
