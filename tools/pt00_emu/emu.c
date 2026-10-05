@@ -145,12 +145,15 @@ static inline uint32_t imm32(void) {
 }
 static inline int8_t rel8(void) { return (int8_t)rd8(cpu.eip++); }
 
-typedef struct { int mod, reg, rm; uint32_t addr; int is_reg; } ModRM;
+/* raw = 原始 ModRM 字节。x87 的寄存器形式（d9 ff = fcos 之类）用**整字节**当操作码，
+ * 所以必须保留它；只存 rm 字段是不够的。 */
+typedef struct { int mod, reg, rm; uint32_t addr; int is_reg; uint8_t raw; } ModRM;
 
 /* 计算 ModRM，返回操作数地址（is_reg=1 时 addr 是寄存器编号） */
 static ModRM modrm(void) {
   ModRM m;
   uint8_t b = imm8();
+  m.raw = b;
   m.mod = b >> 6;
   m.reg = (b >> 3) & 7;
   m.rm = b & 7;
@@ -323,6 +326,23 @@ static double *XP(int i) { return &g_fp[(g_fptop + i) & 7]; }
 static void fp_push(double v) { g_fptop = (g_fptop - 1) & 7; g_fp[g_fptop] = v; }
 static double fp_pop(void) { double v = g_fp[g_fptop]; g_fptop = (g_fptop + 1) & 7; return v; }
 
+/* x87 状态字：比较结果放在 C3(bit14)/C2(bit10)/C0(bit8)。
+ * 这是必须实现的——编译器的浮点比较惯用法是
+ *     fcompl / fnstsw ax / test ah,0x41 / sahf / jcc
+ * 不写状态字的话 fnstsw 恒为 0，后面那个分支永远走同一边，
+ * 函数就会走错路径（func 10 的 3D 投影就是这么偏掉的）。 */
+static uint16_t g_fpu_sw = 0;
+static void fp_cmp(double a, double b) {
+  g_fpu_sw &= (uint16_t)~(0x0100u | 0x0400u | 0x4000u); /* 清 C0/C2/C3 */
+  if (a > b) {
+    /* C3=0 C2=0 C0=0 */
+  } else if (a < b) {
+    g_fpu_sw |= 0x0100u; /* C0 */
+  } else {
+    g_fpu_sw |= 0x4000u; /* C3：相等 */
+  }
+}
+
 /* 返回 0 = 已处理；-1 = 未实现 */
 static int x87(uint8_t op) {
   ModRM m = modrm();
@@ -333,7 +353,8 @@ static int x87(uint8_t op) {
       switch (reg) {
         case 0: *XP(0) += v; return 0;
         case 1: *XP(0) *= v; return 0;
-        case 2: return 0; /* fcom：这里只需要"比较过了" */
+        case 2: fp_cmp(*XP(0), v); return 0;                        /* fcom m32 */
+        case 3: fp_cmp(*XP(0), v); fp_pop(); return 0;                /* fcomp m32 */
         case 4: *XP(0) -= v; return 0;
         case 5: *XP(0) = v - *XP(0); return 0;
         case 6: *XP(0) /= v; return 0;
@@ -343,6 +364,8 @@ static int x87(uint8_t op) {
       switch (reg) {
         case 0: *XP(0) += *XP(m.rm); return 0;
         case 1: *XP(0) *= *XP(m.rm); return 0;
+        case 2: fp_cmp(*XP(0), *XP(m.rm)); return 0;                  /* fcom st(i) */
+        case 3: fp_cmp(*XP(0), *XP(m.rm)); fp_pop(); return 0;        /* fcomp st(i) */
         case 4: *XP(0) -= *XP(m.rm); return 0;
         case 5: { double t = *XP(m.rm) - *XP(0); *XP(0) = t; return 0; }
         case 6: *XP(0) /= *XP(m.rm); return 0;
@@ -356,12 +379,11 @@ static int x87(uint8_t op) {
     if (m.mod != 3 && reg == 5) { wr16(m.addr, rd16(m.addr)); return 0; }  /* fldcw */
     if (m.mod != 3 && reg == 7) { wr16(m.addr, 0x027f); return 0; }        /* fnstcw */
     if (m.mod == 3) {
-      if (m.addr == 0xc0) { fp_push(*XP(0)); return 0; }        /* fld st0 */
-      if (m.addr >= 0xc0 && m.addr <= 0xc7) { fp_push(*XP(m.addr - 0xc0)); return 0; }
-      if (m.addr >= 0xc8 && m.addr <= 0xcf) {                   /* fxch */
-        double t = *XP(0); *XP(0) = *XP(m.addr - 0xc8); *XP(m.addr - 0xc8) = t; return 0;
+      if (m.raw >= 0xc0 && m.raw <= 0xc7) { fp_push(*XP(m.raw - 0xc0)); return 0; }
+      if (m.raw >= 0xc8 && m.raw <= 0xcf) {                     /* fxch */
+        double t = *XP(0); *XP(0) = *XP(m.raw - 0xc8); *XP(m.raw - 0xc8) = t; return 0;
       }
-      switch (m.addr) {
+      switch (m.raw) {
         case 0xe0: *XP(0) = -*XP(0); return 0;   /* fchs */
         case 0xe1: *XP(0) = *XP(0) < 0 ? -*XP(0) : *XP(0); return 0; /* fabs */
         case 0xe8: fp_push(1.0); return 0;       /* fld1 */
@@ -402,7 +424,12 @@ static int x87(uint8_t op) {
   } else if (op == 0xde) { /* 出栈式算术 + fcompp */
     if (m.mod != 3 && reg == 0) { fp_pop(); return 0; } /* fiadd m16：少见，先按空过 */
     if (m.mod == 3) {
-      if (m.addr == 0xd9) { fp_pop(); fp_pop(); return 0; } /* fcompp */
+      if (m.raw == 0xd9) { /* fcompp */
+        fp_cmp(*XP(0), *XP(1));
+        fp_pop();
+        fp_pop();
+        return 0;
+      }
       switch (reg) {
         case 0: *XP(1) += *XP(0); fp_pop(); return 0;  /* faddp */
         case 1: *XP(1) *= *XP(0); fp_pop(); return 0;  /* fmulp */
@@ -413,8 +440,8 @@ static int x87(uint8_t op) {
       }
     }
   } else if (op == 0xdf) {
-    if (m.mod == 3 && m.addr == 0xe0) { /* fnstsw ax */
-      cpu.eax = (cpu.eax & 0xffff0000u) | 0x0000u;
+    if (m.mod == 3 && m.raw == 0xe0) { /* fnstsw ax */
+      cpu.eax = (cpu.eax & 0xffff0000u) | (uint32_t)g_fpu_sw;
       return 0;
     }
     if (m.mod != 3 && reg == 5) { fp_push((double)*(int16_t *)gp(m.addr)); return 0; } /* fild m16 */
@@ -566,8 +593,14 @@ static int step(void) {
          op == 0x65 || op == 0x66 || op == 0x67 || op == 0xf2 || op == 0xf3) {
     if (op == 0xf3) { /* rep：先只支持 rep stosl/movsl 的最小形态 */
       uint8_t n = imm8();
-      if (n == 0xab) { while (cpu.ecx--) { wr32(cpu.edi, cpu.eax); cpu.edi += 4; } return 0; }
-      UNIMPL("rep ...");
+      const int df = (cpu.eflags & DF) ? -1 : 1;
+      switch (n) {
+        case 0xab: while (cpu.ecx--) { wr32(cpu.edi, cpu.eax); cpu.edi += 4 * df; } return 0; /* rep stosl */
+        case 0xaa: while (cpu.ecx--) { wr8(cpu.edi, (uint8_t)cpu.eax); cpu.edi += df; } return 0; /* rep stosb */
+        case 0xa5: while (cpu.ecx--) { wr32(cpu.edi, rd32(cpu.esi)); cpu.esi += 4 * df; cpu.edi += 4 * df; } return 0;
+        case 0xa4: while (cpu.ecx--) { wr8(cpu.edi, rd8(cpu.esi)); cpu.esi += df; cpu.edi += df; } return 0;
+        default: UNIMPL("rep ...");
+      }
     }
     if (op == 0x64) { seg_fs = 1; g_seg_fs = 1; }  /* fs: → TIB 影子区 */
     if (op == 0x66) opsize16 = 1; /* 操作数 16 位（SYSTEMTIME 那套用 16 位字段） */
@@ -833,6 +866,11 @@ static int step(void) {
       UNIMPL("0f xx");
     }
     case 0xcc: fprintf(stderr, "[emu] int3 命中（不该被执行到）\n"); return -1;
+    /* 无 rep 前缀的串指令（编译器把 memcpy/memset 内联时的形态） */
+    case 0xab: wr32(cpu.edi, cpu.eax); cpu.edi += 4; return 0;   /* stosl */
+    case 0xaa: wr8(cpu.edi, (uint8_t)cpu.eax); cpu.edi += 1; return 0; /* stosb */
+    case 0xa5: wr32(cpu.edi, rd32(cpu.esi)); cpu.esi += 4; cpu.edi += 4; return 0; /* movsl */
+    case 0xa4: wr8(cpu.edi, rd8(cpu.esi)); cpu.esi += 1; cpu.edi += 1; return 0;   /* movsb */
     case 0xd8: case 0xd9: case 0xda: case 0xdb:
     case 0xdc: case 0xdd: case 0xde: case 0xdf:
       if (x87(op) == 0) return 0;
