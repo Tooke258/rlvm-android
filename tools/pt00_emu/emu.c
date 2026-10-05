@@ -312,6 +312,117 @@ static int cond(int cc) {
 
 static int step(void);
 
+/* ------------------------------------------------------------------ x87 */
+/* 只需要覆盖 PT00 实际用到的那一小族：fld/fst/fstp（m32/m64）、fild/fistp、
+ * fadd/fsub/fsubr/fmul/fdiv/fdivr、fcom/fcomp、faddp/fmulp/fsubp/fsubrp/
+ * fdivp/fdivrp、fld1/fldz/fchs/fabs/fsqrt/fsin/fcos/fpatan、fldcw/fnstcw/fnstsw。
+ * 栈用 8 个 double 模拟（x87 内部是 80 位，先按 double 走，精度差异后面再对齐）。 */
+static double g_fp[8];
+static int g_fptop = 0;
+static double *XP(int i) { return &g_fp[(g_fptop + i) & 7]; }
+static void fp_push(double v) { g_fptop = (g_fptop - 1) & 7; g_fp[g_fptop] = v; }
+static double fp_pop(void) { double v = g_fp[g_fptop]; g_fptop = (g_fptop + 1) & 7; return v; }
+
+/* 返回 0 = 已处理；-1 = 未实现 */
+static int x87(uint8_t op) {
+  ModRM m = modrm();
+  const int reg = m.reg;
+  if (op == 0xd8) { /* m32real 与 st 形式 */
+    if (m.mod != 3) {
+      float v = in_guest(m.addr, 4) ? *(float *)gp(m.addr) : 0.0f;
+      switch (reg) {
+        case 0: *XP(0) += v; return 0;
+        case 1: *XP(0) *= v; return 0;
+        case 2: return 0; /* fcom：这里只需要"比较过了" */
+        case 4: *XP(0) -= v; return 0;
+        case 5: *XP(0) = v - *XP(0); return 0;
+        case 6: *XP(0) /= v; return 0;
+        case 7: *XP(0) = v / *XP(0); return 0;
+      }
+    } else {
+      switch (reg) {
+        case 0: *XP(0) += *XP(m.rm); return 0;
+        case 1: *XP(0) *= *XP(m.rm); return 0;
+        case 4: *XP(0) -= *XP(m.rm); return 0;
+        case 5: { double t = *XP(m.rm) - *XP(0); *XP(0) = t; return 0; }
+        case 6: *XP(0) /= *XP(m.rm); return 0;
+        case 7: { double t = *XP(m.rm) / *XP(0); *XP(0) = t; return 0; }
+      }
+    }
+  } else if (op == 0xd9) {
+    if (m.mod != 3 && reg == 0) { float v = *(float *)gp(m.addr); fp_push(v); return 0; }
+    if (m.mod != 3 && reg == 2) { *(float *)gp(m.addr) = (float)*XP(0); return 0; }
+    if (m.mod != 3 && reg == 3) { *(float *)gp(m.addr) = (float)fp_pop(); return 0; }
+    if (m.mod != 3 && reg == 5) { wr16(m.addr, rd16(m.addr)); return 0; }  /* fldcw */
+    if (m.mod != 3 && reg == 7) { wr16(m.addr, 0x027f); return 0; }        /* fnstcw */
+    if (m.mod == 3) {
+      if (m.addr == 0xc0) { fp_push(*XP(0)); return 0; }        /* fld st0 */
+      if (m.addr >= 0xc0 && m.addr <= 0xc7) { fp_push(*XP(m.addr - 0xc0)); return 0; }
+      if (m.addr >= 0xc8 && m.addr <= 0xcf) {                   /* fxch */
+        double t = *XP(0); *XP(0) = *XP(m.addr - 0xc8); *XP(m.addr - 0xc8) = t; return 0;
+      }
+      switch (m.addr) {
+        case 0xe0: *XP(0) = -*XP(0); return 0;   /* fchs */
+        case 0xe1: *XP(0) = *XP(0) < 0 ? -*XP(0) : *XP(0); return 0; /* fabs */
+        case 0xe8: fp_push(1.0); return 0;       /* fld1 */
+        case 0xee: fp_push(0.0); return 0;       /* fldz */
+        case 0xfa: *XP(0) = sqrt(*XP(0)); return 0;
+        case 0xfe: *XP(0) = sin(*XP(0)); return 0;
+        case 0xff: *XP(0) = cos(*XP(0)); return 0;
+      }
+    }
+  } else if (op == 0xdb && m.mod != 3) { /* fild m32 / fistp m32 */
+    if (reg == 0) { fp_push((double)*(int32_t *)gp(m.addr)); return 0; }
+    if (reg == 3) { int32_t v = (int32_t)*XP(0); fp_pop(); wr32(m.addr, (uint32_t)v); return 0; }
+  } else if (op == 0xdc) { /* m64real */
+    if (m.mod != 3) {
+      double v = *(double *)gp(m.addr);
+      switch (reg) {
+        case 0: *XP(0) += v; return 0;
+        case 1: *XP(0) *= v; return 0;
+        case 4: *XP(0) -= v; return 0;
+        case 5: *XP(0) = v - *XP(0); return 0;
+        case 6: *XP(0) /= v; return 0;
+        case 7: *XP(0) = v / *XP(0); return 0;
+      }
+    } else {
+      switch (reg) {
+        case 0: *XP(m.rm) += *XP(0); return 0;
+        case 1: *XP(m.rm) *= *XP(0); return 0;
+        case 4: *XP(m.rm) -= *XP(0); return 0;
+        case 5: { double t = *XP(0) - *XP(m.rm); *XP(m.rm) = t; return 0; }
+        case 6: *XP(m.rm) /= *XP(0); return 0;
+        case 7: { double t = *XP(0) / *XP(m.rm); *XP(m.rm) = t; return 0; }
+      }
+    }
+  } else if (op == 0xdd && m.mod != 3) { /* fld/fst/fstp m64 */
+    if (reg == 0) { fp_push(*(double *)gp(m.addr)); return 0; }
+    if (reg == 2) { *(double *)gp(m.addr) = *XP(0); return 0; }
+    if (reg == 3) { *(double *)gp(m.addr) = fp_pop(); return 0; }
+  } else if (op == 0xde) { /* 出栈式算术 + fcompp */
+    if (m.mod != 3 && reg == 0) { fp_pop(); return 0; } /* fiadd m16：少见，先按空过 */
+    if (m.mod == 3) {
+      if (m.addr == 0xd9) { fp_pop(); fp_pop(); return 0; } /* fcompp */
+      switch (reg) {
+        case 0: *XP(1) += *XP(0); fp_pop(); return 0;  /* faddp */
+        case 1: *XP(1) *= *XP(0); fp_pop(); return 0;  /* fmulp */
+        case 4: *XP(1) -= *XP(0); fp_pop(); return 0;  /* fsubp */
+        case 5: { double t = *XP(0) - *XP(1); fp_pop(); *XP(0) = t; return 0; } /* fsubrp */
+        case 6: *XP(1) /= *XP(0); fp_pop(); return 0;  /* fdivp */
+        case 7: { double t = *XP(0) / *XP(1); fp_pop(); *XP(0) = t; return 0; } /* fdivrp */
+      }
+    }
+  } else if (op == 0xdf) {
+    if (m.mod == 3 && m.addr == 0xe0) { /* fnstsw ax */
+      cpu.eax = (cpu.eax & 0xffff0000u) | 0x0000u;
+      return 0;
+    }
+    if (m.mod != 3 && reg == 5) { fp_push((double)*(int16_t *)gp(m.addr)); return 0; } /* fild m16 */
+    if (m.mod != 3 && reg == 7) { int16_t v = (int16_t)*XP(0); fp_pop(); wr16(m.addr, (uint16_t)v); return 0; }
+  }
+  return -1;
+}
+
 /* ---------------------------------------------------------- 导入桩分发 */
 static uint32_t arg_at(int i) { return rd32(cpu.esp + 4 + 4 * i); }
 static int stub_is(int idx, const char *name) {
@@ -579,6 +690,44 @@ static int step(void) {
         default: UNIMPL("ff /x");
       }
     }
+    /* 8 位 ALU：0x00+(sub<<3) 是 r/m8, r8；0x02+(sub<<3) 是 r8, r/m8。
+     * （编译器用 `xorb %bl,%bl` 之类清零，很常见。） */
+    case 0x00: case 0x08: case 0x20: case 0x28: case 0x30: case 0x38:
+    case 0x02: case 0x0a: case 0x22: case 0x2a: case 0x32: case 0x3a: {
+      ModRM m = modrm();
+      uint8_t a = (op & 2) ? *reg8(m.reg) : rm_read8(m);
+      uint8_t b = (op & 2) ? rm_read8(m) : *reg8(m.reg);
+      uint8_t r;
+      switch ((op >> 3) & 7) {
+        case 0: r = (uint8_t)(a + b); set_szp8(r); break;
+        case 1: r = (uint8_t)(a | b); set_szp8(r); break;
+        case 4: r = (uint8_t)(a & b); set_szp8(r); break;
+        case 5: r = (uint8_t)(a - b); set_szp8(r); break;
+        case 6: r = (uint8_t)(a ^ b); set_szp8(r); break;
+        default: /* cmp */ { uint8_t s = (uint8_t)(a - b); set_szp8(s); } return 0;
+      }
+      if (op & 2) *reg8(m.reg) = r; else rm_write8(m, r);
+      return 0;
+    }
+    /* 0xF7 组：test/not/neg/mul/imul/div/idiv（单操作数） */
+    case 0xf7: {
+      ModRM m = modrm();
+      uint32_t v = rm_read32(m);
+      switch (m.reg) {
+        case 0: cpu.eflags &= ~(CF | OF); set_szp32(v & cpu.eax); return 0; /* test */
+        case 2: rm_write32(m, ~v); return 0;                                  /* not */
+        case 3: alu_sub(0, v); rm_write32(m, (uint32_t)(-(int32_t)v)); return 0; /* neg */
+        case 4: { uint64_t r = (uint64_t)cpu.eax * v; cpu.eax = (uint32_t)r; cpu.edx = (uint32_t)(r >> 32); return 0; }
+        case 5: { int64_t r = (int64_t)(int32_t)cpu.eax * (int64_t)(int32_t)v;
+                  cpu.eax = (uint32_t)r; cpu.edx = (uint32_t)(r >> 32); return 0; }
+        case 6: { if (v == 0) { fprintf(stderr, "[emu] div 0\n"); return -1; }
+                  uint32_t q = cpu.eax / v, r2 = cpu.eax % v; cpu.eax = q; cpu.edx = r2; return 0; }
+        case 7: { if (v == 0) { fprintf(stderr, "[emu] idiv 0\n"); return -1; }
+                  int32_t q = (int32_t)cpu.eax / (int32_t)v, r2 = (int32_t)cpu.eax % (int32_t)v;
+                  cpu.eax = (uint32_t)q; cpu.edx = (uint32_t)r2; return 0; }
+      }
+      UNIMPL("f7 /x");
+    }
     case 0x01: case 0x29: case 0x31: case 0x09: case 0x21: case 0x39: case 0x85: {
       ModRM m = modrm();
       uint32_t a = rm_read32(m), b = *reg32(m.reg);
@@ -684,6 +833,12 @@ static int step(void) {
       UNIMPL("0f xx");
     }
     case 0xcc: fprintf(stderr, "[emu] int3 命中（不该被执行到）\n"); return -1;
+    case 0xd8: case 0xd9: case 0xda: case 0xdb:
+    case 0xdc: case 0xdd: case 0xde: case 0xdf:
+      if (x87(op) == 0) return 0;
+      cpu.eip = start; /* 回退 eip，让报错指向指令开头 */
+      UNIMPL("x87");
+    case 0x9b: return 0; /* fwait，忽略 */
     default: UNIMPL("opcode");
   }
 }
