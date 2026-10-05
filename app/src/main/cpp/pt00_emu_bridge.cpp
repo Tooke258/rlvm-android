@@ -7,6 +7,8 @@
 
 #include "libreallive/intmemref.h"
 #include "machine/rlmachine.h"
+#include "systems/base/graphics_system.h"
+#include "systems/base/system.h"
 #include "utilities/file.h"
 
 // 执行器本体（tools/pt00_emu/emu.c，以 PT00_EMU_LIBRARY 编进 librlvm）。
@@ -100,6 +102,19 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   }
 
   // intD 是 DLL 与脚本唯一的交换区：进来先把引擎的值灌给执行器，
+  // 小游戏期间定期把图形栈转储出来（卡住时引擎不会走到退出路径里的 dump_graphics）：
+  // 每 30 帧一次、最多 5 次，用来确认球/人物这些对象的 src/dst 矩形是不是 0×0。
+  if (call_count % 35 == 0) {
+    static int tree_dumps = 0;
+    const int frame_no = call_count / 35;
+    if (tree_dumps < 5 && frame_no % 30 == 0) {
+      ++tree_dumps;
+      std::ostringstream tree;
+      machine.system().graphics().Refresh(&tree);
+      std::cerr << "[pt00] graphics tree @frame " << frame_no << ":" << std::endl
+                << tree.str() << std::endl;
+    }
+  }
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
   pt00_emu_set_intd(g_intd.data(), kIntDCount);

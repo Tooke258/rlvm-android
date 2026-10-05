@@ -913,6 +913,15 @@ struct ObjBtnSelect : public RLOp_Void_Void {
       std::cout << "[lb-ext] objbtn select group=" << g_objbtn_group
                 << " cancelable=" << (cancelable_ ? 1 : 0) << " fg_objects=" << fg
                 << " buttons_in_group=" << btns << std::endl;
+      // 就在「要等玩家点选」这一刻把图形栈转储出来：小游戏卡住时画面到底有什么、
+      // 每个对象的源/目标矩形是不是 0×0，一望便知（引擎卡着不会走到退出路径的 dump）。
+      static int tree_dumps = 0;
+      if (tree_dumps < 2) {
+        ++tree_dumps;
+        std::ostringstream tree;
+        g.Refresh(&tree);
+        std::cout << "[lb-ext] graphics tree:" << std::endl << tree.str() << std::endl;
+      }
     }
     ButtonObjectSelectLongOperation* op =
         new ButtonObjectSelectLongOperation(machine, g_objbtn_group);
