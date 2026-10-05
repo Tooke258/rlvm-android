@@ -1098,6 +1098,32 @@ void EntityUpdate(RLMachine& machine, int index) {
   SetEnt(machine, index, 31, Ent(machine, index, 31) + 1);
 }
 
+// 小游戏主循环状态探针（lb_minigame=1 时开）。
+//
+// SEEN7100 的每帧循环是：
+//   goto_unless (intD[0] < intD[1])   ← 不满足就退出
+//   farcall(intD[5], intD[6])         ← 每帧驱动（由它设预算/退出标志）
+//   intD[4]==1 / intD[3]==1 → 提前退出
+//   intD[0] += 1; refresh; intD[2] += 1; refresh(1); goto 0
+// 所以只要看这几个数就能判断卡在哪：intD[1] 是不是有限预算、intD[0] 有没有在涨、
+// intD[3]/[4] 有没有被置起来。func 71 的 a=0 那次正好是每帧第一个实体调用，
+// 用它当帧边界，每 30 帧打一行。
+void LogLoopState(RLMachine& machine) {
+  if (!g_log_calls) return;
+  static int frame = 0;
+  if (++frame % 30 != 0) return;
+  std::cout << "[lb-loop] frame=" << frame << " intD0=" << GetD(machine, 0)
+            << " 1=" << GetD(machine, 1) << " 2=" << GetD(machine, 2)
+            << " 3=" << GetD(machine, 3) << " 4=" << GetD(machine, 4)
+            << " 5=" << GetD(machine, 5) << " 6=" << GetD(machine, 6)
+            << " 210=" << GetD(machine, 210) << " 500=" << GetD(machine, 500)
+            << " ent0=[";
+  for (int f = 0; f < 8; ++f) {
+    std::cout << (f ? "," : "") << Ent(machine, 0, f);
+  }
+  std::cout << "]" << std::endl;
+}
+
 void LogCall(int func, int a1, int a2, int a3, int a4, const char* note) {
   if (!g_log_calls) return;
   ++g_call_count;
@@ -1166,6 +1192,7 @@ int LittleBustersPT00DLL::CallDLL(RLMachine& machine,
       break;
     case 71:
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      if (arg1 == 0) LogLoopState(machine);   // 每帧的第一次实体调用 = 帧边界
       EntityUpdate(machine, arg1);
       break;
     case 100:
