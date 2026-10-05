@@ -1,6 +1,7 @@
 #include "pt00_emu_bridge.h"
 
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,30 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
     ++logged;
     std::cerr << "[pt00] CallDLL func=" << func << " a=(" << a1 << "," << a2
               << "," << a3 << "," << a4 << ")" << std::endl;
+  }
+
+  // 每 ~35 次调用（= 脚本一帧）打一次关键 intD 快照：用来判断 DLL 的状态机
+  // 到底有没有推进（卡在小游戏时最需要看这个）。前 3 帧全打，之后每 60 帧一次。
+  static int call_count = 0;
+  static int frames_logged = 0;
+  if (++call_count % 35 == 0) {
+    if (frames_logged < 3 || (call_count / 35) % 60 == 0) {
+      ++frames_logged;
+      std::ostringstream os;
+      os << "[pt00] frame " << (call_count / 35) << " intD[30]=" << GetD(machine, 30)
+         << " [46]=" << GetD(machine, 46) << " [210]=" << GetD(machine, 210)
+         << " [320]=" << GetD(machine, 320) << " [350]=" << GetD(machine, 350)
+         << " | ball1800..1804=";
+      for (int i = 1800; i <= 1804; ++i) os << GetD(machine, i) << ",";
+      os << " | ballA1830..1841=";
+      for (int i = 1830; i <= 1841; ++i) os << GetD(machine, i) << ",";
+      os << " | ballB1850..1865=";
+      for (int i = 1850; i <= 1865; ++i) os << GetD(machine, i) << ",";
+      os << " | flags 700/710/734/740/771=" << GetD(machine, 700) << "/"
+         << GetD(machine, 710) << "/" << GetD(machine, 734) << "/"
+         << GetD(machine, 740) << "/" << GetD(machine, 771);
+      std::cerr << os.str() << std::endl;
+    }
   }
 
   // intD 是 DLL 与脚本唯一的交换区：进来先把引擎的值灌给执行器，

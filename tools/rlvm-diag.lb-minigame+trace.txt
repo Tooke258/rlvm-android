@@ -1,0 +1,7 @@
+# 小游戏排查：不跳过小游戏 + 逐指令追踪（trace 走 rlvm-stderr → logcat）
+#
+# lb_minigame=1：不注册「直接跳过棒球小游戏」的 line action，脚本会真正进 SEEN7030，
+#                并打开 PT00 的调用日志。
+# trace=1      ：每条指令一行，用来抓「卡住时反复执行的是哪一条」。
+lb_minigame=1
+trace=1

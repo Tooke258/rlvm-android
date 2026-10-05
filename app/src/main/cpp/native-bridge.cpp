@@ -50,6 +50,7 @@
 #include "android/font_engine.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
+#include "machine/dump_scenario.h"
 #include "machine/long_operation.h"
 #include "machine/rlmachine.h"
 #include "machine/rlmodule.h"
@@ -59,6 +60,8 @@
 #include "systems/base/event_system.h"
 #include "systems/base/frame_counter.h"
 #include "systems/base/graphics_system.h"
+#include "systems/base/graphics_object.h"
+#include "systems/base/parent_graphics_object_data.h"
 #include "systems/base/little_busters_pt00dll.h"
 #include "utilities/file.h"
 #include "utilities/string_utilities.h"
@@ -261,6 +264,9 @@ class CurrentSystemGuard {
 
 struct DiagOptions {
   bool trace = false;
+  // 诊断：dump_scenes=7300,7450 → 引擎启动时把这几幕的脚本反汇编打到日志
+  // （用来读小游戏那段循环在等什么；不需要真的走到小游戏）
+  std::string dump_scenes;
   bool dump_graphics = false;
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
@@ -345,7 +351,9 @@ DiagOptions LoadDiagOptions() {
     } else if (key == "dirty_gate") {
       options.dirty_gate = (number != 0);
     } else if (key == "mov_probe") {
-      options.mov_probe = value;  // 值是"游戏文件标识"，例如 MOV/op00.mpg
+      options.mov_probe = value;
+    } else if (key == "dump_scenes") {
+      options.dump_scenes = value;
     } else if (key == "mov_probe_path") {
       options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
     } else if (key == "mov_codec") {
@@ -868,6 +876,44 @@ struct ObjBtnSelect : public RLOp_Void_Void {
   explicit ObjBtnSelect(bool cancelable) : cancelable_(cancelable) {}
   void operator()(RLMachine& machine) {
     if (machine.ShouldSetSelcomSavepoint()) machine.MarkSavepoint();
+    // 诊断：把「这一组里到底有几个按钮、各自在哪」打出来 —— 小游戏卡住时
+    // 最常见的原因就是按钮组是空的（对象没标成按钮 / 组号不对），或者点位不对。
+    {
+      int fg = 0, btns = 0, idx = -1;
+      GraphicsSystem& g = machine.system().graphics();
+      for (GraphicsObject& o : g.GetForegroundObjects()) {
+        ++fg; ++idx;
+        if (o.IsButton() && o.GetButtonGroup() == g_objbtn_group) {
+          ++btns;
+          Rect r = o.has_object_data()
+                       ? o.GetObjectData().DstRect(o, nullptr)
+                       : Rect();
+          std::cout << "[lb-ext] objbtn hit#" << btns << " obj=" << idx
+                    << " group=" << o.GetButtonGroup() << " rect=(" << r.x()
+                    << "," << r.y() << " " << r.width() << "x" << r.height()
+                    << ") show=" << o.visible() << std::endl;
+        } else if (o.has_object_data()) {
+          ParentGraphicsObjectData* parent =
+              dynamic_cast<ParentGraphicsObjectData*>(&o.GetObjectData());
+          if (parent) {
+            for (GraphicsObject& c : parent->objects()) {
+              if (c.IsButton() && c.GetButtonGroup() == g_objbtn_group) {
+                ++btns;
+                Rect r = c.GetObjectData().DstRect(c, &o);
+                std::cout << "[lb-ext] objbtn hit#" << btns << " child of obj="
+                          << idx << " group=" << c.GetButtonGroup()
+                          << " rect=(" << r.x() << "," << r.y() << " "
+                          << r.width() << "x" << r.height() << ")"
+                          << std::endl;
+              }
+            }
+          }
+        }
+      }
+      std::cout << "[lb-ext] objbtn select group=" << g_objbtn_group
+                << " cancelable=" << (cancelable_ ? 1 : 0) << " fg_objects=" << fg
+                << " buttons_in_group=" << btns << std::endl;
+    }
     ButtonObjectSelectLongOperation* op =
         new ButtonObjectSelectLongOperation(machine, g_objbtn_group);
     if (cancelable_) op->set_cancelable();
@@ -915,11 +961,15 @@ class AndroidRLMachine : public RLMachine {
     } else if (module != nullptr && module->module_type() == 1 &&
                module->module_number() == 21) {
       // Pcm：小游戏按名预载音效（WAV/PT_*.ogg），见 LbWavLoadByName 注释。
-      module->AddOpcode(1000, 0, "lb_wav_load_by_name", new LbWavLoadByName());
+      // 用容错占位：LBEX 里同号 opcode 的参数形状不唯一（吃过一次崩），
+      // 一律「不解析参数 + 自己推进 IP」，和 Mem201/Sys151/152 同一条路。
+      module->AddOpcode(1000, 0, "lb_wav_load_by_name",
+                        new LbIgnoreRawArgs(21, 1000, "Pcm按名预载音效"));
     } else if (module != nullptr && module->module_type() == 2 &&
                module->module_number() == 81) {
       // ChildObjFg：LBEX 小游戏用的子对象属性（RLVM 表里缺 1058）。
-      module->AddOpcode(1058, 1, "lb_child_obj_1058", new LbChildObj1058());
+      module->AddOpcode(1058, 1, "lb_child_obj_1058",
+                        new LbIgnoreRawArgs(81, 1058, "ChildObjFg属性"));
     } else if (module != nullptr && module->module_type() == 0 &&
                module->module_number() == 2) {
       // Sel 模块缺的 objbtn 组（见上面的长注释）。
@@ -947,6 +997,24 @@ void RunEngineOn(System& system,
   // 设备侧诊断参数（文件不存在时全部取缺省值，行为与之前一致）。
   // 以前这行在 AddGameHacks 之后，但小游戏开关要在注册游戏 hack 之前就知道。
   const DiagOptions diag = LoadDiagOptions();
+
+  // 诊断：dump_scenes=7300,7450 → 把这几幕的脚本反汇编打到日志（引擎启动就做，
+  // 不需要真的走到那一幕）。用来读「小游戏那几段循环到底在等什么」。
+  if (!diag.dump_scenes.empty()) {
+    std::istringstream scs(diag.dump_scenes);
+    std::string tok;
+    while (std::getline(scs, tok, ',')) {
+      const int id = std::atoi(tok.c_str());
+      std::cout << "===== SEEN" << id << " =====" << std::endl;
+      libreallive::Scenario* scene = archive.GetScenario(id);
+      if (scene) {
+        DumpScenario(scene);
+      } else {
+        std::cout << "(没有这一幕)" << std::endl;
+      }
+      std::cout << "===== SEEN" << id << " 结束 =====" << std::endl;
+    }
+  }
 
   // 触摸输入（T2.3）：把当前系统暴露给 UI 线程，离开 RunEngineOn 时自动断开。
   CurrentSystemGuard current_system(dynamic_cast<AndroidSystem*>(&system));
