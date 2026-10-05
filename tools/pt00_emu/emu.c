@@ -257,6 +257,30 @@ static int stub_is(int idx, const char *name) {
   return strcmp(g_stub_name[idx], name) == 0;
 }
 
+/* KERNEL32 是 stdcall：被调方负责清参数。桩必须照做，否则栈会每个调用漂 4 字节，
+ * 攒到最后 ret 弹出来的就不是返回地址了（真机上表现为跳到假堆地址）。 */
+static int stub_argc(int idx) {
+  static const struct { const char *n; int c; } kTable[] = {
+      {"GetSystemTime", 1}, {"GetLocalTime", 1}, {"SetLastError", 1},
+      {"SetUnhandledExceptionFilter", 1}, {"GetTimeZoneInformation", 1},
+      {"RtlUnwind", 4}, {"GetEnvironmentVariableA", 3}, {"GetProcAddress", 2},
+      {"LoadLibraryA", 1}, {"DeleteCriticalSection", 1},
+      {"EnterCriticalSection", 1}, {"LeaveCriticalSection", 1},
+      {"InitializeCriticalSection", 1}, {"GetModuleHandleA", 1},
+      {"HeapCreate", 3}, {"HeapAlloc", 3}, {"HeapReAlloc", 4},
+      {"VirtualAlloc", 4}, {"HeapFree", 3}, {"VirtualFree", 3},
+      {"HeapDestroy", 1}, {"IsBadReadPtr", 2}, {"IsBadWritePtr", 2},
+      {"HeapSize", 3}, {"TlsGetValue", 1}, {"TlsSetValue", 2}, {"TlsFree", 1},
+      {"InterlockedIncrement", 1}, {"InterlockedDecrement", 1}, {"time", 1},
+      {"GetStdHandle", 1}, {"GetFileType", 1}, {"WriteFile", 5},
+      {"ExitProcess", 1}, {"TerminateProcess", 2},
+  };
+  for (size_t i = 0; i < sizeof(kTable) / sizeof(kTable[0]); ++i) {
+    if (strcmp(g_stub_name[idx], kTable[i].n) == 0) return kTable[i].c;
+  }
+  return 0;
+}
+
 /* 返回 0 表示"已处理、按 cdecl 返回"，返回 1 表示是 ExitProcess 之类要停机 */
 static int stub_call(int idx) {
   ++g_stub_hits[idx];
@@ -349,6 +373,7 @@ static int step(void) {
     int idx = (int)((cpu.eip - STUB_BASE) / STUB_STRIDE);
     if (stub_call(idx) != 0) return -1;
     cpu.eip = pop32();
+    cpu.esp += (uint32_t)stub_argc(idx) * 4u;  /* stdcall：被调方清参数 */
     return 0;
   }
   uint32_t start = cpu.eip;
@@ -381,8 +406,25 @@ static int step(void) {
   if (op >= 0xb8 && op <= 0xbf) { *reg32(op - 0xb8) = imm32(); return 0; }
   if (op >= 0xb0 && op <= 0xb7) { *reg8(op - 0xb0) = imm8(); return 0; }
   if (op >= 0x91 && op <= 0x97) { uint32_t *r = reg32(op - 0x90); uint32_t t = cpu.eax; cpu.eax = *r; *r = t; return 0; }
-  if (op >= 0x04 && op <= 0x3d && (op & 7) == 4) { /* AL/EAX, imm —— 少见，先留 */
-    UNIMPL("alu eax,imm");
+  /* AL/EAX, imm 族： (op&7)==4 是 AL+imm8，==5 是 EAX+imm32；高位选操作 */
+  if ((op & 7) == 4 || (op & 7) == 5) {
+    int sub = (op >> 3) & 7;
+    int is8 = (op & 7) == 4;
+    uint32_t im = is8 ? (uint32_t)(int32_t)(int8_t)imm8() : imm32();
+    uint32_t a = is8 ? (cpu.eax & 0xffu) : cpu.eax;
+    uint32_t r;
+    switch (sub) {
+      case 0: r = a + im; alu_add(a, im); break;
+      case 1: r = a | im; set_szp32(r); break;
+      case 4: r = a & im; set_szp32(r); break;
+      case 5: r = a - im; alu_sub(a, im); break;
+      case 6: r = a ^ im; set_szp32(r); break;
+      case 7: alu_cmp(a, im); return 0;
+      default: UNIMPL("alu eax,imm (adc/sbb)");
+    }
+    if (is8) cpu.eax = (cpu.eax & 0xffffff00u) | (r & 0xffu);
+    else cpu.eax = r;
+    return 0;
   }
 
   switch (op) {
