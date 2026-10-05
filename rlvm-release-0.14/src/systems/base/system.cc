@@ -55,6 +55,7 @@
 #include "systems/base/system_error.h"
 #include "systems/base/text_system.h"
 #include "utilities/exception.h"
+#include "android/mov_player.h"
 #include "utilities/file.h"
 #include "utilities/string_utilities.h"
 
@@ -394,6 +395,11 @@ boost::filesystem::path System::GameSaveDirectory() {
 }
 
 bool System::ShouldFastForward() {
+  // Android 移植（v0.2.5）：影片播放期间屏蔽引擎侧的"强制/自动快进"。
+  // 否则按住 Ctrl（或游戏自己开着 Skip）会把正在播的影片一口气快进掉——真机反馈
+  // 的"影片开播后剧情还在跑"里，Ctrl 那条路就是这样进去的。点击跳过影片、面板的
+  // 影片自测按钮都不走这里，不受影响。
+  if (rlvm_android::MovPlayer::Instance().playing()) return false;
   return (event().CtrlPressed() && text().ctrl_key_skip()) ||
          text().CurrentlySkipping() || force_fast_forward_;
 }

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.view.KeyEvent
 import android.net.Uri
 import android.os.Bundle
 import android.graphics.drawable.GradientDrawable
@@ -365,6 +366,14 @@ class MainActivity : Activity() {
             addView(padButton("右键", { sendMouseButton(2, true) }, { sendMouseButton(2, false) }),
                 LinearLayout.LayoutParams(padSize, padSize))
         }
+
+        // 「Ctrl」按钮（v0.2.5）：按住 = 引擎的强制快进（ShouldFastForward 里 Ctrl
+        // 那条路，原版"按住 Ctrl 跳过"就是这个）。「加」保持 Shift 不动——LB 的小游戏
+        // 脚本读的是 Shift。
+        actionPad.addView(
+            padButton("Ctrl", { sendKey(RLKEY_LCTRL, true) },
+                { sendKey(RLKEY_LCTRL, false) }),
+            LinearLayout.LayoutParams(padSize, padSize))
 
         inputOverlay = FrameLayout(this@MainActivity).apply {
             addView(dpad, FrameLayout.LayoutParams(
@@ -883,6 +892,44 @@ class MainActivity : Activity() {
      *
      * 返回 false（落在黑边上）时事件交给系统，避免把黑边内的触摸也当成游戏输入。
      */
+    /** 硬件键盘转发（v0.2.5）：Android keycode → RLKEY_*（值取自
+     *  systems/base/event_listener.h），走与触摸同一条 NativeBridge.keyEvent 通道。
+     *  物理键盘/蓝牙键盘由此可用：Ctrl 按住 = 引擎的强制快进（原版 Ctrl 跳过），
+     *  方向键 = 移动光标，Enter/Space = 推进，Esc = 菜单。 */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val rl = rlKeyOf(keyCode)
+        if (rl == 0) return super.onKeyDown(keyCode, event)
+        if (event.repeatCount > 0) return true  // 自动重复不重发
+        sendKey(rl, true)
+        return true
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        val rl = rlKeyOf(keyCode)
+        if (rl == 0) return super.onKeyUp(keyCode, event)
+        sendKey(rl, false)
+        return true
+    }
+
+    /** Android KeyEvent → RLVM 的 RLKEY_*。注意 RLVM/SDL 的方向键顺序：
+     *  上273 下274 右275 左276；Shift 304/303、Ctrl 306/305。 */
+    private fun rlKeyOf(keyCode: Int): Int = when (keyCode) {
+        KeyEvent.KEYCODE_ESCAPE -> 27
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> 13
+        KeyEvent.KEYCODE_SPACE -> 32
+        KeyEvent.KEYCODE_TAB -> 9
+        KeyEvent.KEYCODE_DEL -> 8
+        KeyEvent.KEYCODE_DPAD_UP -> 273
+        KeyEvent.KEYCODE_DPAD_DOWN -> 274
+        KeyEvent.KEYCODE_DPAD_RIGHT -> 275
+        KeyEvent.KEYCODE_DPAD_LEFT -> 276
+        KeyEvent.KEYCODE_CTRL_LEFT -> 306
+        KeyEvent.KEYCODE_CTRL_RIGHT -> 305
+        KeyEvent.KEYCODE_SHIFT_LEFT -> 304
+        KeyEvent.KEYCODE_SHIFT_RIGHT -> 303
+        else -> 0
+    }
+
     private fun handleTouch(event: MotionEvent): Boolean {
         val action = when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
