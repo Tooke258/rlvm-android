@@ -102,6 +102,9 @@ std::atomic<bool> g_stop_requested{false};
 std::atomic<bool> g_engine_suspended{false};
 // 挂起期间是否已经落过 global memory（每挂起一次只落一次）。
 std::atomic<bool> g_suspend_flushed{false};
+// 渲染树导出请求（v0.2.4）：面板按钮置位，引擎线程在循环里导出一次。
+// 为什么不在 UI 线程直接导出：只有引擎线程碰 graphics，跨线程会撕裂。
+std::atomic<bool> g_dump_tree_request{false};
 
 // 文本容器（例如合并了汉化的 SEEN 归档）在游戏目录树内的相对路径。
 // 空 = 用游戏目录里的 Seen.txt。UI 线程写入、引擎线程读取，所以加锁。
@@ -936,6 +939,14 @@ void RunEngineOn(System& system,
              (now - slice_start < 10));
     system.set_force_wait(false);
 
+    // 渲染树导出（面板「导出渲染树」按钮）：只在引擎线程里读 graphics，导出一次。
+    if (graphics != nullptr && g_dump_tree_request.exchange(false)) {
+      std::ostringstream tree;
+      graphics->Refresh(&tree);
+      rlvm_android::AppendAppLogLine("graphics tree dump（按需导出）:\n" + tree.str());
+      __android_log_print(ANDROID_LOG_INFO, kLogTag, "graphics tree dumped on request");
+    }
+
     // global memory 的**兜底**落盘（60 秒一次）：挂起那一笔是主要保障，这一笔防的是
     // 「没走到挂起就被杀」——最多丢 60 秒内的槽位标记/Config 改动。17KB 的写入，
     // 开销可以忽略。
@@ -1253,6 +1264,16 @@ void SetEngineSuspended(JNIEnv* /*env*/, jobject /*thiz*/, jboolean suspended) {
 }
 
 /**
+ * 请求导出当前渲染树（v0.2.4 诊断）：置位后由**引擎线程**在循环里导出一次，
+ * 结果写进应用日志（面板「日志」里能看）。比 dump_graphics=1 好用——不用重启引擎，
+ * 遇到一次性画面（选项、转场）时当场就能抓。
+ */
+void RequestGraphicsDump(JNIEnv* /*env*/, jobject /*thiz*/) {
+  g_dump_tree_request.store(true);
+  __android_log_print(ANDROID_LOG_INFO, kLogTag, "graphics dump requested");
+}
+
+/**
  * 指定文本容器（汉化/原版的 SEEN 归档）在游戏目录里的相对路径，
  * 空串 = 回到游戏目录的 Seen.txt。
  *
@@ -1354,6 +1375,7 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
     {"setEngineSuspended", "(Z)V", reinterpret_cast<void*>(SetEngineSuspended)},
+    {"requestGraphicsDump", "()V", reinterpret_cast<void*>(RequestGraphicsDump)},
     {"setTextContainerPath", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetTextContainerPath)},
     {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},

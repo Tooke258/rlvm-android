@@ -98,6 +98,12 @@ object NativeBridge {
      */
     external fun runScenarioSaf(maxInstructions: Int): String
 
+    /**
+     * 请求导出当前渲染树（v0.2.4 诊断）：由引擎线程导出并写进应用日志。
+     * 用于抓「选项图标不显示」这类一次性画面的图层结构，不用重启引擎。
+     */
+    external fun requestGraphicsDump()
+
     /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
     external fun getFrameSize(): Int
 

@@ -254,7 +254,15 @@ class MainActivity : Activity() {
                 setOnClickListener { toggleMovTest() }
             }
             updateMovTestButtonLabel()
-            addView(buttonRow(movTestButton, android.view.View(this@MainActivity)))
+            // 「导出渲染树」：抓一次性画面的图层结构（选项图标那类问题的判据）。
+            val dumpTreeButton = Button(this@MainActivity).apply {
+                text = "导出渲染树"
+                setOnClickListener {
+                    runCatching { NativeBridge.requestGraphicsDump() }
+                    log("已请求导出渲染树（引擎线程导出后写入日志，点「日志」查看）")
+                }
+            }
+            addView(buttonRow(movTestButton, dumpTreeButton))
         }
 
         // ---- 全屏日志层：面板里放不下日志，这里给它整屏 + 复制/清空 --------------

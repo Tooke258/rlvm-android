@@ -11,6 +11,7 @@
 
 #include "android/game_file_system.h"
 #include "android/mov_player.h"
+#include "android/app_log.h"
 #include "systems/base/colour.h"
 #include "systems/base/system.h"
 #include "systems/base/system_error.h"
@@ -560,6 +561,22 @@ void AndroidSurface::RenderToScreen(const Rect& src, const Rect& dst,
   if (owner_ == nullptr) return;
   std::shared_ptr<AndroidSurface> target = owner_->frame_buffer();
   if (!target) return;
+  // 临时探针（v0.2.4 选项图标不显示）：前 30 次打到应用日志，看清 src/dst/alpha
+  // 与源表面状态——若 alpha=0 或内容包围盒为空，就会"一个像素都不画"。
+  {
+    static int probe = 0;
+    if (++probe <= 30) {
+      char buf[320];
+      std::snprintf(buf, sizeof(buf),
+                    "rts-probe: src=(%d,%d,%dx%d) dst=(%d,%d,%dx%d) alpha=%d "
+                    "src_size=%dx%d opaque=%d content=[%d,%d)-[%d,%d)",
+                    src.x(), src.y(), src.width(), src.height(), dst.x(), dst.y(),
+                    dst.width(), dst.height(), alpha, size_.width(),
+                    size_.height(), pixels_opaque_ ? 1 : 0, content_x0_,
+                    content_y0_, content_x1_, content_y1_);
+      rlvm_android::AppendAppLogLine(buf);
+    }
+  }
   BlitToSurface(*target, src, dst, alpha, true);
 }
 
