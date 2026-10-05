@@ -803,10 +803,17 @@ class LbInputPollOp : public RLOp_SpecialCase {
       IntReferenceIterator ref = IntReference_T::getData(machine, params, pos);
       int value = 0;
       if (mouse_) {
+        // 脚本判挥棒用的是 `intD[101] == 1`（见 SEEN7420），所以这里必须报「按下」：
+        //   * 当前还按着 -> 1；
+        //   * 本帧刚按下过（哪怕已经抬起）-> 也要报 1（快速点击的按下状态只存在几毫秒，
+        //     按「当前电平」轮询会整帧错过；真机就是这样一直卡在 `== 1` 不成立）。
+        // 其余情况写 0（不是 2：2 是「已松开」，脚本那边不是这个语义）。
         Point cursor;
         int b1 = 0, b2 = 0;
         machine.system().event().GetCursorPos(cursor, b1, b2);
-        value = b1;  // 1 = 左键按住，2 = 刚抬起（与 AndroidEventSystem 的约定一致）
+        const AndroidEventSystem& es =
+            static_cast<const AndroidEventSystem&>(machine.system().event());
+        value = (b1 == 1 || es.ClickSeenThisFrame()) ? 1 : 0;
       }
       // Sys 152（键盘）在全脚本里只写不读（intD[109] 无任何使用点），故先恒 0。
       *ref = value;
@@ -973,7 +980,11 @@ struct ObjBtnSelect : public RLOp_Store_Void {
       Point pos;
       int b1 = 0, b2 = 0;
       machine.system().event().GetCursorPos(pos, b1, b2);
-      if (b1 != 0 || b2 != 0) {
+      const AndroidEventSystem& es =
+          static_cast<const AndroidEventSystem&>(machine.system().event());
+      const bool pressed = (b1 == 1) || es.ClickSeenThisFrame();
+      if (pressed) {
+        if (es.ClickSeenThisFrame()) pos = es.ClickPosition();
         for (GraphicsObject& o : g.GetForegroundObjects()) {
           auto consider = [&](GraphicsObject& b, GraphicsObject* parent) {
             if (!b.IsButton() || b.GetButtonGroup() != g_objbtn_group) return;

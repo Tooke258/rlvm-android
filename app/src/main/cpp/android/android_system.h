@@ -74,6 +74,12 @@ class AndroidEventSystem : public EventSystem {
    */
   void PostKeyEvent(int rl_key_code, bool pressed);
 
+  // LBEX 小游戏的输入轮询（Sys151 / objbtn select）要用：
+  // 「本帧是否有过一次按下」——快速点击的按下状态只存在几毫秒，按「当前电平」轮询
+  // 很可能整帧都看不到（真机表现：intD[101] 恒为 2，脚本判定挥棒的 `== 1` 永不成立）。
+  bool ClickSeenThisFrame() const { return click_seen_; }
+  Point ClickPosition() const { return click_pos_; }
+
  private:
   /** 按位掩码设置某个鼠标键状态并派发事件（1=左键 2=右键）。 */
   void ApplyButtonState(RLMachine& machine, int button, int state, int button_mask);
@@ -93,6 +99,8 @@ class AndroidEventSystem : public EventSystem {
   std::vector<PendingTouch> pending_;
   std::vector<PendingKey> pending_keys_;
   Point mouse_pos_;
+  bool click_seen_ = false;  // 本帧注入过按下（ExecuteEventSystem 开头清零）
+  Point click_pos_;
   int button1_state_ = 0;
   int button2_state_ = 0;
   // Shift / Ctrl 的按住状态（ShiftPressed()/CtrlPressed() 要如实回答；Ctrl 是

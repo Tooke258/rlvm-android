@@ -22,6 +22,10 @@
 #include <stdint.h>
 #include <time.h>
 #include <math.h> /* 缺失时 sqrt/sin/cos/pow/atan2/... 会被隐式声明成 int，浮点路径全错 */
+#if !defined(_WIN32)
+#include <signal.h>   /* 崩溃自证处理器（Android 宿主） */
+#include <unistd.h>   /* write() */
+#endif
 
 #define GUEST_SIZE (64u * 1024u * 1024u) /* 平坦 32 位空间的一部分，够这个 DLL 用 */
 #define IMAGE_BASE 0x10000000u
@@ -121,6 +125,42 @@ static inline uint8_t *gp(uint32_t a) { return g_mem + (a - GUEST_BASE); }
  */
 static int g_fault_count = 0;
 static uint32_t rd32(uint32_t a);   /* 下面定义；guest_fault 里要 dump ctx */
+
+#if !defined(_WIN32)
+/* ------------------------------------------------------------------ 崩溃自证
+ * 我们踩过两次：真机 tombstone 的 pc/frame 落在纯算术函数里（clang 内联 + 
+ * 展开器给的是返回地址），根本看不出到底访问了哪儿。这里自己装 SIGSEGV/SIGBUS
+ * 处理器：把「来宾 eip + 寄存器 + 宿址与 g_mem 的偏移」直接写 stderr，然后干净退出。
+ * （write() 是 async-signal-safe 的；snprintf 在这里只做只读格式化，实践中可用。）*/
+static void emu_fault_handler(int sig, siginfo_t *info, void * /*uc*/) {
+  char buf[512];
+  int n = snprintf(buf, sizeof(buf),
+                   "[pt00] HOST FAULT sig=%d addr=%p | g_mem=%p off=%lld | "
+                   "eip=%08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x "
+                   "edi=%08x ebp=%08x esp=%08x\n",
+                   sig, info ? info->si_addr : (void *)0, (void *)g_mem,
+                   (long long)((char *)(info ? info->si_addr : (void *)0) -
+                               (char *)g_mem),
+                   cpu.eip, cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi,
+                   cpu.edi, cpu.ebp, cpu.esp);
+  if (n > 0) {
+    ssize_t ignored = write(2, buf, (size_t)n);
+    (void)ignored;
+  }
+  _exit(132);
+}
+
+static void emu_install_fault_handler(void) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = emu_fault_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+}
+#else
+static void emu_install_fault_handler(void) {}   /* Windows 宿主只用于 CLI */
+#endif
 /* 最近执行过的来宾 eip（环形）：越界访问时打出来，就能还原「DLL 走到哪一步崩的」 */
 #define EIP_RING 64
 static uint32_t g_eip_ring[EIP_RING];
@@ -1354,6 +1394,7 @@ static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
 }
 
 int pt00_emu_load_image(const void *data, unsigned size) {
+  emu_install_fault_handler();
   if (!g_mem) {
     g_mem = (uint8_t *)calloc(1, GUEST_SIZE);
     if (!g_mem) return -1;

@@ -135,6 +135,7 @@ void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     events.swap(pending_);
   }
+  click_seen_ = false;  // 新一帧：本帧是否有按下由下面注入时置位
 
   for (size_t i = 0; i < events.size(); ++i) {
     const PendingTouch& event = events[i];
@@ -151,6 +152,8 @@ void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
     // 位置先行：按钮按下/抬起都发生在某个坐标上，事件回调需要一致的鼠标位置。
     InjectMouseMovement(machine, event.position);
     if (event.action == 0) {
+      click_seen_ = true;
+      click_pos_ = event.position;
       ApplyButtonState(machine, 1, 1, event.buttons);
       ApplyButtonState(machine, 2, 1, event.buttons);
     } else if (event.action == 2) {
