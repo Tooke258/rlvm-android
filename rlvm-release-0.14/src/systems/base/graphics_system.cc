@@ -442,15 +442,18 @@ void GraphicsSystem::SetWindowSubtitle(const std::string& cp932str,
   // 只在来源不是 CP932 时更新——菜单/存档场景会按 CP932 重新设置一次副标题，
   // 那次是恒等转换，若照抄会把正确的转换结果冲掉。
   if (text_encoding != 0) {
-    subtitle_cp932_ = rlvm_android::NormalizeTitleToCP932(cp932str, text_encoding);
-  } else if (subtitle_cp932_.empty() && !cp932str.empty()) {
-    // 兜底：上一个设置副标题的场景若是 GBK（汉化），且把副标题设成了**空串**，
-    // 归一化缓存就会一直卡在空；而「来源是 CP932 就不覆盖」的规则又让后续
-    // CP932 场景永远修不回来 —— 存档标题于是变成空白（真机日志：
-    // `save-title: enc=0 raw=82548c8e... used=(empty)`）。
-    // 只在缓存为空时兜底，所以仍然不会冲掉 GBK 场景得到的正确转换结果。
-    subtitle_cp932_ = cp932str;
+    // 空串不覆盖缓存：汉化对话中途会把副标题设成空串，照抄就会把上一章的真副标题
+    // 抹掉；而来源是 CP932 的场景又**故意不更新**（见下），缓存于是再也修不回来
+    // ——真机表现先是 `save-title: enc=0 raw=82548c8e... used=(empty)`（标题空白），
+    // 用「CP932 场景兜底填回」去救又会让菜单自己的副标题抢先占用缓存（LOAD 里
+    // 显示成菜单的片假名副标题）。正确做法就是让空串这一路彻底不写缓存。
+    if (!cp932str.empty()) {
+      subtitle_cp932_ =
+          rlvm_android::NormalizeTitleToCP932(cp932str, text_encoding);
+    }
   }
+  // 来源是 CP932 的场景（菜单/存档界面会再设一次副标题）保持不更新，
+  // 否则会把上面转换好的结果冲成菜单自己的标题。
 }
 
 // -----------------------------------------------------------------------
