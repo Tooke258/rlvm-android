@@ -56,6 +56,7 @@
 #include "machine/serialization.h"
 #include "modules/modules.h"
 #include "systems/base/event_system.h"
+#include "systems/base/frame_counter.h"
 #include "systems/base/graphics_system.h"
 #include "systems/base/little_busters_pt00dll.h"
 #include "utilities/file.h"
@@ -719,7 +720,12 @@ namespace {
 //
 // 「等一帧」用 LongOperation 实现：返回 false 时机器停在这条指令上，
 // 而平台外层循环每轮都会合帧再回来，所以等价于「等到至少 kRefreshWaitFrameMs 过去」。
-const unsigned int kRefreshWaitFrameMs = 16;  // ~60fps
+// 注意别取 16：演示段（SEEN7100）的 ex-frames 计数器步长是
+// `milliseconds / |frame_max - frame_min|` = 1000/60 = 16.67ms，脚本要跑满 60 帧
+// （1000ms）才判定「演示结束」；用 16ms 的话 60 帧只用 960ms，第 60 次检查时
+// 计数器还活着 → 循环不退出、外层重新 InitExFrames → 无限循环（真机实测）。
+// 取 17ms（60 帧 = 1020ms）留出余量。
+const unsigned int kRefreshWaitFrameMs = 17;  // ~59fps，刻意略慢于计数器步长
 
 class RefreshWaitLongOp : public LongOperation {
  public:
