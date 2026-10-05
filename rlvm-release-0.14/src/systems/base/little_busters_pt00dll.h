@@ -58,6 +58,10 @@ class LittleBustersPT00DLL : public RealLiveDLL {
   // func 930/931 用的是 DLL 自己的一个小状态块（ptr[1]/ptr[2]），不是 intD。
   int scene_flag_ = -1;
   int scene_counter_ = 0;
+  // func 31（主推进）用的 DLL 内部字段（原型的 state 结构体 +1204/+1208/+1212）。
+  bool hit_pending_ = false;
+  int hit_timer_ = 0;
+  int hit_counter_ = 0;
 };
 
 #endif  // SRC_SYSTEMS_BASE_LITTLE_BUSTERS_PT00DLL_H_

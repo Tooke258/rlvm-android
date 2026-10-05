@@ -27,6 +27,7 @@
 #include "systems/base/little_busters_pt00dll.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 
@@ -60,6 +61,10 @@ int Ent(RLMachine& machine, int i, int field) {
   return GetD(machine, kEntBase + i * kEntStride + field);
 }
 
+void SetEnt(RLMachine& machine, int i, int field, int value) {
+  SetD(machine, kEntBase + i * kEntStride + field, value);
+}
+
 // 3x3 行主序矩阵乘列向量（PT00.dll sub_10002700）。
 void MatVec(const double* m, const double* v, double* out) {
   out[0] = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
@@ -68,6 +73,113 @@ void MatVec(const double* m, const double* v, double* out) {
 }
 
 void LogCall(int func, int a1, int a2, int a3, int a4, const char* note);
+
+// sub_10014F90：把「要播哪个音效 / 音量」写进 intD[200] / intD[204]
+// （音量 clamp 到 0..255）。引擎侧原本靠 DLL 的 func table 播，我们只还原数据。
+void RequestSe(RLMachine& machine, int id, int volume) {
+  SetD(machine, 200, id);
+  if (volume < 0) volume = 0;
+  if (volume > 255) volume = 255;
+  SetD(machine, 204, volume);
+}
+
+// ---------------------------------------------------------------------------
+// func 31 的状态 1：投球/球飞行。
+//
+// 数据块是 intD[220..245]（原型里 `intD_base + 880`）：
+//   [226..228] 当前位置(x,y,z)   [229..231] 上一位置
+//   [232] x 速度分量分母         [234] z 速度分量分母
+//   [235] 时间/步进基准          [236]/[238]/[239]/[241] 中间量
+//   [242] 垂直偏移基准           [243] 初速度  [244] 已走步数  [245] 输出给脚本的「高度」
+//   [500] 飞行曲线模式（2/3 抛物线、4/5 另一条、6 带随机）
+// 算完由 sub_100031B0 镜像到 intD[250..261]，脚本正是用 intD[256..258] 调 func 60/12。
+// ---------------------------------------------------------------------------
+bool BallFlightStep(RLMachine& machine) {
+  SetD(machine, 229, GetD(machine, 226));
+  SetD(machine, 230, GetD(machine, 227));
+  SetD(machine, 231, GetD(machine, 228));
+
+  const int v4 = GetD(machine, 235);
+  int v6 = v4 * GetD(machine, 232) / 100 + GetD(machine, 239);
+  int v7 = v4 * GetD(machine, 234) / 100 + GetD(machine, 241);
+  SetD(machine, 239, v6);
+  SetD(machine, 236, v6);
+  SetD(machine, 241, v7);
+  SetD(machine, 238, v7);
+  SetD(machine, 226, v6 / 100);
+  SetD(machine, 228, v7 / 100);
+
+  const int mode = GetD(machine, 500);
+  if (mode == 2 || mode == 3) {
+    const double dz = static_cast<double>(v7 / 100) - 3000.0;
+    const int curve = static_cast<int>(60.0 - dz * dz * 0.00006);
+    SetD(machine, 226,
+         (mode == 2) ? (v6 / 100 - curve) : (curve + v6 / 100));
+  }
+  if (mode == 4 || mode == 5) {
+    int curve;
+    if (v7 / 100 <= 2000) {
+      curve = (v7 / 100 - 2000) / 2;
+    } else {
+      const double dq =
+          4000.0 -
+          static_cast<double>((v7 / 100 - 4000) * (v7 / 100 - 4000)) * 0.0005 -
+          3000.0;
+      curve = static_cast<int>(30.0 - dq * dq * 0.00003);
+    }
+    SetD(machine, 226, (mode == 4) ? (GetD(machine, 226) - curve)
+                                   : (curve + GetD(machine, 226)));
+  }
+  if (mode == 6) {
+    SetD(machine, 226, GetD(machine, 226) + (std::rand() % 40 - 20));
+    SetD(machine, 228, GetD(machine, 228) + (std::rand() % 40 - 20));
+  }
+
+  const int speed = GetD(machine, 243);
+  const int step = GetD(machine, 244) + 1;
+  SetD(machine, 244, step);
+  SetD(machine, 245, 0);
+
+  double height = static_cast<double>(step * speed) -
+                  static_cast<double>(step) * step * 0.3 +
+                  static_cast<double>(GetD(machine, 242));
+  bool bounced = false;
+  if (height < 0.0) {
+    height = 0.0;
+    int bounce = 2 * (-4 - speed / 20);
+    const int v19 = GetD(machine, 235);
+    SetD(machine, 235, (bounce + v19 < 0) ? 0 : bounce + v19);
+    SetD(machine, 242, 0);
+    // 原型是把结果当一个 QWORD 写到 a2+23，高位为 0；等价于设置 [243] 并把 [244] 清零。
+    const int damped = static_cast<int>(
+        -(static_cast<double>(speed) - static_cast<double>(step - 1) * 0.6));
+    SetD(machine, 243, damped);
+    SetD(machine, 244, 0);
+    int scaled = static_cast<int>(static_cast<double>(damped) * 0.7);
+    if (scaled < 0) scaled = 0;
+    SetD(machine, 243, scaled);
+    bounced = true;
+  }
+  SetD(machine, 227, static_cast<int>(height));
+  return bounced;
+}
+
+// sub_10002EC0：状态 1 的一帧。
+void BallFlightTick(RLMachine& machine) {
+  const bool bounced = BallFlightStep(machine);
+  if (bounced) {
+    const int v4 = GetD(machine, 243);
+    if (v4 > 10 && GetD(machine, 220) == 1) RequestSe(machine, 1, 10 * v4 - 10);
+  }
+  // sub_100031B0：镜像 intD[220..231] → intD[250..261]（x / z 翻倍）。
+  SetD(machine, 256, 2 * GetD(machine, 226));
+  SetD(machine, 257, GetD(machine, 227));
+  SetD(machine, 258, GetD(machine, 228));
+  SetD(machine, 259, 2 * GetD(machine, 229));
+  SetD(machine, 260, GetD(machine, 230));
+  SetD(machine, 261, GetD(machine, 231));
+  SetD(machine, 250, GetD(machine, 220));
+}
 
 // ---------------------------------------------------------------------------
 // func 10 / 11：3D 投影（sub_10002780 / sub_100029D0）
@@ -290,6 +402,77 @@ void ResetState(RLMachine& machine) {
   for (int i = 252; i <= 281; ++i) SetD(machine, i, 0);
 }
 
+// func 31：主推进（sub_10002D40）。先按 intD[210] 分派状态机，再跑「击中后倒计时」。
+void StepGame(RLMachine& machine,
+              bool& hit_pending,
+              int& hit_timer,
+              int& hit_counter) {
+  static bool logged_state2 = false;
+  const int state = GetD(machine, 210);
+  if (state == 1) {
+    BallFlightTick(machine);  // sub_10002EC0
+  } else if (state == 2) {
+    // sub_100031F0（跑垒/守备）还没移植：sub_100032F0 / sub_100034D0 / sub_10003660。
+    if (!logged_state2) {
+      logged_state2 = true;
+      std::cout << "[pt00] func31: state 2 (fielding) not implemented yet"
+                << std::endl;
+    }
+  }
+
+  if (GetD(machine, 210) == 1) {
+    if (GetD(machine, 228) < 1500) {
+      SetD(machine, 210, 0);
+      SetD(machine, 20, 3);
+    }
+  } else if (GetD(machine, 210) == 2 && !hit_pending) {
+    bool found = false;
+    for (int i = 0; i < kEntCount; ++i) {
+      if (Ent(machine, i, 2) == 2) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      const int limit = (GetD(machine, 76) != 7) ? 12000 : 2000;
+      const double dx = static_cast<double>(GetD(machine, 256));
+      const double dz = static_cast<double>(GetD(machine, 258)) - 2000.0;
+      const int dist = static_cast<int>(std::sqrt(dx * dx + dz * dz));
+      if (GetD(machine, 265) == 0 || dist > limit ||
+          GetD(machine, 258) < 1000) {
+        // sub_10003B80
+        SetD(machine, 252, 0);
+        hit_pending = true;
+        hit_timer = 120;
+        hit_counter = 0;
+      }
+    }
+  }
+
+  if (!hit_pending) return;
+  ++hit_counter;
+  if (hit_counter == hit_timer - 30) SetD(machine, 30, 7);
+  if (hit_counter >= hit_timer) {
+    // sub_10003B50
+    SetD(machine, 20, 3);
+    SetD(machine, 210, 0);
+    hit_pending = false;
+    hit_timer = 0;
+    hit_counter = 0;
+  }
+}
+
+// func 100/101/102/103/190：设实体模式（sub_10005330）。
+// 写实体记录的 [4]=模式、[5]=1、[27]=0、[28]=a3（分派里恒为 0）、[29]=0。
+void SetEntityMode(RLMachine& machine, int index, int mode) {
+  if (Ent(machine, index, 4) == mode) return;
+  SetEnt(machine, index, 4, mode);
+  SetEnt(machine, index, 5, 1);
+  SetEnt(machine, index, 27, 0);
+  SetEnt(machine, index, 28, 0);
+  SetEnt(machine, index, 29, 0);
+}
+
 void LogCall(int func, int a1, int a2, int a3, int a4, const char* note) {
   if (!g_log_calls) return;
   ++g_call_count;
@@ -337,6 +520,12 @@ int LittleBustersPT00DLL::CallDLL(RLMachine& machine,
       ResetState(machine);
       scene_flag_ = -1;
       scene_counter_ = 0;
+      hit_pending_ = false;
+      hit_timer_ = 0;
+      hit_counter_ = 0;
+      break;
+    case 31:
+      StepGame(machine, hit_pending_, hit_timer_, hit_counter_);
       break;
     case 60:
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
@@ -345,6 +534,30 @@ int LittleBustersPT00DLL::CallDLL(RLMachine& machine,
     case 61:
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
       PickCharacter(machine, arg1, arg2, arg3 == 1);
+      break;
+    case 70:
+      // sub_10004B80：只清对象自己的 scratch 字段，不碰 intD。
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      break;
+    case 100:
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      SetEntityMode(machine, 0, 1);
+      break;
+    case 101:
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      SetEntityMode(machine, 0, 2);
+      break;
+    case 102:
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      SetEntityMode(machine, 0, 11);
+      break;
+    case 103:
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      SetEntityMode(machine, 0, 4);
+      break;
+    case 190:
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      SetEntityMode(machine, 9, 2);
       break;
     case 910:
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
