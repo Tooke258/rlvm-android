@@ -48,6 +48,7 @@
 #include "machine/rlmachine.h"
 #include "machine/serialization.h"
 #include "modules/modules.h"
+#include "systems/base/little_busters_pt00dll.h"
 #include "utilities/file.h"
 #include "utilities/string_utilities.h"
 #include "utf8cpp/utf8.h"
@@ -286,6 +287,10 @@ struct DiagOptions {
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
   // 不同 RealLive 作品的脚本约定不一致，因此做成设备侧可调。
   int touch_button = 1;
+  // M2 小游戏通路：1 = 不注册上游的「跳过 LB 棒球小游戏」hack，让脚本真正
+  // 进入 SEEN7030，同时打开 PT00 的调用日志（见 docs/MINIGAME-PLAN.md）。
+  // 上游 machine/game_hacks.cc 属受保护目录，所以开关放在平台层。
+  bool lb_minigame = false;
   // 0 表示不限时：应用要能一直停在标题/正文上，BGM 才不会「响一下就没了」。
   // 自动化测试需要在报告里拿到结果时，用 diag 文件设一个有限值。
   int time_budget_ms = 0;
@@ -358,6 +363,8 @@ DiagOptions LoadDiagOptions() {
       if (number > 0) options.frame_log_every = number;
     } else if (key == "touch_button") {
       if (number > 0) options.touch_button = number;
+    } else if (key == "lb_minigame") {
+      options.lb_minigame = (number != 0);
     }
   }
   return options;
@@ -697,6 +704,10 @@ void RunEngineOn(System& system,
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: constructing RLMachine");
   LogMemory("engine start");
 
+  // 设备侧诊断参数（文件不存在时全部取缺省值，行为与之前一致）。
+  // 以前这行在 AddGameHacks 之后，但小游戏开关要在注册游戏 hack 之前就知道。
+  const DiagOptions diag = LoadDiagOptions();
+
   // 触摸输入（T2.3）：把当前系统暴露给 UI 线程，离开 RunEngineOn 时自动断开。
   CurrentSystemGuard current_system(dynamic_cast<AndroidSystem*>(&system));
 
@@ -704,7 +715,25 @@ void RunEngineOn(System& system,
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddAllModules");
   AddAllModules(machine);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddGameHacks");
-  AddGameHacks(machine);
+  // lb_minigame=1 且本作是 LB/LBEX 时，不注册那个「直接 ReturnFromFarcall
+  // 跳过棒球小游戏」的 line action（上游 game_hacks.cc:65），让小游戏真跑。
+  LittleBustersPT00DLL::SetCallLogging(diag.lb_minigame);
+  bool skip_game_hacks = false;
+  if (diag.lb_minigame) {
+    const std::string diskmark = gameexe("DISKMARK").ToString("");
+    skip_game_hacks = (diskmark == "LB.ENV" || diskmark == "LB_EX.ENV");
+    if (skip_game_hacks) {
+      __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                          "lb_minigame=1: baseball skip hack disabled (%s)",
+                          diskmark.c_str());
+      report += "lb_minigame=1：已关闭 LB 棒球跳过 hack（diskmark=\"" +
+                diskmark + "\"），脚本会进入 SEEN7030\n";
+    } else {
+      report += "lb_minigame=1：diskmark=\"" + diskmark +
+                "\" 不是 LB/LBEX，游戏 hack 照常注册\n";
+    }
+  }
+  if (!skip_game_hacks) AddGameHacks(machine);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: machine ready");
   LogMemory("machine ready");
   // 与上游 RLVMInstance 一致：遇到指令异常时跳过该指令继续执行，
@@ -725,8 +754,6 @@ void RunEngineOn(System& system,
     report += std::string("global memory not loaded (first run?): ") + e.what() + "\n";
   }
 
-  // 设备侧诊断参数（文件不存在时全部取缺省值，行为与之前一致）。
-  const DiagOptions diag = LoadDiagOptions();
   g_frame_log_every = diag.frame_log_every;
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);

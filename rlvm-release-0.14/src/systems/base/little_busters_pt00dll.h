@@ -31,8 +31,11 @@
 
 #include "machine/reallive_dll.h"
 
-// This file exists to suppress spew. Comment once at the beginning that the
-// baseball DLL hasn't been reverse engineered and then ignore calls.
+// Little Busters 的棒球小游戏（PT00.dll）。
+//
+// 这里按 dev-log/PT00-RECON.jsonl 与 docs/PT00-CALLSITES.md 的取证结果做
+// 「行为级重写」（路线 A）：DLL 不画屏幕、不读输入，只通过引擎的 intD 区与脚本
+// 交换数据，因此移植只需要读写 intD。每个 func 的语义都在实现里逐条注明出处。
 class LittleBustersPT00DLL : public RealLiveDLL {
  public:
   LittleBustersPT00DLL();
@@ -46,6 +49,15 @@ class LittleBustersPT00DLL : public RealLiveDLL {
                       int arg3,
                       int arg4) override;
   virtual const std::string& GetDLLName() const override;
+
+  // 诊断（rlvm-diag.txt 的 lb_minigame=1，平台层设置）：把每次 CallDLL 的
+  // func 与四个参数打进来，用来在真机上观察脚本是怎么驱动 PT00 的。
+  static void SetCallLogging(bool enabled);
+
+ private:
+  // func 930/931 用的是 DLL 自己的一个小状态块（ptr[1]/ptr[2]），不是 intD。
+  int scene_flag_ = -1;
+  int scene_counter_ = 0;
 };
 
 #endif  // SRC_SYSTEMS_BASE_LITTLE_BUSTERS_PT00DLL_H_

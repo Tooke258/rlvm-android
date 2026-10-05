@@ -1,0 +1,10 @@
+# M2 小游戏通路（见 docs/MINIGAME-PLAN.md 与 docs/PT00-CALLSITES.md）
+#
+# lb_minigame=1：
+#   1) 平台层不注册上游那个「直接 ReturnFromFarcall 跳过 LB 棒球小游戏」的
+#      line action，脚本会真正进入 SEEN7030；
+#   2) 打开 PT00 的调用日志，标准输出里会出现 [pt00] #N f=.. a=(..) 行
+#      （走 logcat 的 rlvm-stdout，也能在应用面板「日志」里看到）。
+#
+# 想回到正常流程：把本文件换回只含注释的版本，或把下面这行改成 lb_minigame=0。
+lb_minigame=1
