@@ -1,0 +1,4 @@
+{"type":"release","content":"v0.2.4 发布（试玩反馈五项 + 诊断工具）。tag `v0.2.4` = `d6ef1d1`，Release 附 `app-release.apk`（14,059,006 B，sha256 213d0b1d…）：https://github.com/Tooke258/rlvm-android/releases/tag/v0.2.4","status":"pass"}
+{"type":"scope","content":"① 英文字体左右不齐：`font_selftest` 量出「拉丁比例宽度 vs 日文整格」→ ASCII 改半角定宽格（字号/2、字墨居中）；② 选项不可见：上游 `DrawFrame` 从未遍历 `final_renderers_`（选项窗口=final renderer）→ 补绘一遍（D-035）；③ 影片与脚本并行：等待链路本就有效，真凶是开播时 `skip=1` → 起播前 `SetSkipMode(0)+SetAutoMode(false)+clear_force_fast_forward()+set_force_wait(true)`，游戏自身 Skip 的重新武装按原版语义保留（D-036）；④ 长按右键改显式开关；⑤ 运行/停止按钮一体化。","status":"pass"}
+{"type":"scope","content":"工具：`font_selftest`、`enc_selftest`、`mov_test(_loop/_ms)`、mov 指令级 trace、影片前 auto/skip/ShouldFastForward 状态行、**面板「导出渲染树」按钮**（运行时抓图层栈，不用重启）、「日志」全屏视图 + `rlvm-log.txt` 落盘。","status":"pass"}
+{"type":"note","content":"遗留：游戏自身 Skip 状态的清除（需在脚本 dump 里定位菜单变量）；Skip 指示灯滞后；`movPlayExC` 的 C 语义；引擎标准存档 UI；v0.2.5/v0.3.0 的 DLL 输入模拟 + LB 棒球小游戏。","status":"info"}
