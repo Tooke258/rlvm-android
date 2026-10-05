@@ -14,6 +14,13 @@
 import re
 import sys
 
+# 输出强制 UTF-8：Windows 控制台默认 GBK，反汇编里有日文/半角片假名时会直接
+# UnicodeEncodeError 崩掉（本轮就踩到了）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 
 def main():
     if len(sys.argv) < 3:
