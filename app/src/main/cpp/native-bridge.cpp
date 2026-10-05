@@ -35,6 +35,7 @@
 #include "libreallive/archive.h"
 #include "libreallive/bytecode.h"
 #include "libreallive/gameexe.h"
+#include "long_operations/button_object_select_long_operation.h"
 #include "android/android_system.h"
 #include "android/android_graphics.h"
 #include "android/audio_engine.h"
@@ -789,6 +790,43 @@ struct LbStub3 : public RLOp_Void_3<IntConstant_T, IntConstant_T, IntConstant_T>
   }
 };
 
+// Sel 模块（0:2）的 objbtn 组：RLVM 只实现了 objbtn_init(20) 与
+// select_objbtn(4)/select_objbtn_cancel(14)，而 LB / LBEX 的小游戏用的是
+// 21 / 22 / 23 / 30 / 32 —— 缺了它们，脚本里「等玩家点按钮再推进相位」那一步
+// 永远拿不到结果（`<store>` 恒为 0），于是主循环空转、表现就是 TIME 一直重来。
+//
+// 形状对照（全库取证）：30/32 与已经实现的 14 完全同形 —— 无参数、紧跟
+// `<store>` 取回一个按钮下标、随后判断 `< 0` 或 `>= -1`。所以它们是同类
+// 「等对象按钮点击并返回下标」的阻塞式选择。组号从 `00022, 1(group, value)`
+// （脚本里只出现 group=2）里取；21/23 是配置类，先按空实现接上。
+int g_objbtn_group = 2;
+
+struct ObjBtnConfig2 : public RLOp_Void_2<IntConstant_T, IntConstant_T> {
+  void operator()(RLMachine& machine, int group, int value) {
+    g_objbtn_group = group;
+  }
+};
+
+struct ObjBtnNoop : public RLOp_Void_Void {
+  void operator()(RLMachine& machine) {}
+};
+
+// 30 / 32：等对象按钮点击，把被点按钮的下标写进 store 寄存器
+// （cancelable 的那条对应上游的 select_objbtn_cancel）。
+struct ObjBtnSelect : public RLOp_Void_Void {
+  explicit ObjBtnSelect(bool cancelable) : cancelable_(cancelable) {}
+  void operator()(RLMachine& machine) {
+    if (machine.ShouldSetSelcomSavepoint()) machine.MarkSavepoint();
+    ButtonObjectSelectLongOperation* op =
+        new ButtonObjectSelectLongOperation(machine, g_objbtn_group);
+    if (cancelable_) op->set_cancelable();
+    machine.PushLongOperation(op);
+  }
+
+ private:
+  bool cancelable_;
+};
+
 // 上游没有的模块族 2:87（脚本用它设置「父对象的某个子对象」的状态）。
 class LbObjExtModule : public RLModule {
  public:
@@ -823,6 +861,14 @@ class AndroidRLMachine : public RLMachine {
                         new LbIgnoreRawArgs(4, 151, "Sys151"));
       module->AddOpcode(152, 0, "lb_ignore_152",
                         new LbIgnoreRawArgs(4, 152, "Sys152"));
+    } else if (module != nullptr && module->module_type() == 0 &&
+               module->module_number() == 2) {
+      // Sel 模块缺的 objbtn 组（见上面的长注释）。
+      module->AddOpcode(21, 0, "objbtn_21", new ObjBtnNoop());
+      module->AddOpcode(22, 1, "objbtn_cfg", new ObjBtnConfig2());
+      module->AddOpcode(23, 0, "objbtn_23", new ObjBtnNoop());
+      module->AddOpcode(30, 0, "objbtn_select", new ObjBtnSelect(false));
+      module->AddOpcode(32, 0, "objbtn_select_cancel", new ObjBtnSelect(true));
     }
     RLMachine::AttachModule(module);
   }
