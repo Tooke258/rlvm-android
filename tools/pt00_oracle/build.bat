@@ -1,15 +1,25 @@
 @echo off
-rem 编译 32 位 oracle（需要 VS 的 x86 工具链）。
-rem 用法：按需改下面的 vcvarsall 路径，然后运行 tools\pt00_oracle\build.bat
+rem Build the 32-bit oracle (native LoadLibrary harness; needs the VS x86 toolchain).
+rem ASCII ONLY on purpose: cmd parses .bat with the console code page (936 on this box),
+rem and UTF-8 comments + LF-only line endings get mis-split there (a CP936 lead byte
+rem swallows the newline and merges the next line into the current command).
+rem Keep this file ASCII, or re-save it as UTF-8 WITH BOM.
 setlocal
-set VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat
-if not exist "%VCVARS%" set VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat
-if not exist "%VCVARS%" set VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
-if not exist "%VCVARS%" set VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat
-if not exist "%VCVARS%" (
-  echo [build] vcvarsall.bat not found; edit VCVARS in this script.
+cd /d "%~dp0"
+
+set "VCVARS="
+if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+if not defined VCVARS if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat" set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
+if not defined VCVARS if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+if not defined VCVARS if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" set "VCVARS=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+if not defined VCVARS (
+  for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VCVARS=%%i\VC\Auxiliary\Build\vcvarsall.bat"
+)
+if not defined VCVARS (
+  echo [build] vcvarsall.bat not found; edit this script and set VCVARS manually.
   exit /b 1
 )
 call "%VCVARS%" x86 >nul
-rem /utf-8：源文件是 UTF-8，MSVC 默认按本地代码页读（否则中文注释会被错解）。
+rem /utf-8 is required: the sources are UTF-8, MSVC otherwise reads them as CP936 and
+rem mis-decodes Chinese comments, swallowing the code that follows them.
 cl /nologo /W3 /O2 /utf-8 /Fe:oracle.exe oracle.c

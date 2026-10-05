@@ -113,6 +113,8 @@ tools\pt00_emu\emu.exe "<PT00.dll>" build\pt00-fixtures\calls_long.txt --seed bu
 * `build/` 与 `tools/pt00_*/*.exe`、`*.obj` 都**不入库**（见 `.gitignore`）。
 * **Windows 侧编 C 必须 `cl /utf-8`**：MSVC 默认按 CP936 读 UTF-8 源，中文注释会被错解并**吞掉后面的代码**
   （表现为莫名其妙的语法错误）。两个 `build.bat` 已固化该开关。
+  另外 **`.bat` 本身必须是 ASCII**（或带 BOM）：UTF-8 + 纯 LF 的 `build.bat` 会被 cmd 按 CP936 解析而吞掉换行
+  （见 §6.1 第 19 条）。
 * trace 语义：`--trace-func N` 只在**第一次**匹配的调用处武装（要追第 N 次得自己裁 calls 文件或加 `--trace-call`）；
   `--trace-min <hex>` 只打 `eip ≥ 该地址`；开 trace 后每次写 intD 都会打出 `WRITE intD[k]=v @写入指令地址`——定位「谁写错」最快。
 
@@ -131,6 +133,30 @@ tools\pt00_emu\emu.exe "<PT00.dll>" build\pt00-fixtures\calls_long.txt --seed bu
    顺带补了 **`fldcw` 舍入控制**（`_ftol2` 会先 `orb $0xc,%ah` + `fldcw` 切到向零取整）。
 9. **`inc/dec r32`(0x40–0x4F) 没把结果写回寄存器**（只算标志）
    → `decl` 后模式号不变 → switch 跳转表索引整体偏移一格 → idx8 的 case 1 走进 case 2 body。
+
+### 6.1 第二批（2026-10-05 续，把长序列里的「未实现指令」清干净）
+
+10. **`emu.c` 从来没 `#include <math.h>`** → `sqrt/sin/cos/pow/atan2/tan/fmod/log` 全被隐式声明成 `int`，
+    整条浮点路径系统性算错。*这一条影响最大*，加完 include 后 `71(1)` 立刻对齐。
+11. `test r/m8, r8`（**0x84**）缺失 —— 实体 1 起的 idx7 路径直接报未实现并中断
+    （表现：`ret` 留下残留指针、intD 一处不写）。**这就是当时「71(1) 全无输出」的真因。**
+12. `F6` 族（8 位 `test/not/neg/mul/imul/div/idiv`）缺失 —— `negb %al` 就在里面。
+13. `A8/A9`（`test al/eax, imm`）缺失（`strcpy` 那类 4 字节扫描循环会用到）。
+14. `sbb`（**0x19/0x1b**）缺失 —— `sbbl %eax,%eax`（把 CF 变成 0/-1）是常见写法。
+15. x87 补一批：`DC /2,/3`（fcom/fcompl m64）、`DD` 寄存器形式（fst/fstp st(i)）、
+    `DA E9`（fucompp）、`DB E2/E3`（fnclex/fninit）、超越函数
+    `fpatan/fptan/f2xm1/fyl2x/fyl2xp1/fsincos/frndint/fprem/fscale`，以及
+    `fldpi/fldl2t/fldl2e/fldlg2/fldln2` 常数。
+16. `div/idiv` 只用了 `EAX`，**没把 `EDX:EAX` 当 64 位被除数**。
+17. **TLS**：`TlsGetValue` 之前恒返回 0 → CRT 的 `__getptd()` 每次 `rand()` 都重建 ptd
+    （**rand 状态就存在 `ptd+0x14`**）→ 随机序列与原生分叉。现在按槽持久化（`tls_slot()`）。
+18. `GetModuleFileNameA` 桩缺失（CRT 会拿它做初始化，返回空串更容易踩怪路径）。
+19. **`tools/pt00_*\\build.bat` 两个文件是 UTF-8 + 纯 LF**：cmd 按 CP936 解析时中文注释会吞掉换行、
+    把两条命令并成一条 —— 报错长这样：`'l.bat' is not recognized`、`'" x64 >nul' is not recognized`。
+    已改成**纯 ASCII + vswhere 兜底 + `cd /d "%~dp0"`**（仓库内 `.bat` 以后一律 ASCII）。
+
+诊断增强（同样是这轮）：`UNIMPL` 现在报**指令起始地址 + 原始字节 + 最近 32 条指令**；
+步数上限与 `ExitProcess` 都会打**调用栈**（`callee<-caller_ret`）。
 
 ## 7. 当前对照状态与「下一处」原始证据
 
@@ -175,6 +201,35 @@ tools\pt00_emu\emu.exe "<PT00.dll>" build\pt00-fixtures\calls_long.txt --seed bu
 2. **把 `emu.c` 编进 `app/src/main/cpp`**，`LittleBustersPT00DLL::CallDLL()` 转调它
    （DLL 仍由用户游戏数据提供，走 SAF / 应用目录读取）。
 3. **然后才真机实测**：验证小游戏行为是否恢复正常，以及一直卡着的「TIME」是否松动。
+
+### 7.1 第二批修复后的现状（2026-10-05 续）
+
+上面的表与原始输出是**第一批修复后**的快照；第二批（§6.1）之后：
+
+| 夹具 | 结果 |
+| --- | --- |
+| `tools/pt00_oracle/calls_sample.txt`（7 次） | **7/7 逐位一致** ✓（不变） |
+| `build/pt00-fixtures/calls_long.txt`（280 次，带 `--seed`） | **280 次调用全部执行完、不再出现未实现指令**；差异 **252 → 42 处**，且全是**值级**差异 |
+
+剩余差异全部集中在**实体类型 2/4/8/9/11/15** 的 AI/随机字段
+（`record+4/+5/+28/+33`、全局 `intD[20]/[350]`），其中**首处差异 = 第 11 次调用 `71(2)`**：
+
+```
+第 1 处不一致：
+   oracle: 11 f=71(2,0,0,0) ret=1 intD[20]=3 intD[350]=15 intD[1096]=100 intD[1098]=1 intD[1103]=1 intD[1105]=1
+   emu   : 11 f=71(2,0,0,0) ret=1 intD[1076]=1 intD[1077]=1 intD[1096]=100 intD[1098]=1 intD[1100]=1 intD[1103]=1
+```
+
+读法：原生在类型 2 里走了**「选角色」分支**（写 `intD[350]=` rand 派生值、`intD[20]=3`、`record+33`），
+我们走了另一边（写 `record+4/+5`）→ 分支条件在**类型 2 的 idx6/7/8** 里，这是下一步唯一的收敛点。
+
+### 7.2 两个已知的近似（别当成已经搞定）
+
+* **emu 不跑 PE 入口（DllMain / CRT 初始化）**：实测跑进去会在 CRT 自带堆初始化里**死循环**
+  （平坦 guest 空间没有缺页语义，它的扫描永远找不到终止条件）。所以 CRT 的 ptd/TLS 目前是近似实现。
+* **对照时两侧都把 `ptd+0x14`（rand 起点）钉成 1**：`--seed` 只对齐 intD/intF；rand 的种子来自
+  `func_load` 开头的 `srand(time(&t))`，而 `time()` 由被桩掉的 `GetSystemTime/GetLocalTime` 推出来——
+  两边未必同值。钉死后差异 **52 → 42**，**证明种子来源确实是分歧源之一**。
 
 ## 8. 相关但不同的问题（别混淆）
 

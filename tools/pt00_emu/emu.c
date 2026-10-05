@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <math.h> /* 缺失时 sqrt/sin/cos/pow/atan2/... 会被隐式声明成 int，浮点路径全错 */
 
 #define GUEST_SIZE (64u * 1024u * 1024u) /* 平坦 32 位空间的一部分，够这个 DLL 用 */
 #define IMAGE_BASE 0x10000000u
@@ -40,6 +41,7 @@ static uint8_t *g_mem;
 static int g_trace = 0;
 static int g_trace_left = 0;
 static uint32_t g_trace_min = 0;
+static uint32_t g_insn_addr = 0; /* 当前指令的起始地址（UNIMPL 报点用，cpu.eip-1 会被操作数字节带偏） */
 
 /* CPU 状态（放前面：wr32 的写入日志要用 cpu.eip） */
 typedef struct {
@@ -224,7 +226,11 @@ static void hist_dump(void) {
 
 #define UNIMPL(op)                                                       \
   do {                                                                   \
-    fprintf(stderr, "[emu] 未实现指令 %s @ eip=%08x\n", op, cpu.eip - 1); \
+    fprintf(stderr,                                                      \
+            "[emu] 未实现指令 %s @ %08x（已读到 eip=%08x，字节 %02x %02x %02x %02x）\n", \
+            op, g_insn_addr, cpu.eip, rd8(g_insn_addr), rd8(g_insn_addr + 1), \
+            rd8(g_insn_addr + 2), rd8(g_insn_addr + 3));                  \
+    hist_dump();                                                         \
     return -1;                                                           \
   } while (0)
 
@@ -301,6 +307,16 @@ static void alu_sub(uint32_t a, uint32_t b) {
   set_szp32(v);
 }
 static void alu_cmp(uint32_t a, uint32_t b) { alu_sub(a, b); }
+/* sbb：带借位减（旧 CF 先参与，再用 33 位比较决定新的借位） */
+static uint32_t alu_sbb(uint32_t a, uint32_t b) {
+  uint64_t sub = (uint64_t)b + ((cpu.eflags & CF) ? 1u : 0u);
+  uint32_t v = a - (uint32_t)sub;
+  cpu.eflags &= ~(CF | OF);
+  if ((uint64_t)a < sub) cpu.eflags |= CF;
+  if (((a ^ (uint32_t)sub) & (a ^ v)) & 0x80000000u) cpu.eflags |= OF;
+  set_szp32(v);
+  return v;
+}
 
 /* 条件跳转：cc = 0..15（o no b ae e ne be a s ns p np l ge le g） */
 static int cond(int cc) {
@@ -361,6 +377,9 @@ static void fp_cmp(double a, double b) {
 }
 
 /* 返回 0 = 已处理；-1 = 未实现 */
+/* log2：fyl2x/fyl2xp1 用（MSVC 没有 lg2） */
+static double fp_log2(double v) { return log(v) / log(2.0); }
+
 static int x87(uint8_t op) {
   ModRM m = modrm();
   const int reg = m.reg;
@@ -403,9 +422,24 @@ static int x87(uint8_t op) {
       switch (m.raw) {
         case 0xe0: *XP(0) = -*XP(0); return 0;   /* fchs */
         case 0xe1: *XP(0) = *XP(0) < 0 ? -*XP(0) : *XP(0); return 0; /* fabs */
+        case 0xe4: fp_cmp(*XP(0), 0.0); return 0;                       /* ftst */
         case 0xe8: fp_push(1.0); return 0;       /* fld1 */
+        case 0xe9: fp_push(3.3219280948873623); return 0;               /* fldl2t   = log2(10) */
+        case 0xea: fp_push(1.4426950408889634); return 0;               /* fldl2e   = log2(e)  */
+        case 0xeb: fp_push(3.1415926535897932); return 0;               /* fldpi */
+        case 0xec: fp_push(0.3010299956639812); return 0;               /* fldlg2   = log10(2) */
+        case 0xed: fp_push(0.6931471805599453); return 0;               /* fldln2   = ln(2)   */
         case 0xee: fp_push(0.0); return 0;       /* fldz */
+        case 0xf0: *XP(0) = pow(2.0, *XP(0)) - 1.0; return 0;           /* f2xm1 */
+        case 0xf1: { double t = *XP(1) * fp_log2(*XP(0)); fp_pop(); *XP(0) = t; return 0; } /* fyl2x */
+        case 0xf2: { double t = tan(*XP(0)); *XP(0) = t; fp_push(1.0); return 0; }   /* fptan */
+        case 0xf3: { double t = atan2(*XP(1), *XP(0)); fp_pop(); *XP(0) = t; return 0; } /* fpatan */
+        case 0xf5: case 0xf8: *XP(0) = fmod(*XP(0), *XP(1)); return 0;  /* fprem1/fprem（近似） */
+        case 0xf6: case 0xf7: return 0;                                 /* fdecstp/fincstp：本模型不需要 */
+        case 0xf9: { double t = *XP(1) * fp_log2(*XP(0) + 1.0); fp_pop(); *XP(0) = t; return 0; } /* fyl2xp1 */
         case 0xfa: *XP(0) = sqrt(*XP(0)); return 0;
+        case 0xfb: { double s0 = sin(*XP(0)), c0 = cos(*XP(0)); *XP(0) = s0; fp_push(c0); return 0; } /* fsincos */
+        case 0xfc: *XP(0) = ((g_fpu_cw >> 10) & 3) == 3 ? trunc(*XP(0)) : nearbyint(*XP(0)); return 0;
         case 0xfe: *XP(0) = sin(*XP(0)); return 0;
         case 0xff: *XP(0) = cos(*XP(0)); return 0;
       }
@@ -413,12 +447,22 @@ static int x87(uint8_t op) {
   } else if (op == 0xdb && m.mod != 3) { /* fild m32 / fistp m32 */
     if (reg == 0) { fp_push((double)*(int32_t *)gp(m.addr)); return 0; }
     if (reg == 3) { uint32_t v = (uint32_t)fp_to_int(*XP(0)); fp_pop(); wr32(m.addr, v); return 0; }
+  } else if (op == 0xda && m.mod == 3 && m.raw == 0xe9) { /* fucompp */
+    fp_cmp(*XP(0), *XP(1));
+    fp_pop();
+    fp_pop();
+    return 0;
+  } else if (op == 0xdb && m.mod == 3 && (m.raw == 0xe2 || m.raw == 0xe3)) { /* fnclex/fninit */
+    g_fpu_sw = 0;
+    return 0;
   } else if (op == 0xdc) { /* m64real */
     if (m.mod != 3) {
       double v = *(double *)gp(m.addr);
       switch (reg) {
         case 0: *XP(0) += v; return 0;
         case 1: *XP(0) *= v; return 0;
+        case 2: fp_cmp(*XP(0), v); return 0;          /* fcom m64 */
+        case 3: fp_cmp(*XP(0), v); fp_pop(); return 0; /* fcompl m64 */
         case 4: *XP(0) -= v; return 0;
         case 5: *XP(0) = v - *XP(0); return 0;
         case 6: *XP(0) /= v; return 0;
@@ -428,6 +472,8 @@ static int x87(uint8_t op) {
       switch (reg) {
         case 0: *XP(m.rm) += *XP(0); return 0;
         case 1: *XP(m.rm) *= *XP(0); return 0;
+        case 2: fp_cmp(*XP(0), *XP(m.rm)); return 0;          /* fcom st(i) */
+        case 3: fp_cmp(*XP(0), *XP(m.rm)); fp_pop(); return 0; /* fcomp st(i) */
         case 4: *XP(m.rm) -= *XP(0); return 0;
         case 5: { double t = *XP(0) - *XP(m.rm); *XP(m.rm) = t; return 0; }
         case 6: *XP(m.rm) /= *XP(0); return 0;
@@ -438,6 +484,12 @@ static int x87(uint8_t op) {
     if (reg == 0) { fp_push(*(double *)gp(m.addr)); return 0; }
     if (reg == 2) { *(double *)gp(m.addr) = *XP(0); return 0; }
     if (reg == 3) { *(double *)gp(m.addr) = fp_pop(); return 0; }
+  } else if (op == 0xdd) { /* dd 寄存器形式：ffree / fst st(i) / fstp st(i) / fucom(p) */
+    if (m.raw >= 0xc0 && m.raw <= 0xc7) return 0;                                   /* ffree st(i) */
+    if (m.raw >= 0xd0 && m.raw <= 0xd7) { *XP(m.raw - 0xd0) = *XP(0); return 0; }   /* fst st(i) */
+    if (m.raw >= 0xd8 && m.raw <= 0xdf) { *XP(m.raw - 0xd8) = fp_pop(); return 0; } /* fstp st(i) */
+    if (m.raw >= 0xe0 && m.raw <= 0xe7) { fp_cmp(*XP(0), *XP(m.raw - 0xe0)); return 0; }
+    if (m.raw >= 0xe8 && m.raw <= 0xef) { fp_cmp(*XP(0), *XP(m.raw - 0xe8)); fp_pop(); return 0; }
   } else if (op == 0xde) { /* 出栈式算术 + fcompp */
     if (m.mod != 3 && reg == 0) { fp_pop(); return 0; } /* fiadd m16：少见，先按空过 */
     if (m.mod == 3) {
@@ -483,6 +535,21 @@ static int stub_is(int idx, const char *name) {
 
 /* KERNEL32 是 stdcall：被调方负责清参数。桩必须照做，否则栈会每个调用漂 4 字节，
  * 攒到最后 ret 弹出来的就不是返回地址了（真机上表现为跳到假堆地址）。 */
+/* TLS 槽：DLL 的 CRT 用 __getptd()（TlsGetValue/TlsSetValue + GetCurrentThreadId）
+ * 保存 per-thread 数据，rand() 的状态就存在 ptd+0x14。之前 TlsGetValue 一律返回 0
+ * → 每次 rand() 都新分配一个 ptd → 随机序列与原生分叉（表现为只有用 rand 的实体类型对不上）。 */
+#define EMU_TLS_SLOTS 64
+static uint32_t g_tls_val[EMU_TLS_SLOTS];
+static int g_tls_used[EMU_TLS_SLOTS];
+
+/* 槽位映射：TlsAlloc 分配出来的索引直接用；**CRT 自己没走 TlsAlloc 时**索引会是 -1
+ * （我们不跑 DllMain，见 main 里的说明），这时把它退化成 0 号槽——重点不是索引对不对，
+ * 而是"同一个索引始终映射到同一个槽"，这样 ptd（含 rand 状态）才持久。 */
+static int tls_slot(uint32_t idx) {
+  if (idx < EMU_TLS_SLOTS) return (int)idx;
+  return 0;
+}
+
 static int stub_argc(int idx) {
   static const struct { const char *n; int c; } kTable[] = {
       {"GetSystemTime", 1}, {"GetLocalTime", 1}, {"SetLastError", 1},
@@ -525,6 +592,17 @@ static int stub_call(int idx) {
     cpu.eax = 0;
   } else if (stub_is(idx, "GetModuleHandleA")) {
     cpu.eax = IMAGE_BASE;
+  } else if (stub_is(idx, "GetModuleFileNameA")) {
+    /* 返回一个像样的模块名并 NUL 结尾：CRT 会拿它做初始化，返回空串更容易踩到怪路径 */
+    static const char kMod[] = "PT00.dll";
+    uint32_t buf = arg_at(1), n = arg_at(2), i = 0;
+    if (buf && n) {
+      for (; kMod[i] && i + 1 < n; ++i) wr8(buf + i, (uint8_t)kMod[i]);
+      wr8(buf + i, 0);
+      cpu.eax = i;
+    } else {
+      cpu.eax = 0;
+    }
   } else if (stub_is(idx, "GetCurrentProcess") || stub_is(idx, "GetCurrentThreadId")) {
     cpu.eax = 1;
   } else if (stub_is(idx, "GetCommandLineA")) {
@@ -549,11 +627,19 @@ static int stub_call(int idx) {
   } else if (stub_is(idx, "HeapSize")) {
     cpu.eax = 64;
   } else if (stub_is(idx, "TlsAlloc")) {
-    static int n = 0;
-    cpu.eax = (uint32_t)(100 + n++);
+    int s = -1;
+    for (int i = 0; i < EMU_TLS_SLOTS; ++i) if (!g_tls_used[i]) { s = i; break; }
+    if (s < 0) { cpu.eax = 0xffffffffu; }
+    else { g_tls_used[s] = 1; g_tls_val[s] = 0; cpu.eax = (uint32_t)s; }
   } else if (stub_is(idx, "TlsGetValue")) {
-    cpu.eax = 0;
-  } else if (stub_is(idx, "TlsSetValue") || stub_is(idx, "TlsFree")) {
+    cpu.eax = g_tls_val[tls_slot(arg_at(0))];
+  } else if (stub_is(idx, "TlsSetValue")) {
+    g_tls_val[tls_slot(arg_at(0))] = arg_at(1);
+    cpu.eax = 1;
+  } else if (stub_is(idx, "TlsFree")) {
+    int s = tls_slot(arg_at(0));
+    g_tls_used[s] = 0;
+    g_tls_val[s] = 0;
     cpu.eax = 1;
   } else if (stub_is(idx, "InterlockedIncrement")) {
     uint32_t p = arg_at(0);
@@ -576,7 +662,10 @@ static int stub_call(int idx) {
     if (written) wr32(written, 0);
     cpu.eax = 1;
   } else if (stub_is(idx, "ExitProcess") || stub_is(idx, "TerminateProcess")) {
-    fprintf(stderr, "[emu] 调用了 %s，停机\n", g_stub_name[idx]);
+    fprintf(stderr, "[emu] 调用了 %s，停机；调用栈（callee<-caller_ret）：", g_stub_name[idx]);
+    for (int i = g_frame_n - 1; i >= 0 && i > g_frame_n - 12; --i)
+      fprintf(stderr, " %08x<-%08x", g_frames[i].callee, g_frames[i].ret_addr);
+    fprintf(stderr, "\n");
     return 1;
   } else {
     static int warned = 0;
@@ -590,6 +679,11 @@ static int stub_call(int idx) {
 static int step(void) {
   if (++g_steps > g_max_steps) {
     fprintf(stderr, "[emu] 步数上限 %d 用尽\n", g_max_steps);
+    hist_dump();
+    fprintf(stderr, "[emu] 调用栈：");
+    for (int i = g_frame_n - 1; i >= 0 && i > g_frame_n - 10; --i)
+      fprintf(stderr, " %08x<-%08x", g_frames[i].callee, g_frames[i].ret_addr);
+    fprintf(stderr, "\n");
     return -1;
   }
   /* 落在导入桩区间：改调宿主实现，然后按 cdecl 返回 */
@@ -617,6 +711,7 @@ static int step(void) {
   }
   uint32_t start = cpu.eip;
   hist_add(start);
+  g_insn_addr = start;
   uint8_t op = imm8();
   int seg_fs = 0;
   int opsize16 = 0;
@@ -731,13 +826,14 @@ static int step(void) {
       return 0;
     }
     /* "r32, r/m32" 方向的 ALU 族（0x31/0x39 是反方向，已实现） */
-    case 0x03: case 0x0b: case 0x23: case 0x2b: case 0x33: {
+    case 0x03: case 0x0b: case 0x1b: case 0x23: case 0x2b: case 0x33: {
       ModRM m = modrm();
       uint32_t a = *reg32(m.reg);
       uint32_t b = m.is_reg ? *reg32(m.addr) : rd32(m.addr);
       switch (op) {
         case 0x03: alu_add(a, b); *reg32(m.reg) = a + b; break;
         case 0x0b: *reg32(m.reg) = a | b; set_szp32(a | b); break;
+        case 0x1b: *reg32(m.reg) = alu_sbb(a, b); break; /* sbb r32, r/m32 */
         case 0x23: *reg32(m.reg) = a & b; set_szp32(a & b); break;
         case 0x2b: alu_sub(a, b); *reg32(m.reg) = a - b; break;
         default:   *reg32(m.reg) = a ^ b; set_szp32(a ^ b); break;
@@ -745,6 +841,8 @@ static int step(void) {
       return 0;
     }
     case 0x88: { ModRM m = modrm(); rm_write8(m, *reg8(m.reg)); return 0; }
+    case 0xa8: { uint32_t v = imm8(); cpu.eflags &= ~(CF | OF); set_szp8((uint8_t)cpu.eax & (uint8_t)v); return 0; } /* test al, imm8 */
+    case 0xa9: { uint32_t v = imm32(); cpu.eflags &= ~(CF | OF); set_szp32(cpu.eax & v); return 0; }               /* test eax, imm32 */
     case 0x8a: { ModRM m = modrm(); *reg8(m.reg) = rm_read8(m); return 0; }
     case 0x8d: { ModRM m = modrm(); *reg32(m.reg) = m.addr; return 0; }   /* lea */
     case 0x8f: { ModRM m = modrm(); rm_write32(m, pop32()); return 0; }   /* pop r/m */
@@ -790,6 +888,47 @@ static int step(void) {
       return 0;
     }
     /* 0xF7 组：test/not/neg/mul/imul/div/idiv（单操作数） */
+    /* 0xF6 族：8 位 test/not/neg/mul/imul/div/idiv。
+     * 实体类型 1 起的 idx7 路径里有 `negb %al`（f6 d8）——整族之前没实现，
+     * 执行器在这里直接报「未实现指令」返回，表现就是 71(1) 起 ret 留着残值、intD 一处不写。 */
+    case 0xf6: {
+      ModRM m = modrm();
+      uint8_t v = rm_read8(m);
+      switch (m.reg) {
+        case 0: case 1: cpu.eflags &= ~(CF | OF); set_szp8(v & imm8()); return 0;
+        case 2: rm_write8(m, (uint8_t)~v); return 0;                     /* not */
+        case 3: {                                                        /* neg */
+          uint8_t r8 = (uint8_t)(0 - v);
+          cpu.eflags &= ~(CF | OF);
+          if (v != 0) cpu.eflags |= CF;
+          if (v == 0x80) cpu.eflags |= OF;
+          set_szp8(r8);
+          rm_write8(m, r8);
+          return 0;
+        }
+        case 4: { uint16_t r16 = (uint16_t)((uint8_t)cpu.eax * v);  /* mul: AL*r/m8 -> AX */
+                  cpu.eax = (cpu.eax & 0xffff0000u) | r16;
+                  cpu.eflags &= ~(CF | OF);
+                  if (r16 >> 8) cpu.eflags |= (CF | OF);
+                  return 0; }
+        case 5: { int16_t r16 = (int16_t)((int8_t)cpu.eax * (int8_t)v);  /* imul */
+                  cpu.eax = (cpu.eax & 0xffff0000u) | (uint16_t)r16;
+                  cpu.eflags &= ~(CF | OF);
+                  if (r16 != (int16_t)(int8_t)r16) cpu.eflags |= (CF | OF);
+                  return 0; }
+        case 6: { if (v == 0) { fprintf(stderr, "[emu] div8 0\n"); return -1; }
+                  uint16_t ax = (uint16_t)(cpu.eax & 0xffffu);
+                  *reg8(0) = (uint8_t)(ax / v);
+                  *reg8(4) = (uint8_t)(ax % v);
+                  return 0; }
+        case 7: { if (v == 0) { fprintf(stderr, "[emu] idiv8 0\n"); return -1; }
+                  int16_t ax = (int16_t)(cpu.eax & 0xffffu);
+                  *reg8(0) = (uint8_t)(ax / (int8_t)v);
+                  *reg8(4) = (uint8_t)(ax % (int8_t)v);
+                  return 0; }
+      }
+      UNIMPL("f6 /x");
+    }
     case 0xf7: {
       ModRM m = modrm();
       uint32_t v = rm_read32(m);
@@ -801,18 +940,31 @@ static int step(void) {
         case 5: { int64_t r = (int64_t)(int32_t)cpu.eax * (int64_t)(int32_t)v;
                   cpu.eax = (uint32_t)r; cpu.edx = (uint32_t)(r >> 32); return 0; }
         case 6: { if (v == 0) { fprintf(stderr, "[emu] div 0\n"); return -1; }
-                  uint32_t q = cpu.eax / v, r2 = cpu.eax % v; cpu.eax = q; cpu.edx = r2; return 0; }
+                  /* div 的被除数是 EDX:EAX（64 位）；只看 EAX 会在 edx≠0 时算错 */
+                  uint64_t dv = ((uint64_t)cpu.edx << 32) | cpu.eax;
+                  uint32_t q = (uint32_t)(dv / v), r2 = (uint32_t)(dv % v);
+                  cpu.eax = q; cpu.edx = r2; return 0; }
         case 7: { if (v == 0) { fprintf(stderr, "[emu] idiv 0\n"); return -1; }
-                  int32_t q = (int32_t)cpu.eax / (int32_t)v, r2 = (int32_t)cpu.eax % (int32_t)v;
+                  int64_t dv = (int64_t)(((uint64_t)cpu.edx << 32) | cpu.eax);
+                  int64_t dvs = (int32_t)v; /* 除数按有符号扩展 */
+                  int32_t q = (int32_t)(dv / dvs), r2 = (int32_t)(dv % dvs);
                   cpu.eax = (uint32_t)q; cpu.edx = (uint32_t)r2; return 0; }
       }
       UNIMPL("f7 /x");
     }
-    case 0x01: case 0x29: case 0x31: case 0x09: case 0x21: case 0x39: case 0x85: {
+    /* 0x84：test r/m8, r8（0x85 是 32 位；实体类型 1 起的 idx7 路径用它做返回值判断） */
+    case 0x84: {
+      ModRM m = modrm();
+      cpu.eflags &= ~(CF | OF);
+      set_szp8(rm_read8(m) & *reg8(m.reg));
+      return 0;
+    }
+    case 0x01: case 0x19: case 0x29: case 0x31: case 0x09: case 0x21: case 0x39: case 0x85: {
       ModRM m = modrm();
       uint32_t a = rm_read32(m), b = *reg32(m.reg);
       switch (op) {
         case 0x01: alu_add(a, b); rm_write32(m, a + b); break;
+        case 0x19: rm_write32(m, alu_sbb(a, b)); break; /* sbb r/m32, r32 */
         case 0x29: alu_sub(a, b); rm_write32(m, a - b); break;
         case 0x31: rm_write32(m, a ^ b); set_szp32(a ^ b); break;
         case 0x09: rm_write32(m, a | b); set_szp32(a | b); break;
@@ -1081,6 +1233,9 @@ int main(int argc, char **argv) {
     } while (0)
 
   printf("# 跑 func_load(%08x)\n", CTX_BASE);
+  /* 注：跑 PE 入口（DllMainCRTStartup）会进入 CRT 自带的堆初始化，那套代码要靠
+   * 真实 Windows 堆的布局/缺页才能收敛，在平坦 guest 空间里会死循环（已实测）。
+   * 这里改为只补上"CRT per-thread 数据要能持久"这一条——见 tls_slot()。 */
   RUN_EXPORT(IMAGE_BASE + 0x11B0, 2, CTX_BASE, 0);
   printf("# func_load 结束 rc=%d（步数 %d）\n", g_last_rc, g_steps);
   if (g_last_rc != 0) return 1;
@@ -1096,6 +1251,16 @@ int main(int argc, char **argv) {
   printf("#   堆已用 = %u 字节（起点 %08x 现在 %08x）\n",
          (unsigned)(g_heap_ptr - 0x11400000u), 0x11400000u, g_heap_ptr);
   printf("#   eax=%08x\n", cpu.eax);
+  { /* CRT 的 rand 状态：ptd+0x14（ptd 由 TLS 槽给出）——与 oracle 的同类打印对齐 */
+    uint32_t idx = rd32(IMAGE_BASE + 0x20AA0);
+    int slot = tls_slot(idx);
+    uint32_t ptd = g_tls_val[slot];
+    /* 对照用：把 CRT 的 rand 起点钉死成同一个值（两边都钉），否则种子来源
+     * （time() 由被桩掉的 GetSystemTime/GetLocalTime 推出来）会把随机序列带偏。 */
+    if (ptd) wr32(ptd + 0x14, 1);
+    printf("# TLS idx=%08x slot=%d ptd=%08x holdrand=%d\n", idx, slot, ptd,
+           ptd ? (int)rd32(ptd + 0x14) : -1);
+  }
 
   printf("# 跑 func_init\n");
   RUN_EXPORT(IMAGE_BASE + 0x1670, 0);

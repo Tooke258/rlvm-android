@@ -155,6 +155,13 @@ int main(int argc, char **argv) {
 
   int ret_load = p_load(&g_ctx, 0);
   printf("# func_load -> %d   (intd=%p)\n", ret_load, (void *)g_intd);
+  { /* CRT 的 rand 状态：ptd+0x14（ptd 从 DLL 自己的 TLS 索引取）——与 emu 的同类打印对齐 */
+    uint32_t idx = *(uint32_t *)((char *)mod + 0x20AA0);
+    void *ptd = TlsGetValue((DWORD)idx);
+    if (ptd) *(int *)((char *)ptd + 0x14) = 1; /* 与 emu 对齐：钉死 rand 起点 */
+    printf("# TLS idx=%08x ptd=%p holdrand=%d\n", idx, ptd,
+           ptd ? *(int *)((char *)ptd + 0x14) : -1);
+  }
   if (p_init) printf("# func_init -> %d\n", p_init());
 
   FILE *f = fopen(argv[2], "r");
