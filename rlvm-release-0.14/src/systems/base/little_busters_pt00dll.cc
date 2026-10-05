@@ -473,6 +473,89 @@ void SetEntityMode(RLMachine& machine, int index, int mode) {
   SetEnt(machine, index, 29, 0);
 }
 
+// idx6 = sub_100051D0：**挥棒命中判定**（纯数学，不依赖动画表）。
+// 球的位置/上一帧位置取自共享块 intD[250..]（sub_100031B0 镜像过来的），
+// 判定条件是「球移动方向」与「球→棒」的夹角落在 [30°, 330°] 内 → 记 record[6]=1。
+// 被实体 0 / 4 / 9 与 13..21 共用（其余类型另有实现，见 tools/dump_vtables.py）。
+void EntityHitCheck(RLMachine& machine, int index) {
+  if (GetD(machine, 253) == GetD(machine, 256) &&
+      GetD(machine, 254) == GetD(machine, 257) &&
+      GetD(machine, 255) == GetD(machine, 258)) {
+    SetEnt(machine, index, 6, 0);
+    return;
+  }
+  if (Ent(machine, index, 2) <= 5) {
+    const int v4 = GetD(machine, 273);
+    if (v4 < 0) {
+      if (GetD(machine, 275) > v4 / 2 + 8000) {
+        SetEnt(machine, index, 6, 0);
+        return;
+      }
+    } else if (GetD(machine, 275) > 8000 - v4 / 2) {
+      SetEnt(machine, index, 6, 0);
+      return;
+    }
+  }
+  if (ClampFieldX(machine, GetD(machine, 256), GetD(machine, 258)) != 0) {
+    SetEnt(machine, index, 6, 0);
+    return;
+  }
+  const double ball_dir =
+      std::atan2(static_cast<double>(GetD(machine, 256) - GetD(machine, 253)),
+                 static_cast<double>(GetD(machine, 258) - GetD(machine, 255)));
+  const double bat_dir =
+      std::atan2(static_cast<double>(Ent(machine, index, 7) - GetD(machine, 253)),
+                 static_cast<double>(Ent(machine, index, 9) - GetD(machine, 255)));
+  const double diff = ball_dir - bat_dir;
+  SetEnt(machine, index, 6,
+         (diff < 0.5235987755833333 || diff > 5.759586531416667) ? 1 : 0);
+}
+
+// 这 13 种实体的 idx6 都是 sub_100051D0（tools/dump_vtables.py 的结果）。
+bool EntityUsesHitCheck(int index) {
+  return index == 0 || index == 4 || index == 9 || index >= 13;
+}
+
+// ---------------------------------------------------------------------------
+// func 71：实体每帧更新（sub_100050D0）。类型差异全在 vtable 的 idx6/idx7/idx8；
+// 这里实现通用骨架 + idx6（命中判定），idx7/idx8 还没有移植（它们由动画表驱动）。
+// 记录字段：+0 有效、+2 指令号、+4 模式、+5 触发、+6 命中相、+7/+9 棒位、+31 计数。
+// ---------------------------------------------------------------------------
+void EntityUpdate(RLMachine& machine, int index) {
+  static bool logged_idx78[22] = {};
+
+  if (Ent(machine, index, 0) != 1) return;
+  const int prev6 = Ent(machine, index, 6);
+  if (prev6 != 2) {
+    if (GetD(machine, 210) == 2 && GetD(machine, 252) == 1 &&
+        EntityUsesHitCheck(index)) {
+      EntityHitCheck(machine, index);
+    } else if (prev6 != 2) {
+      SetEnt(machine, index, 6, 0);
+    }
+  }
+
+  bool call_idx7 = false;
+  if (Ent(machine, index, 5) == 0) {
+    call_idx7 = true;
+  } else if (prev6 != 0) {
+    call_idx7 = (prev6 == 1 && Ent(machine, index, 6) == 0);
+  } else {
+    call_idx7 = (Ent(machine, index, 6) == 1);
+  }
+  if (call_idx7) {
+    if (!logged_idx78[index]) {
+      logged_idx78[index] = true;
+      std::cout << "[pt00] func71: entity " << index
+                << " idx7/idx8 (animation tables) not implemented yet"
+                << std::endl;
+    }
+  }
+  // idx8 同样未移植。原版这里还会把 record[10..12] 拷进对象 scratch、
+  // 推进 99 项历史缓冲、以及按 record[20..22] 的动画序号走 mode setter。
+  SetEnt(machine, index, 31, Ent(machine, index, 31) + 1);
+}
+
 void LogCall(int func, int a1, int a2, int a3, int a4, const char* note) {
   if (!g_log_calls) return;
   ++g_call_count;
@@ -538,6 +621,10 @@ int LittleBustersPT00DLL::CallDLL(RLMachine& machine,
     case 70:
       // sub_10004B80：只清对象自己的 scratch 字段，不碰 intD。
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      break;
+    case 71:
+      LogCall(func, arg1, arg2, arg3, arg4, nullptr);
+      EntityUpdate(machine, arg1);
       break;
     case 100:
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
