@@ -1003,6 +1003,32 @@ int main(int argc, char **argv) {
   /* 引擎上下文：+0x14 处放 intD 基址（这是 PT00 唯一用到的约定） */
   wr32(CTX_BASE + 0x14, INTD_BASE);
 
+  /* --seed：从二进制快照恢复 intD[2000]+intF[2000]（与 oracle 同格式）。
+   * **必须两边同种子**，否则起点不同、对照就是噪声（例如 emu 从全 0 起跑时
+   * 实体记录 record[0]=0，func 71 第一句就 return，表现为"什么都不写"）。 */
+  for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+      FILE *sf = fopen(argv[i + 1], "rb");
+      if (!sf) { fprintf(stderr, "打不开种子 %s\n", argv[i + 1]); return 1; }
+      for (int k = 0; k < INTD_COUNT; ++k) {
+        int v = 0;
+        if (fread(&v, sizeof(int), 1, sf) != 1) break;
+        wr32(INTD_BASE + k * 4, (uint32_t)v);
+      }
+      for (int k = 0; k < INTF_COUNT; ++k) {
+        int v = 0;
+        if (fread(&v, sizeof(int), 1, sf) != 1) break;
+        wr32(INTF_BASE + k * 4, (uint32_t)v);
+      }
+      fclose(sf);
+      printf("# 种子已加载：%s（intD[70..76]=%d,%d,%d,%d,%d,%d,%d）\n", argv[i + 1],
+             (int)rd32(INTD_BASE + 70 * 4), (int)rd32(INTD_BASE + 71 * 4),
+             (int)rd32(INTD_BASE + 72 * 4), (int)rd32(INTD_BASE + 73 * 4),
+             (int)rd32(INTD_BASE + 74 * 4), (int)rd32(INTD_BASE + 75 * 4),
+             (int)rd32(INTD_BASE + 76 * 4));
+    }
+  }
+
   /* 跑一个导出：入口处压哨兵当返回地址，跑到哨兵即视为正常返回。
    * 参数按 stdcall 约定从右往左压，最上面是哨兵。 */
   #define RUN_EXPORT(entry, argc, ...)                              \
