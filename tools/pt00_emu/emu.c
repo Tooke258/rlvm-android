@@ -210,6 +210,47 @@ static void hist_dump(void) {
 static void push32(uint32_t v) { cpu.esp -= 4; wr32(cpu.esp, v); }
 static uint32_t pop32(void) { uint32_t v = rd32(cpu.esp); cpu.esp += 4; return v; }
 
+/* 调用栈 + 栈平衡断言：每次 call 记下「应当被 ret 弹出的返回地址」，
+ * 每次 ret 校验实际栈顶是否等于它。不等就说明中间某条指令把 esp 顶歪了
+ * （之前遇到的 stdcall 清栈漏做、操作数宽度写错都属于这一类），
+ * 这里当场报出差了多少字节 + 调用链，省得只能看到“最后跳到 0”。 */
+#define EMU_CALLDEPTH 64
+typedef struct { uint32_t ret_addr, callee, esp_entry; } EmuFrame;
+static EmuFrame g_frames[EMU_CALLDEPTH];
+static int g_frame_n = 0;
+
+static void emu_call_push(uint32_t callee, uint32_t ret_addr, uint32_t esp_entry) {
+  if (g_frame_n < EMU_CALLDEPTH) {
+    g_frames[g_frame_n].ret_addr = ret_addr;
+    g_frames[g_frame_n].callee = callee;
+    g_frames[g_frame_n].esp_entry = esp_entry;
+  }
+  ++g_frame_n;
+}
+
+static int emu_ret_check(void) {
+  if (g_frame_n <= 0 || g_frame_n > EMU_CALLDEPTH) {
+    fprintf(stderr, "[emu] ret 时调用栈为空（栈或调用记录已失配）\n");
+    return -1;
+  }
+  EmuFrame f = g_frames[--g_frame_n];
+  uint32_t actual = rd32(cpu.esp);
+  if (actual != f.ret_addr) {
+    fprintf(stderr,
+            "[emu] 栈不平衡：ret 期望 %08x，栈顶实际 %08x\n"
+            "       callee=%08x esp_entry=%08x 现在 esp=%08x 差 %d 字节\n"
+            "       调用链：",
+            f.ret_addr, actual, f.callee, f.esp_entry, cpu.esp,
+            (int)(cpu.esp - f.esp_entry));
+    for (int i = g_frame_n - 1; i >= 0 && i > g_frame_n - 8; --i)
+      fprintf(stderr, " <- %08x", g_frames[i].callee);
+    fprintf(stderr, "\n");
+    return -1;
+  }
+  cpu.esp += 4;
+  return 0;
+}
+
 static uint32_t rm_read32(ModRM m) {
   return m.is_reg ? *reg32(m.addr) : rd32(m.addr);
 }
@@ -380,7 +421,9 @@ static int step(void) {
   if (cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE) {
     int idx = (int)((cpu.eip - STUB_BASE) / STUB_STRIDE);
     if (stub_call(idx) != 0) return -1;
-    cpu.eip = pop32();
+    uint32_t ret = rd32(cpu.esp);
+    if (emu_ret_check() != 0) return -1;
+    cpu.eip = ret;
     cpu.esp += (uint32_t)stub_argc(idx) * 4u;  /* stdcall：被调方清参数 */
     return 0;
   }
@@ -507,7 +550,14 @@ static int step(void) {
           rm_write32(m, m.reg == 0 ? v + 1 : v - 1);
           return 0;
         }
-        case 2: { uint32_t t = rm_read32(m); push32(cpu.eip); cpu.eip = t; return 0; } /* call */
+        case 2: { /* call r/m32 */
+          uint32_t t = rm_read32(m);
+          uint32_t ret = cpu.eip;
+          push32(ret);
+          emu_call_push(t, ret, cpu.esp);
+          cpu.eip = t;
+          return 0;
+        }
         case 4: { uint32_t t = rm_read32(m); cpu.eip = t; return 0; }                 /* jmp */
         case 6: push32(rm_read32(m)); return 0;                                        /* push */
         default: UNIMPL("ff /x");
@@ -572,14 +622,28 @@ static int step(void) {
       set_szp32(r);
       return 0;
     }
-    case 0xe8: { int32_t r = (int32_t)imm32(); push32(cpu.eip); cpu.eip += r; return 0; }
+    case 0xe8: { /* call rel32 */
+      int32_t r = (int32_t)imm32();
+      uint32_t ret = cpu.eip;
+      push32(ret);
+      emu_call_push(ret + r, ret, cpu.esp);
+      cpu.eip = ret + r;
+      return 0;
+    }
     case 0xe9: { int32_t r = (int32_t)imm32(); cpu.eip += r; return 0; }
     case 0xeb: { int8_t r = rel8(); cpu.eip += r; return 0; }
-    case 0xc3: cpu.eip = pop32(); return 0;
+    case 0xc3: {
+      uint32_t t = rd32(cpu.esp);
+      if (emu_ret_check() != 0) return -1;
+      cpu.eip = t;
+      return 0;
+    }
     case 0xc2: { /* ret imm16：stdcall 的返回并清参数 */
       uint16_t n = rd16(cpu.eip);
       cpu.eip += 2;
-      cpu.eip = pop32();
+      uint32_t t = rd32(cpu.esp);
+      if (emu_ret_check() != 0) return -1;
+      cpu.eip = t;
       cpu.esp += n;
       return 0;
     }
