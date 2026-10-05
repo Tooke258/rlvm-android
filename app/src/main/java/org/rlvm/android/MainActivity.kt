@@ -65,6 +65,12 @@ class MainActivity : Activity() {
         // 上游 systems/base/event_listener.h 的 RLKEY_*（按键栏目前用得到的几个）。
         const val RLKEY_LSHIFT = 304
         const val RLKEY_LCTRL = 306
+        // 方向键（v0.2.6）：这是**运动命令**，值取自
+        // systems/base/event_listener.h 的 RLKEY_UP/DOWN/RIGHT/LEFT。
+        const val RLKEY_UP = 273
+        const val RLKEY_DOWN = 274
+        const val RLKEY_RIGHT = 275
+        const val RLKEY_LEFT = 276
 
         // 引擎是否处于「挂起」（黑屏/后台）状态。
         //
@@ -348,13 +354,13 @@ class MainActivity : Activity() {
 
         val dpad = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
-            addView(padRow(null, padButton("\u2191", { startPadRepeat(0f, -8f) }, { stopPadRepeat() }), null))
+            addView(padRow(null, padButton("\u2191", { startPadMove(RLKEY_UP, 0f, -8f) }, { stopPadMove() }), null))
             addView(padRow(
-                padButton("\u2190", { startPadRepeat(-8f, 0f) }, { stopPadRepeat() }),
+                padButton("\u2190", { startPadMove(RLKEY_LEFT, -8f, 0f) }, { stopPadMove() }),
                 null,
-                padButton("\u2192", { startPadRepeat(8f, 0f) }, { stopPadRepeat() })
+                padButton("\u2192", { startPadMove(RLKEY_RIGHT, 8f, 0f) }, { stopPadMove() })
             ))
-            addView(padRow(null, padButton("\u2193", { startPadRepeat(0f, 8f) }, { stopPadRepeat() }), null))
+            addView(padRow(null, padButton("\u2193", { startPadMove(RLKEY_DOWN, 0f, 8f) }, { stopPadMove() }), null))
         }
 
         val actionPad = LinearLayout(this@MainActivity).apply {
@@ -528,9 +534,9 @@ class MainActivity : Activity() {
                 if (enabled) android.view.View.VISIBLE else android.view.View.GONE
         }
         updateInputPadButtonLabel()
-        if (!enabled) stopPadRepeat()
+        if (!enabled) stopPadMove()
         log(
-            if (enabled) "按键栏：开（方向键移动光标 / 加速 / 击打 / 右键）"
+            if (enabled) "按键栏：开（方向键 = 上下左右 + 光标微推 / 加速 / 击打 / 右键 / Ctrl）"
             else "按键栏：关"
         )
     }
@@ -549,27 +555,50 @@ class MainActivity : Activity() {
         cursorY = h / 2f
     }
 
-    /** 方向键按住：每 60ms 把虚拟光标推一格（游戏只认鼠标位置，不认方向键）。 */
-    private fun startPadRepeat(dx: Float, dy: Float) {
-        stopPadRepeat()
+    /** 当前按住的方向键（0 = 没按住）。 */
+    private var padRepeatKey = 0
+
+    /**
+     * 方向键 = 运动命令（v0.2.6）。按下同时做两件事：
+     *   1) 发 RLKEY_UP/DOWN/LEFT/RIGHT —— 脚本与引擎的菜单导航读的是它
+     *      （见 long_operations/pause_long_operation.cc 的上下选择）；
+     *   2) 微推虚拟光标 —— 纯鼠标驱动的场面仍然要能用。
+     * 按住每 60ms 重复一次；抬手补一个 key up，脚本才看得到边界。
+     */
+    private fun startPadMove(rlKey: Int, dx: Float, dy: Float) {
+        stopPadMove()
+        padRepeatKey = rlKey
+        sendKey(rlKey, true)
+        nudgeCursor(dx, dy)
         val step = object : Runnable {
             override fun run() {
-                ensureCursor()
-                val (w, h) = frameSize()
-                cursorX = (cursorX + dx).coerceIn(0f, (w - 1).toFloat())
-                cursorY = (cursorY + dy).coerceIn(0f, (h - 1).toFloat())
-                runCatching { NativeBridge.touchEvent(TOUCH_MOVE, cursorX, cursorY, 1) }
+                if (padRepeatKey != rlKey) return
+                sendKey(rlKey, true)
+                nudgeCursor(dx, dy)
                 padRepeat = this
                 padHandler.postDelayed(this, 60)
             }
         }
         padRepeat = step
-        step.run()
+        padHandler.postDelayed(step, 60)
     }
 
-    private fun stopPadRepeat() {
+    private fun stopPadMove() {
         padRepeat?.let { padHandler.removeCallbacks(it) }
         padRepeat = null
+        if (padRepeatKey != 0) {
+            sendKey(padRepeatKey, false)
+            padRepeatKey = 0
+        }
+    }
+
+    /** 虚拟光标推一格（RealLive 脚本读到的鼠标位置）。 */
+    private fun nudgeCursor(dx: Float, dy: Float) {
+        ensureCursor()
+        val (w, h) = frameSize()
+        cursorX = (cursorX + dx).coerceIn(0f, (w - 1).toFloat())
+        cursorY = (cursorY + dy).coerceIn(0f, (h - 1).toFloat())
+        runCatching { NativeBridge.touchEvent(TOUCH_MOVE, cursorX, cursorY, 1) }
     }
 
     /** 鼠标键：mask 1=左键 2=右键。按下/抬起分别投递，脚本才能看到"按住"这个状态。 */
