@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <map>
 #include <sstream>
 #include <set>
 #include <string>
@@ -785,6 +786,50 @@ class LbIgnoreRawArgs : public RLOp_SpecialCase {
 };
 
 // 3 个 int 参数的占位实现（2:87:1002 的形状是「父对象, 子序号, 值」）。
+// ---------------------------------------------------------------------------
+// Pcm(1:21) 1000：**按名字把音效预载进槽位**
+//
+// LBEX 的小游戏一进场景就调 36 次 `op<1:21:1000>(槽位, "PT_xxx")`，名字是
+// `WAV/` 下的 Ogg 音效（PT_BOUND01=弹地、PT_BAT01=球棒、PT_HIT00=击中、
+// PT_CUTIN00=切入…；槽位 1..36，缺 10/26）。RLVM 的 `wavPlay` 只接受**文件名**
+// （播放时按需加载），所以这里不必真的预载，只要把映射记下来：既消掉
+// 「Undefined opcode」噪声，也为「万一以后按槽位播放」留一张表。
+std::map<int, std::string>& LbWavSlotTable() {
+  static std::map<int, std::string> table;
+  return table;
+}
+
+struct LbWavLoadByName : public RLOp_Void_2<IntConstant_T, StrConstant_T> {
+  void operator()(RLMachine& machine, int slot, std::string name) {
+    LbWavSlotTable()[slot] = name;
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      std::cout << "[lb-ext] Pcm(1:21):1000 按名预载音效，槽位表已建立（示例 "
+                << slot << " = " << name << "）" << std::endl;
+    }
+    machine.AdvanceInstructionPointer();
+  }
+};
+
+// ChildObjFg(2:81) 1058：LBEX 小游戏给**子对象**设属性（参数里带实体记录字段 +25）。
+// RLVM 的对象函数表在这一段是断的（1038 之后直接跳到 1064），映射表里没有 1058。
+// 这里先「记录参数 + 忽略」：RLVM 对未知 opcode 本来就是跳过，所以推进不受影响，
+// 但把取值打出来，供以后按真实语义实现。
+struct LbChildObj1058
+    : public RLOp_Void_3<IntConstant_T, IntConstant_T, IntConstant_T> {
+  void operator()(RLMachine& machine, int a, int b, int c) {
+    static std::set<std::string> logged;
+    std::ostringstream os;
+    os << a << "," << b << "," << c;
+    if (logged.size() < 12 && logged.insert(os.str()).second) {
+      std::cout << "[lb-ext] ChildObjFg(2:81):1058(" << a << ", " << b << ", "
+                << c << ") 暂按忽略处理（记录备查）" << std::endl;
+    }
+    machine.AdvanceInstructionPointer();
+  }
+};
+
 struct LbStub3 : public RLOp_Void_3<IntConstant_T, IntConstant_T, IntConstant_T> {
   void operator()(RLMachine& machine, int a, int b, int c) {
     static bool logged = false;
@@ -867,6 +912,14 @@ class AndroidRLMachine : public RLMachine {
                         new LbIgnoreRawArgs(4, 151, "Sys151"));
       module->AddOpcode(152, 0, "lb_ignore_152",
                         new LbIgnoreRawArgs(4, 152, "Sys152"));
+    } else if (module != nullptr && module->module_type() == 1 &&
+               module->module_number() == 21) {
+      // Pcm：小游戏按名预载音效（WAV/PT_*.ogg），见 LbWavLoadByName 注释。
+      module->AddOpcode(1000, 0, "lb_wav_load_by_name", new LbWavLoadByName());
+    } else if (module != nullptr && module->module_type() == 2 &&
+               module->module_number() == 81) {
+      // ChildObjFg：LBEX 小游戏用的子对象属性（RLVM 表里缺 1058）。
+      module->AddOpcode(1058, 1, "lb_child_obj_1058", new LbChildObj1058());
     } else if (module != nullptr && module->module_type() == 0 &&
                module->module_number() == 2) {
       // Sel 模块缺的 objbtn 组（见上面的长注释）。

@@ -65,6 +65,15 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   }
   if (!g_ready) return false;
 
+  // 真机诊断：前 40 次调用打出来，用来确认脚本确实走到了 PT00，
+  // 以及它按什么顺序驱动 func（日志走 rlvm-stderr）。
+  static int logged = 0;
+  if (logged < 40) {
+    ++logged;
+    std::cerr << "[pt00] CallDLL func=" << func << " a=(" << a1 << "," << a2
+              << "," << a3 << "," << a4 << ")" << std::endl;
+  }
+
   // intD 是 DLL 与脚本唯一的交换区：进来先把引擎的值灌给执行器，
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
