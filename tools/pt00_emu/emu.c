@@ -567,6 +567,13 @@ static int step(void) {
     case 0xe9: { int32_t r = (int32_t)imm32(); cpu.eip += r; return 0; }
     case 0xeb: { int8_t r = rel8(); cpu.eip += r; return 0; }
     case 0xc3: cpu.eip = pop32(); return 0;
+    case 0xc2: { /* ret imm16：stdcall 的返回并清参数 */
+      uint16_t n = rd16(cpu.eip);
+      cpu.eip += 2;
+      cpu.eip = pop32();
+      cpu.esp += n;
+      return 0;
+    }
     case 0xc9: cpu.esp = cpu.ebp; cpu.ebp = pop32(); return 0; /* leave */
     case 0xc7: { ModRM m = modrm(); rm_write32(m, imm32()); return 0; }
     case 0xc6: { ModRM m = modrm(); rm_write8(m, imm8()); return 0; }
