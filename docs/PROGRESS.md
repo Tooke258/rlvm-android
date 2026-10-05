@@ -15,16 +15,23 @@
 **PT00（LBEX 棒球小游戏）走「兼容层」路线：不手写重写，而是在 Android 侧跑一个自研 x86-32
 执行器，直接执行原版 `PT00.dll`（DLL 由用户游戏数据在运行时提供，绝不进仓库 / APK）。兼容层已真机跑通。**
 
-当前焦点（2026-10-06 凌晨）：**小游戏能进、画面能画、DLL 在跑，但停在「首次分支」里**——
-现象是没有实体被创建/渲染、屏幕上只有 [SKIP] 热区。已经查清：
+当前焦点（2026-10-06）：**小游戏能进、画面能画、原版 DLL 在跑、脚本也在按相位推进，但角色（打者/选手）不渲染**——
+场上只有 16 个对象、没有 0×0 源矩形，屏幕上只剩 [SKIP] 热区。以下三条都是被真值修正过的结论，别再重复：
 
-* 相位标志 `intG[1900]/[1901]` 全库**只有 `SEEN515` 在小游戏调用**返回后**置位** → 首次进入时本来就该是 0；
-* 原生引擎（`REALLIVE.EXE`）只在**脚本 CallDLL 指令**处调用小游戏 DLL，没有「每帧自动驱动」机制（IDA 调用链已取证）；
-* 因此卡点在**脚本的首次分支内部**，要读 `SEEN7110` 里 `intG[1900] != 1` 的那条路。
+* 引擎**没有**「每帧自动驱动 DLL」的机制；`intG[1900]/[1901]` 是脚本在 `SEEN515` 里、小游戏调用**返回之后**才置位，首次本来就该是 0；
+* 相位号正确（真机快照 `intD[73]=10`，相位 10 该写的值都对）→ 卡点不是「分流到等待」；
+* 选手贴图都在（`G00/PT_PR_*.g00` 与 `g00_sc/`），`objShow(1004)` 也是实现过的（多行注册，之前 grep 漏了）。
+
+**因此改走「原生 RL 锚点法」**（不比观感，只比脚本可见量）：方案与取数配方在
+[`docs/LB-MINIGAME-NATIVE-ANCHORS.md`](LB-MINIGAME-NATIVE-ANCHORS.md)——顺序是 A2（intD 一族）→ A1（对象表）→ A3/A4。
 
 可直接用的取证工具（都不需要真机）：
-`dump_scenes=all`（351 幕反汇编写文件，本地 `build/rlvm-scenes.txt`）、`tools/ida_find_dll_glue.py` +
-`tools/ida_xrefs_of.py`（对 `REALLIVE.EXE` 做调用链取证）、`pt00_trace_ctx`、objbtn 诊断、图形栈转储。
+
+* `tools/pt00_probe.exe`（**本轮新增**）：**只读**扫原生 `REALLIVE.EXE` 的内存，按签名窗口
+  `intD[70..76] = 20,19,15,10,0,-1,1` 反推 `intD` 基址，再把 A2 要的那一族下标整段打出来；
+  `--selftest` 已 PASS（找到 + 基址正确），进程名解析与负路径也都测过。构建：`tools\build_pt00_probe.bat`。
+* `dump_scenes=all`（351 幕反汇编写文件，本地 `build/rlvm-scenes.txt`）、`tools/ida_find_dll_glue.py` +
+  `tools/ida_xrefs_of.py`（对 `REALLIVE.EXE` 做调用链取证）、`pt00_trace_ctx`、objbtn 诊断、图形栈转储。
 
 进度（PC 侧，不需要真机）：
 
@@ -35,8 +42,8 @@
   22 种实体单帧新鲜调用 **22/22 一致**；
 * 已修 20+ 个 bug，**全部在宿主执行器**，`PT00.dll` 一行没改。
 
-下一步：把执行器接进 `LittleBustersPT00DLL::CallDLL()`（编进 `app/src/main/cpp`）→ **真机实测**
-（看小游戏能不能过「TIME 卡死」）。
+下一步（需要用户配合）：在 PC 上把原生 RL 走到**小游戏等待画面**，跑
+`tools\pt00_probe.exe REALLIVE.EXE`，把输出贴回来 → 与 Android 侧 `[pt00] frame` 快照做 A2 逐项对照。
 
 👉 **细节全部在 [`docs/PT00-EMU-HANDOFF.md`](PT00-EMU-HANDOFF.md)**（契约 / 工具命令 / bug 清单 / 原始差异输出 / 路径速查）。
 
