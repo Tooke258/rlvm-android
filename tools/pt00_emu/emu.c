@@ -332,6 +332,17 @@ static double fp_pop(void) { double v = g_fp[g_fptop]; g_fptop = (g_fptop + 1) &
  * 不写状态字的话 fnstsw 恒为 0，后面那个分支永远走同一边，
  * 函数就会走错路径（func 10 的 3D 投影就是这么偏掉的）。 */
 static uint16_t g_fpu_sw = 0;
+static uint16_t g_fpu_cw = 0x027f; /* 控制字：bit8-9 精度、bit10-11 舍入 */
+
+/* 按控制字的舍入模式把浮点转成整数（`_ftol2` 会先用 fldcw 切到"向零取整"）。 */
+static int64_t fp_to_int(double v) {
+  switch ((g_fpu_cw >> 10) & 3) {
+    case 0: return (int64_t)(v < 0 ? v - 0.5 : v + 0.5); /* 就近 */
+    case 1: return (int64_t)floor(v);
+    case 2: return (int64_t)ceil(v);
+    default: return (int64_t)v;                          /* 向零 */
+  }
+}
 static void fp_cmp(double a, double b) {
   g_fpu_sw &= (uint16_t)~(0x0100u | 0x0400u | 0x4000u); /* 清 C0/C2/C3 */
   if (a > b) {
@@ -376,8 +387,8 @@ static int x87(uint8_t op) {
     if (m.mod != 3 && reg == 0) { float v = *(float *)gp(m.addr); fp_push(v); return 0; }
     if (m.mod != 3 && reg == 2) { *(float *)gp(m.addr) = (float)*XP(0); return 0; }
     if (m.mod != 3 && reg == 3) { *(float *)gp(m.addr) = (float)fp_pop(); return 0; }
-    if (m.mod != 3 && reg == 5) { wr16(m.addr, rd16(m.addr)); return 0; }  /* fldcw */
-    if (m.mod != 3 && reg == 7) { wr16(m.addr, 0x027f); return 0; }        /* fnstcw */
+    if (m.mod != 3 && reg == 5) { g_fpu_cw = rd16(m.addr); return 0; } /* fldcw */
+    if (m.mod != 3 && reg == 7) { wr16(m.addr, g_fpu_cw); return 0; }  /* fnstcw */
     if (m.mod == 3) {
       if (m.raw >= 0xc0 && m.raw <= 0xc7) { fp_push(*XP(m.raw - 0xc0)); return 0; }
       if (m.raw >= 0xc8 && m.raw <= 0xcf) {                     /* fxch */
@@ -395,7 +406,7 @@ static int x87(uint8_t op) {
     }
   } else if (op == 0xdb && m.mod != 3) { /* fild m32 / fistp m32 */
     if (reg == 0) { fp_push((double)*(int32_t *)gp(m.addr)); return 0; }
-    if (reg == 3) { int32_t v = (int32_t)*XP(0); fp_pop(); wr32(m.addr, (uint32_t)v); return 0; }
+    if (reg == 3) { uint32_t v = (uint32_t)fp_to_int(*XP(0)); fp_pop(); wr32(m.addr, v); return 0; }
   } else if (op == 0xdc) { /* m64real */
     if (m.mod != 3) {
       double v = *(double *)gp(m.addr);
@@ -445,7 +456,15 @@ static int x87(uint8_t op) {
       return 0;
     }
     if (m.mod != 3 && reg == 5) { fp_push((double)*(int16_t *)gp(m.addr)); return 0; } /* fild m16 */
-    if (m.mod != 3 && reg == 7) { int16_t v = (int16_t)*XP(0); fp_pop(); wr16(m.addr, (uint16_t)v); return 0; }
+    /* DF /7 = fistpll：**8 字节** int64（不是 int16）。写错的话，紧接着的
+     * `movl -0x8(%ebp),%edx` 会读到旧垃圾，整数结果就变成 0xEFDFxxxx 那种值。 */
+    if (m.mod != 3 && reg == 7) {
+      uint64_t v = (uint64_t)fp_to_int(*XP(0));
+      fp_pop();
+      wr32(m.addr, (uint32_t)v);
+      wr32(m.addr + 4, (uint32_t)(v >> 32));
+      return 0;
+    }
   }
   return -1;
 }
