@@ -809,6 +809,16 @@ void AndroidSystem::Run(RLMachine& machine) {
   if (platform())
     platform()->Run(machine);
 
+  // **上游只在 WaitLongOperation 里把 object_state_dirty_ 转成「屏幕脏」**
+  // （见 long_operations/wait_long_operation.cc:127）。小游戏/实时动画的帧循环并不是
+  // 每帧都进 wait（脚本自己转圈 + objbtn_select 改成非阻塞之后更明显），
+  // 于是 obj* 指令改了对象、却没有任何人把屏幕标脏 -> 合成器不重绘 ->
+  // **画面冻住、脚本和 DLL 却一直在跑**（真机现象：间隔 4 秒的两张截图 MD5 完全相同）。
+  // 这里补一次同样的转换。
+  if (graphics_->object_state_dirty()) {
+    graphics_->MarkScreenAsDirty(GUT_DISPLAY_OBJ);
+  }
+
   // 上游由 SDL 的视频事件驱动重绘；Android 侧没有这种事件源，
   // 因此合帧由主循环触发——但**必须与上游一样只在脏标记置位时合成**（D-022）：
   // 上游 SDLGraphicsSystem::ExecuteGraphicsSystem 里是
