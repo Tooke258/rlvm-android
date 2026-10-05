@@ -76,7 +76,36 @@ static int g_seg_fs = 0;
 static uint32_t guest_alloc(uint32_t n) {
   uint32_t p = g_heap_ptr;
   g_heap_ptr += (n + 15u) & ~15u;
+  if (g_heap_ptr >= GUEST_BASE + GUEST_SIZE) {
+    static int warned = 0;
+    if (!warned) {
+      warned = 1;
+      fprintf(stderr, "[emu] 假堆用尽（%u 字节已分配）—— 之后的分配会越界\n",
+              (unsigned)(g_heap_ptr - 0x11400000u));
+    }
+  }
   return p;
+}
+
+/* 假堆的「指针 -> 大小」表：HeapReAlloc / HeapSize 要用。
+ * 以前 HeapReAlloc 直接返回老指针、HeapSize 恒 64 —— DLL 一旦 realloc 变大再往里写，
+ * 就会踩掉相邻的来宾数据，最后拿着野指针进死循环（真机运镜时就是死在一个
+ * vector 扩容后的拷贝循环里：`mov (%eax),%edx; mov %edx,(%ecx)` 到不了终点）。 */
+#define EMU_HEAP_BLOCKS 8192
+static struct { uint32_t p, sz; } g_heap_blocks[EMU_HEAP_BLOCKS];
+static int g_heap_block_n = 0;
+
+static void heap_note(uint32_t p, uint32_t sz) {
+  if (g_heap_block_n < EMU_HEAP_BLOCKS) {
+    g_heap_blocks[g_heap_block_n].p = p;
+    g_heap_blocks[g_heap_block_n].sz = sz;
+    ++g_heap_block_n;
+  }
+}
+static uint32_t heap_size_of(uint32_t p) {
+  for (int i = g_heap_block_n - 1; i >= 0; --i)
+    if (g_heap_blocks[i].p == p) return g_heap_blocks[i].sz;
+  return 0;
 }
 
 static inline int in_guest(uint32_t a, uint32_t n) {
@@ -305,8 +334,17 @@ static void emu_call_push(uint32_t callee, uint32_t ret_addr, uint32_t esp_entry
     g_frames[g_frame_n].ret_addr = ret_addr;
     g_frames[g_frame_n].callee = callee;
     g_frames[g_frame_n].esp_entry = esp_entry;
+    ++g_frame_n;
+    return;
   }
-  ++g_frame_n;
+  /* 调用深度溢出：以前仍然 ++g_frame_n，于是 g_frame_n 一路涨到几百万，
+   * 后面「打印调用栈」的循环 g_frames[g_frame_n-1] 就越界 → 报错路径自己 SIGSEGV。
+   * 现在溢出后**不再增长**，只记一次标志；栈不平衡时照样会被 emu_ret_check 抓到。 */
+  static int warned = 0;
+  if (!warned) {
+    warned = 1;
+    fprintf(stderr, "[emu] 调用深度超过 %d（后续帧不再记录）\n", EMU_CALLDEPTH);
+  }
 }
 
 static int emu_ret_check(void) {
@@ -705,19 +743,34 @@ static int stub_call(int idx) {
     cpu.eax = 0x00d00000u;
   } else if (stub_is(idx, "HeapAlloc")) {
     /* HeapAlloc(hHeap, dwFlags, dwBytes) */
-    cpu.eax = guest_alloc(arg_at(2) ? arg_at(2) : 64);
+    uint32_t sz = arg_at(2) ? arg_at(2) : 64;
+    uint32_t p = guest_alloc(sz);
+    heap_note(p, sz);
+    cpu.eax = p;
   } else if (stub_is(idx, "HeapReAlloc")) {
-    /* HeapReAlloc(hHeap, dwFlags, lpMem, dwBytes)：原地返回老指针即可（假堆不回收） */
-    cpu.eax = arg_at(2);
+    /* HeapReAlloc(hHeap, dwFlags, lpMem, dwBytes)：**必须真的搬到新块并拷贝**。
+     * 老实现直接返回 lpMem —— DLL 以为缓冲区变大了，写进去就踩坏隔壁数据。 */
+    uint32_t oldp = arg_at(2), sz = arg_at(3) ? arg_at(3) : 64;
+    uint32_t oldsz = heap_size_of(oldp);
+    uint32_t np = guest_alloc(sz);
+    if (oldp && oldsz) {
+      uint32_t n = oldsz < sz ? oldsz : sz;
+      for (uint32_t i = 0; i < n; ++i) wr8(np + i, rd8(oldp + i));
+    }
+    heap_note(np, sz);
+    cpu.eax = np;
   } else if (stub_is(idx, "VirtualAlloc")) {
     /* VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect) */
-    cpu.eax = guest_alloc(arg_at(1) ? arg_at(1) : 4096);
+    uint32_t sz = arg_at(1) ? arg_at(1) : 4096;
+    uint32_t p = guest_alloc(sz);
+    heap_note(p, sz);
+    cpu.eax = p;
   } else if (stub_is(idx, "HeapFree") || stub_is(idx, "VirtualFree") ||
              stub_is(idx, "HeapDestroy") || stub_is(idx, "IsBadReadPtr") ||
              stub_is(idx, "IsBadWritePtr")) {
     cpu.eax = stub_is(idx, "HeapFree") || stub_is(idx, "VirtualFree") ? 1 : 0;
   } else if (stub_is(idx, "HeapSize")) {
-    cpu.eax = 64;
+    cpu.eax = heap_size_of(arg_at(2));
   } else if (stub_is(idx, "TlsAlloc")) {
     int s = -1;
     for (int i = 0; i < EMU_TLS_SLOTS; ++i) if (!g_tls_used[i]) { s = i; break; }
@@ -773,6 +826,12 @@ static int step(void) {
   g_eip_ring_pos = (g_eip_ring_pos + 1) % EIP_RING;
   if (++g_steps > g_max_steps) {
     fprintf(stderr, "[emu] 步数上限 %d 用尽\n", g_max_steps);
+    /* 关键现场：DLL 卡在死循环时的寄存器（指针/长度都在这里） */
+    fprintf(stderr,
+            "[emu] 寄存器 eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x edi=%08x "
+            "ebp=%08x esp=%08x\n",
+            cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp,
+            cpu.esp);
     hist_dump();
     fprintf(stderr, "[emu] 调用栈：");
     for (int i = g_frame_n - 1; i >= 0 && i > g_frame_n - 10; --i)
@@ -1272,6 +1331,12 @@ static int load_pe_bytes(const uint8_t *buf, long sz) {
  *   pt00_emu_get_intd(engine_intd, 2000);   // 调用后：执行器 → 引擎
  * 原版 PT00.dll 由用户游戏数据在运行时提供，不进 APK。 */
 static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
+  /* 每次进入都是一次独立的 CallDLL：**必须把调用栈帧清零**。
+   * 上一次调用若是「步数上限/栈不平衡」提前返回（没有逐层 ret），g_frame_n 会留在
+   * 高位；再叠加几次就会超过 EMU_CALLDEPTH，然后「打印调用栈」的循环越界 —— 报错路径
+   * 自己 SIGSEGV（真机运镜时就是这么崩的）。 */
+  g_frame_n = 0;
+  g_steps = 0;
   for (int i = argc_ - 1; i >= 0; --i) push32(args[i]);
   push32(SENTINEL);
   emu_call_push(entry_, SENTINEL, cpu.esp);
