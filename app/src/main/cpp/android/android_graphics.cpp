@@ -564,8 +564,13 @@ void AndroidSurface::RenderToScreen(const Rect& src, const Rect& dst,
   // 临时探针（v0.2.4 选项图标不显示）：前 30 次打到应用日志，看清 src/dst/alpha
   // 与源表面状态——若 alpha=0 或内容包围盒为空，就会"一个像素都不画"。
   {
+    // 整屏 present 每帧都走这里，会瞬间吃光预算 → 只记**子表面**（选项窗口那种）。
+    const bool full_screen_present =
+        src.x() == 0 && src.y() == 0 && dst.x() == 0 && dst.y() == 0 &&
+        src.width() == dst.width() && src.height() == dst.height() &&
+        src.width() == size_.width() && src.height() == size_.height();
     static int probe = 0;
-    if (++probe <= 30) {
+    if (!full_screen_present && ++probe <= 60) {
       char buf[320];
       std::snprintf(buf, sizeof(buf),
                     "rts-probe: src=(%d,%d,%dx%d) dst=(%d,%d,%dx%d) alpha=%d "
