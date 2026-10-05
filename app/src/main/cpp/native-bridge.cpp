@@ -8,11 +8,14 @@
 #include <android/log.h>
 
 #include <exception>
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <mutex>
 #include <sstream>
+#include <set>
 #include <string>
 #include <chrono>
 #include <atomic>
@@ -740,7 +743,62 @@ struct RefreshWaitOp : public RLOp_Void_Void {
   }
 };
 
-// 平台层扩展：给 (1,31) 补上 refresh 的重载 1，其余模块原样交给上游。
+// ---------------------------------------------------------------------------
+// LB 小游戏需要、而上游 RLVM 从未实现的几条脚本指令（见 dev-log/OPEN-ISSUES.jsonl）。
+// 每帧循环会撞它们，撞一次就跳一次、循环推进不下去，表现出来就是画面停住。
+// ---------------------------------------------------------------------------
+
+// 参数元数不固定的指令（Sys 151 有 9 个参数、Sys 152 有 11 个）：走上游给
+// 「特殊情形」准备的逃生口，**不解析参数**直接吞掉，避免把后续字节码喂错。
+// 语义待反推；先让它别卡，并把实参原样打进日志供分析。
+class LbIgnoreRawArgs : public RLOp_SpecialCase {
+ public:
+  LbIgnoreRawArgs(int module_number, int opcode, const char* label)
+      : module_number_(module_number), opcode_(opcode), label_(label) {}
+
+  void ParseParameters(const std::vector<std::string>&,
+                       libreallive::ExpressionPiecesVector&) override {}
+
+  void operator()(RLMachine& machine,
+                  const libreallive::CommandElement& f) override {
+    static std::set<int> logged;
+    const int key = module_number_ * 100000 + opcode_;
+    if (logged.insert(key).second) {
+      std::cout << "[lb-ext] " << label_ << " (module 1:" << module_number_
+                << " op " << opcode_
+                << ") not implemented yet; args ignored" << std::endl;
+    }
+    machine.AdvanceInstructionPointer();
+  }
+
+ private:
+  int module_number_;
+  int opcode_;
+  const char* label_;
+};
+
+// 3 个 int 参数的占位实现（2:87:1002 的形状是「父对象, 子序号, 值」）。
+struct LbStub3 : public RLOp_Void_3<IntConstant_T, IntConstant_T, IntConstant_T> {
+  void operator()(RLMachine& machine, int a, int b, int c) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      std::cout << "[lb-ext] obj(2:87):1002(父,子,值) not implemented yet"
+                << std::endl;
+    }
+  }
+};
+
+// 上游没有的模块族 2:87（脚本用它设置「父对象的某个子对象」的状态）。
+class LbObjExtModule : public RLModule {
+ public:
+  LbObjExtModule() : RLModule("LbObjExt", 2, 87) {
+    AddOpcode(1002, 0, "childSetState", new LbStub3());
+  }
+};
+
+// 平台层扩展：给 (1,31) 补上 refresh 的重载 1、(1,11) 补上 Mem 201、
+// (1,4) 补上 Sys 151/152）；其余模块原样交给上游。
 class AndroidRLMachine : public RLMachine {
  public:
   using RLMachine::RLMachine;
@@ -749,6 +807,22 @@ class AndroidRLMachine : public RLMachine {
     if (module != nullptr && module->module_type() == 1 &&
         module->module_number() == 31) {
       module->AddOpcode(1, 0, "refresh_wait_frame", new RefreshWaitOp());
+    } else if (module != nullptr && module->module_type() == 1 &&
+               module->module_number() == 11) {
+      // Mem 201：`Mem201(个数, 键数组, 下标数组)`。全库仅一处调用，从消费端
+      // （`farcall(7500, 2, {intA[i]})` 把值当**实体下标**用）反推，它应该是
+      // 「按键数组给下标数组排序」的 argsort。真实现要用上游的
+      // IntReference_T/IntReferenceIterator（还没接对头），这里先吞掉：
+      // 脚本调用前已把 intA[0..21] 填成 0..21，忽略它 = 保持下标顺序，
+      // z 序可能不对但循环不再卡死。
+      module->AddOpcode(201, 0, "lb_ignore_mem201",
+                        new LbIgnoreRawArgs(11, 201, "Mem201"));
+    } else if (module != nullptr && module->module_type() == 1 &&
+               module->module_number() == 4) {
+      module->AddOpcode(151, 0, "lb_ignore_151",
+                        new LbIgnoreRawArgs(4, 151, "Sys151"));
+      module->AddOpcode(152, 0, "lb_ignore_152",
+                        new LbIgnoreRawArgs(4, 152, "Sys152"));
     }
     RLMachine::AttachModule(module);
   }
@@ -776,6 +850,8 @@ void RunEngineOn(System& system,
   AndroidRLMachine machine(system, archive);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddAllModules");
   AddAllModules(machine);
+  // 上游没有的模块族 2:87（LB 小游戏的「设子对象状态」），由平台层补上。
+  machine.AttachModule(new LbObjExtModule());
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddGameHacks");
   // lb_minigame=1 且本作是 LB/LBEX 时，不注册那个「直接 ReturnFromFarcall
   // 跳过棒球小游戏」的 line action（上游 game_hacks.cc:65），让小游戏真跑。
