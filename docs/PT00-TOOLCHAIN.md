@@ -39,14 +39,22 @@ idat.exe -A -L"$tmp\ida-sym.log" -S"<repo>\tools\ida_apply_symbols.py <repo>\too
 | `pt00_rt_frames_*` | 运行期表（`pt00_prefix_sum_table` 把帧增量表前缀和后的结果） |
 | `pt00_*_state` · `pt00_*_block` | 全局状态块 |
 
-## Layer 2 · 数据提取（改用外部 CLI）
+## Layer 2 · 数据提取（声明式清单 + 生成器，已落地）
 
-现状：`tools/dump_tables.py` 能按 VA 导出 dword（并识别 BSS 报错），够用于一次性查表，
-但需要手工抄地址与条目数。**计划改为用户并行迭代的 CLI 工具**，把「提取」变成一条可复现的命令。
+**2026-10-05 已落地**：`tools/dump_tables.py` 升级为「声明式清单 + 生成器」，一条命令可复现提取：
 
-与 Layer 1 的接口约定（如果那个工具想对齐）：输出「地址 → 整数数组」的文本/JSON，
-条目数从另一个全局地址读取，并保留 `pt00_prefix_sum_table` 的语义
-（`.data` 里是**帧增量**，运行期前缀和才是阈值）。
+```powershell
+python tools/dump_tables.py --manifest tools/pt00_tables.json --dll <PT00.dll> --out generated/pt00_tables.inc
+```
+
+* 清单 `tools/pt00_tables.json` = 单一事实来源：每张表 地址 / 条目数（固定值 或 `count_from` 全局 dword VA，生成时先读该地址的 uint32）/ C++ 数组名 / 备注。新增表只加一行。
+* 产物 `generated/pt00_tables.inc`：`const uint32_t pt00_anim_frames_*[]` + `constexpr size_t pt00_anim_count_*`，命名对齐 Layer 1 约定（帧增量表 / 条目数 / 序号表）。
+* 保留 `pt00_prefix_sum_table` 语义：`.data` 里是**帧增量**，运行期前缀和才是阈值（注释里显式标注）。
+* 生成器对每张表显式回报（名称 / 地址 / 条目数来源 / 实读条目数 / 字节数），任一步失败即报错并 exit≠0（不静默跳过）。
+* 旧交互模式（`--range` / 裸地址）保留。
+
+与外部 CLI 的接口约定（若 CodeEX 的 CLI 想对齐）：输出「地址 → 整数数组」的文本/JSON，
+条目数从另一个全局地址读取，并保留 `pt00_prefix_sum_table` 的语义。
 
 ## Layer 3 · Oracle 与差分回归（待做）
 

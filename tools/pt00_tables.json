@@ -1,0 +1,21 @@
+{
+  "_schema_note": "声明式表提取清单（对齐 docs/PT00-TOOLCHAIN.md 命名约定：pt00_anim_frames_*=帧增量表 / pt00_anim_count_*=条目数 / pt00_anim_ids_*=序号表）。每张表：address=表起始 VA；count=固定条目数，或 count_from=条目数所在全局 dword 的 VA（生成时先读该地址 uint32 得条目数）；name=生成的 C++ 数组名；count_name=条目数常量名（默认 name+'Count'）；element=元素类型（默认 uint32_t）；comment=备注。",
+  "source_dll": "PT00.dll",
+  "image_base": "0x10000000",
+  "tables": [
+    {
+      "name": "pt00_anim_frames_main",
+      "count_name": "pt00_anim_count_main",
+      "address": "0x1001F040",
+      "count": 116,
+      "comment": "动画帧增量表（运行期 pt00_prefix_sum_table 前缀和得到帧阈值）。对应旧 --range 0x1001F040 0x1001F210 整块。"
+    },
+    {
+      "name": "pt00_anim_frames_demo",
+      "count_name": "pt00_anim_count_demo",
+      "address": "0x1001F0AC",
+      "count_from": "0x1001F0AC",
+      "comment": "示例：条目数从全局 dword_1001F0AC 读（=7）。真实表的地址/条目数来源以 IDA 取证为准，替换此示例即可。"
+    }
+  ]
+}
