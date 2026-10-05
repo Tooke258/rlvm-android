@@ -400,8 +400,24 @@ bool System::ShouldFastForward() {
   // 的"影片开播后剧情还在跑"里，Ctrl 那条路就是这样进去的。点击跳过影片、面板的
   // 影片自测按钮都不走这里，不受影响。
   if (rlvm_android::MovPlayer::Instance().playing()) return false;
-  return (event().CtrlPressed() && text().ctrl_key_skip()) ||
-         text().CurrentlySkipping() || force_fast_forward_;
+  const bool ctrl_skip = event().CtrlPressed() && text().ctrl_key_skip();
+  const bool text_skip = text().CurrentlySkipping();
+  const bool forced = force_fast_forward_;
+  // 诊断（2026-10-05）：快进一旦被"按住"就会把整段剧情/小游戏跳过（真机实测：
+  // 第一场棒球和第二场之间的对话被整段跳掉）。只在**状态变化**时打一行，
+  // 所以既不吵又能在日志里看出是谁打开了快进、以及它有没有被关掉。
+  {
+    static int last_state = -1;
+    const int state = (ctrl_skip ? 1 : 0) | (text_skip ? 2 : 0) |
+                      (forced ? 4 : 0);
+    if (state != last_state) {
+      last_state = state;
+      std::cout << "[ff] ctrl=" << (ctrl_skip ? 1 : 0)
+                << " text_skip=" << (text_skip ? 1 : 0)
+                << " forced=" << (forced ? 1 : 0) << std::endl;
+    }
+  }
+  return ctrl_skip || text_skip || forced;
 }
 
 void System::DumpRenderTree(RLMachine& machine) {
