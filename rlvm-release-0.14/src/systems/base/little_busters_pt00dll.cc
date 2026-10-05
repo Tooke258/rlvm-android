@@ -34,6 +34,11 @@
 #include "libreallive/intmemref.h"
 #include "machine/rlmachine.h"
 
+// 动画表由 Layer 2 生成（generated/ 在仓库根，见 docs/PT00-TOOLCHAIN.md）：
+//   codeex tables <PT00.dll> --manifest tools/pt00_tables.json --out generated/pt00_tables.inc
+// 表里存的是**帧增量**，运行期由 AnimSeq::Ensure() 前缀和成帧阈值。
+#include "../../../../generated/pt00_tables.inc"
+
 using libreallive::IntMemRef;
 
 namespace {
@@ -517,12 +522,532 @@ bool EntityUsesHitCheck(int index) {
 }
 
 // ---------------------------------------------------------------------------
+// 动画序列：原版用 pt00_prefix_sum_table(dst, src, count) 把 .data 里的增量表
+// 前缀和成帧阈值表，并以 dst[0]==0 当「还没初始化」的标志。这里用 ready 标志。
+// ---------------------------------------------------------------------------
+template <size_t N>
+struct AnimSeq {
+  uint32_t frames[N];
+  bool ready = false;
+
+  void Ensure(const uint32_t (&src)[N]) {
+    if (ready) return;
+    uint32_t acc = 0;
+    for (size_t i = 0; i < N; ++i) {
+      acc += src[i];
+      frames[i] = acc;
+    }
+    ready = true;
+  }
+  int Last() const { return static_cast<int>(frames[N - 1]); }
+};
+
+AnimSeq<pt00_anim_frames_ent00_mBCount> g_seq_mB;
+AnimSeq<pt00_anim_frames_ent00_mCCount> g_seq_mC;
+AnimSeq<pt00_anim_frames_ent00_launch2Count> g_seq_launch2;
+AnimSeq<pt00_anim_frames_ent00_launchCount> g_seq_launch;
+AnimSeq<pt00_anim_frames_ent00_m4Count> g_seq_m4;
+AnimSeq<pt00_anim_frames_ent00_m7Count> g_seq_m7;
+AnimSeq<pt00_anim_frames_ent00_m8Count> g_seq_m8;
+AnimSeq<pt00_anim_frames_ent00_m9Count> g_seq_m9;
+AnimSeq<pt00_anim_frames_ent00_mACount> g_seq_mA;
+
+// 原版 sub_10005380：把动画序号写进实体记录 [20]=序号、[21]=速率、[22]=1。
+void EntitySetAnim(RLMachine& machine, int index, uint32_t anim_id, int rate) {
+  SetEnt(machine, index, 20, static_cast<int>(anim_id));
+  SetEnt(machine, index, 21, rate);
+  SetEnt(machine, index, 22, 1);
+}
+
+// 原版 sub_100052F0（vtable idx4）：重置动作状态，[33] 置 1。
+void ResetEntityAction(RLMachine& machine, int index) {
+  SetEnt(machine, index, 4, 0);
+  SetEnt(machine, index, 5, 0);
+  SetEnt(machine, index, 6, 0);
+  SetEnt(machine, index, 27, 0);
+  SetEnt(machine, index, 28, 0);
+  SetEnt(machine, index, 29, 0);
+  SetEnt(machine, index, 32, 0);
+  SetEnt(machine, index, 33, 1);
+}
+
+// 原版 sub_10005770：清共享块 intD[250]=0、[265]=0，并置 intD[280]=1。
+void ClearSharedBallBlock(RLMachine& machine) {
+  SetD(machine, 250, 0);
+  SetD(machine, 265, 0);
+  SetD(machine, 280, 1);
+}
+
+// 原版 sub_10005880：置对象自己的「延迟收尾」标志（obj+32=1、obj[9]=帧数、obj[10]=0），
+// 并写 intD[30]=7（场景切换信号）。对象字段落在 EntObj 里，见下。
+struct EntObj {
+  bool pending_finish = false;  // obj+32
+  int finish_limit = 0;         // obj[9]
+  int finish_counter = 0;       // obj[10]
+  int pending_mode = 0;         // obj[5]（原版由类型实现设置；目前没找到写点，保持 0）
+  int mode_limit = 0;           // obj[6]
+  int mode_counter = 0;         // obj[7]
+};
+
+EntObj g_obj[kEntCount];
+
+void EndAnimSequence(RLMachine& machine, int index, int frames) {
+  g_obj[index].pending_finish = true;
+  g_obj[index].finish_limit = frames;
+  g_obj[index].finish_counter = 0;
+  SetD(machine, 30, 7);
+}
+
+// 原版 sub_10014FD0 / sub_10014FF0：另外两路音效请求（写 intD[48]/[49] 与 intD[40]）。
+void RequestSeHit(RLMachine& machine, int id) {
+  SetD(machine, 48, id);
+  SetD(machine, 49, 150);
+}
+
+void RequestSeExtra(RLMachine& machine, int id) {
+  SetD(machine, 40, id);
+  for (int i = 42; i <= 45; ++i) SetD(machine, i, 0);
+}
+
+// 原版 sub_10005790（finish_a）：清记录 [6] 与 intD[210]、置 intD[20]=3，
+// 通知场景切换，然后走 idx4 重置。
+void EntityFinish(RLMachine& machine, int index) {
+  SetEnt(machine, index, 6, 0);
+  SetD(machine, 210, 0);
+  SetD(machine, 20, 3);
+  // 原版这里还调 pt00_notify_scene_change（sub_100045C0，627B，还没移植）。
+  ResetEntityAction(machine, index);
+}
+
+// 原版 sub_10001A00：二维向量就地归一化。
+void Vec2Normalize(double& x, double& y) {
+  const double len = std::sqrt(y * y + x * x);
+  if (len == 0.0) {
+    x = 0.0;
+    y = 0.0;
+  } else {
+    x = x / len;
+    y = y / len;
+  }
+}
+
+// 原版 sub_10002C40：把球的初始状态摆进共享块 intD[250..277]。
+// 其中 intD[253..255] 是球当前位置、[256..258] 是上一位置（命中判定 sub_100051D0 用的就是它们）。
+void SetBallVelocity(RLMachine& machine,
+                     int x, int y, int z,
+                     int vx, int vy, int vz,
+                     int speed, int extra) {
+  SetD(machine, 250, 1);
+  SetD(machine, 251, 255);
+  SetD(machine, 252, 0);
+  SetD(machine, 253, x);
+  SetD(machine, 254, y);
+  SetD(machine, 255, z);
+  SetD(machine, 256, x);
+  SetD(machine, 257, y);
+  SetD(machine, 258, z);
+  SetD(machine, 259, x);
+  SetD(machine, 260, y);
+  SetD(machine, 261, z);
+  SetD(machine, 262, vx);
+  SetD(machine, 263, vy);
+  SetD(machine, 264, vz);
+  SetD(machine, 265, speed);
+  SetD(machine, 266, 2000 * (5 * x));
+  SetD(machine, 267, 10000 * y);
+  SetD(machine, 268, 10000 * z);
+  SetD(machine, 269, y);
+  SetD(machine, 270, extra);
+  for (int i = 271; i <= 277; ++i) SetD(machine, i, 0);
+  // 原版还有一次对内部状态块 0x4B0 字节的 memset；那 1200 字节里没有我们建模的字段
+  // （+1204/+1208/+1212 在 memset 范围之外），所以这里不做。
+}
+
+// ---------------------------------------------------------------------------
+// 起球链：pt00_ent00_idx8（case 0xD）→ pt00_ent00_idx8_launch → 三个起球参数 →
+// pt00_launch_ball（写 intD[210]=1，让 func 31 进入飞行状态）。
+// ---------------------------------------------------------------------------
+
+// 原版 sub_100067F0（纯数学）。
+int LaunchCalcC(double speed) {
+  const double v = 2000.0 / (speed * 0.1);
+  return static_cast<int>(v * 0.3 - 250.0 / v);
+}
+
+// 原版 sub_10006760：起球速度（带随机与场景修正）。
+int LaunchCalcB(RLMachine& machine) {
+  int v = static_cast<int>((std::rand() * 0.000003051850947599719 + 0.9) * 400.0);
+  const int curve = GetD(machine, 500);
+  if (curve == 7) v = 3 * v / 2;
+  if (curve == 8) v = 2 * v;
+  if (curve == 1 || curve == 6) v = 2 * v / 3;
+  const int scenario = GetD(machine, 76);
+  if (scenario == 4 || scenario == 5) v = 1200;
+  if (scenario == 6) v = 260;
+  return v;
+}
+
+// 原版 sub_10006680：起球角度（返回值是相对记录 [10] 的偏移；顺带写 intD[715]）。
+int LaunchCalcA(RLMachine& machine, int index) {
+  int v2 = std::rand() % 150;
+  if (GetD(machine, 78) == 1) v2 = std::rand() % 100 + 50;
+  const int curve = GetD(machine, 500);
+  if (curve == 7 || curve == 8) v2 = 0;
+
+  int v6 = v2 * (130 - GetD(machine, 904)) / 100;
+  if (v6 > 125) v6 = 125;
+  if (v2 * (130 - GetD(machine, 904)) / 100 < 0) v6 = 0;
+
+  const bool flip = (std::rand() % 2) != 0;
+  int v11 = flip ? -v6 : v6;
+  const int scenario = GetD(machine, 76);
+  int v12 = 1;
+  if (scenario == 4 || scenario == 5) {
+    v11 = 0;
+  } else if (scenario == 6) {
+    v11 = 150;
+    v12 = 2;
+  } else if (v11 <= -50 || v11 >= 50) {
+    v12 = 2;
+  }
+  SetD(machine, 715, v12);
+  return v11 - Ent(machine, index, 10);
+}
+
+// 原版 sub_10006820：起球——把球交给状态机并让 func 31 进入状态 1。
+void LaunchBall(RLMachine& machine, int index, double dir_x, double dir_z,
+                int speed, int extra) {
+  Vec2Normalize(dir_x, dir_z);
+
+  SetD(machine, 210, 1);
+  SetD(machine, 220, 1);
+  SetD(machine, 221, 255);
+  SetD(machine, 222, 1);
+  SetD(machine, 223, Ent(machine, index, 10));
+  SetD(machine, 224, Ent(machine, index, 11) + 500);
+  SetD(machine, 225, Ent(machine, index, 12));
+  SetD(machine, 226, GetD(machine, 223));
+  SetD(machine, 227, GetD(machine, 224));
+  SetD(machine, 228, GetD(machine, 225));
+  SetD(machine, 232, static_cast<int>(dir_x * 1000.0));
+  SetD(machine, 233, 0);
+  SetD(machine, 234, static_cast<int>(dir_z * 1000.0));
+  SetD(machine, 235, speed);
+  SetD(machine, 229, GetD(machine, 226));
+  SetD(machine, 230, GetD(machine, 227));
+  SetD(machine, 231, GetD(machine, 228));
+  SetD(machine, 236, 100 * GetD(machine, 226));
+  SetD(machine, 237, 100 * GetD(machine, 227));
+  SetD(machine, 238, 100 * GetD(machine, 228));
+  SetD(machine, 239, 100 * GetD(machine, 226));
+  SetD(machine, 240, 100 * GetD(machine, 227));
+  SetD(machine, 241, 100 * GetD(machine, 228));
+  SetD(machine, 242, GetD(machine, 224));
+  SetD(machine, 243, extra);
+  SetD(machine, 244, 0);
+  SetD(machine, 245, 0);
+  SetD(machine, 501, GetD(machine, 235) / 5);   // 原版写 +2004
+
+  const int scenario = GetD(machine, 76);
+  if (scenario == 1) {
+    const int px = Ent(machine, 7, 10);   // dword_100237E0 = 第 7 个对象
+    const int py = Ent(machine, 7, 11);
+    const int pz = Ent(machine, 7, 12);
+    const int dx = px - Ent(machine, index, 10);
+    const int dy = py - Ent(machine, index, 11);
+    const int dz = pz - Ent(machine, index, 12);
+    double nx = static_cast<double>(dx);
+    double nz = static_cast<double>(dz);
+    const double len = std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
+    const int vx = (len == 0.0) ? 0 : static_cast<int>(nx * 1000.0 / len);
+    const int vz = (len == 0.0) ? 0 : static_cast<int>(nz * 1000.0 / len);
+    const int vy = (len == 0.0) ? 0 : static_cast<int>(dy * 1000.0 / len);
+    SetBallVelocity(machine, GetD(machine, 223), GetD(machine, 224),
+                    GetD(machine, 225), vx, vy, vz, 600, 250);
+    SetD(machine, 210, 2);
+    SetD(machine, 252, 1);
+  }
+  if (GetD(machine, 76) == 2) {
+    const double len = std::sqrt(4032400.0);
+    SetD(machine, 232, static_cast<int>(-180000.0 / len));
+    SetD(machine, 233, 0);
+    SetD(machine, 234, static_cast<int>(-2000000.0 / len));
+    SetD(machine, 235, 600);
+    SetD(machine, 243, 0);
+  }
+  if (GetD(machine, 76) == 3) {
+    const int px = Ent(machine, 7, 10);
+    const int py = Ent(machine, 7, 11);
+    const int pz = Ent(machine, 7, 12);
+    const int dx = px - Ent(machine, index, 10);
+    const int dy = py - Ent(machine, index, 11);
+    const int dz = pz - Ent(machine, index, 12);
+    const double len = std::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz));
+    const int vx = (len == 0.0) ? 0 : static_cast<int>(dx * 1000.0 / len);
+    const int vy = (len == 0.0) ? 0 : static_cast<int>(dy * 1000.0 / len);
+    const int vz = (len == 0.0) ? 0 : static_cast<int>(dz * 1000.0 / len);
+    SetBallVelocity(machine, GetD(machine, 223), GetD(machine, 224),
+                    GetD(machine, 225), vx, vy, vz, 600, 250);
+    SetD(machine, 210, 2);
+    SetD(machine, 252, 1);
+  }
+}
+
+// 目标点（本垒）：PT00.dll 的 sub_10004AE0 把 dword_10023D20/dword_10023D28
+// 初始化成 x=0、z=2100；很多「朝目标投/传」的逻辑都用它。
+const int kTargetX = 0;
+const int kTargetZ = 2100;
+
+// 原版 sub_100071F0（idx8 case 0xA 的附加处理）：朝目标点起一颗球，并把角色切成 1 号。
+void Ent00Idx8Extra(RLMachine& machine, int index) {
+  const int x = Ent(machine, index, 10);
+  const int y = Ent(machine, index, 11);
+  const int z = Ent(machine, index, 12);
+  const int ty = y + 200;
+  const double dxr = static_cast<double>(kTargetX - x);
+  const double dzr = static_cast<double>(kTargetZ - z);
+  const int extra =
+      static_cast<int>((std::sqrt(dxr * dxr + dzr * dzr) - 240.0) *
+                       0.03333333333333333 * 6.0);
+  double dx = dxr;
+  double dz = dzr;
+  Vec2Normalize(dx, dz);
+  SetBallVelocity(machine, x, ty, z, static_cast<int>(dx * 1000.0),
+                  static_cast<int>(0.0), static_cast<int>(dz * 1000.0), 300,
+                  extra);
+  PickCharacter(machine, 1, 50, false);
+}
+
+// 原版 sub_100064E0（idx8 case 0xD）：起球动画 + 在指定帧真正把球放出去。
+void Ent00Idx8Launch(RLMachine& machine, int index) {
+  g_seq_launch.Ensure(pt00_anim_frames_ent00_launch);
+  const int count = static_cast<int>(pt00_anim_ids_ent00_launchCount);
+  if (Ent(machine, index, 27) < count - 1 &&
+      static_cast<int>(g_seq_launch.frames[Ent(machine, index, 27)]) <=
+          Ent(machine, index, 28)) {
+    SetEnt(machine, index, 27, Ent(machine, index, 27) + 1);
+  }
+  EntitySetAnim(machine, index,
+                pt00_anim_ids_ent00_launch[Ent(machine, index, 27)], 100);
+
+  // dword_10023D40 = 运行期帧表的第 3 个阈值（基址 +8）。
+  if (Ent(machine, index, 28) == static_cast<int>(g_seq_launch.frames[2])) {
+    const int dir_x = LaunchCalcA(machine, index);
+    const int speed = LaunchCalcB(machine);
+    const int extra = LaunchCalcC(static_cast<double>(speed));
+    LaunchBall(machine, index, static_cast<double>(dir_x), -2000.0, speed, extra);
+    const int curve = GetD(machine, 500);
+    if (curve != 1) {
+      if (curve == 7) {
+        RequestSe(machine, 8, 255);
+      } else if (curve == 8) {
+        RequestSe(machine, 9, 255);
+      } else {
+        RequestSe(machine, 6, 255);
+      }
+    } else {
+      RequestSe(machine, 6, 255);
+    }
+    if (GetD(machine, 76) == 6) RequestSe(machine, 7, 255);
+  }
+  if (Ent(machine, index, 28) == static_cast<int>(g_seq_launch.frames[2]) + 15) {
+    const int c = GetD(machine, 76);
+    if (c == 5 || c == 6) {
+      SetD(machine, 600, 3);
+      SetD(machine, 630, 0);
+    }
+  }
+  if (Ent(machine, index, 28) == g_seq_launch.Last() - 1 &&
+      GetD(machine, 91) == 1) {
+    RequestSeHit(machine, 66);
+  }
+  SetEnt(machine, index, 28, Ent(machine, index, 28) + 1);
+  if (g_seq_launch.Last() <= Ent(machine, index, 28)) {
+    ResetEntityAction(machine, index);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 类型 0 的 idx8（sub_10005BA0）：动画状态机。
+// 记录 [4]=模式、[27]=动画序号下标、[28]=本模式帧计数、[30]=本模式目标帧数。
+// 关键分支：case 0xB 决定后续模式（12/13/14），其中 **13 就是 case 0xD = 起球**。
+// ---------------------------------------------------------------------------
+void Ent00Idx8(RLMachine& machine, int index) {
+  auto R = [&](int f) { return Ent(machine, index, f); };
+  auto W = [&](int f, int v) { SetEnt(machine, index, f, v); };
+  static bool logged_case2 = false;
+
+  // 原版是 `if (rt[i] <= counter) i++`，没有上界保护；这里加一层防御性 clamp。
+  auto advance_one = [&](const uint32_t* frames, int count) {
+    if (R(27) + 1 < count && static_cast<int>(frames[R(27)]) <= R(28)) {
+      W(27, R(27) + 1);
+    }
+  };
+  auto advance_loop = [&](const uint32_t* frames, int count) {
+    W(27, 0);
+    while (R(27) < count - 1 && R(28) >= static_cast<int>(frames[R(27)])) {
+      W(27, R(27) + 1);
+    }
+  };
+
+  switch (R(4)) {
+    case 1:
+      EntitySetAnim(machine, index, 0, 100);
+      break;
+    case 2:
+      // 原版 sub_10005F40()：无参数、写全局；还没移植。
+      if (!logged_case2) {
+        logged_case2 = true;
+        std::cout << "[pt00] func71: ent00 idx8 case 2 not implemented yet"
+                  << std::endl;
+      }
+      break;
+    case 3: {
+      EntitySetAnim(machine, index, 0, 100);
+      W(10, R(10) + ((R(13) == 2) ? 3 : -3));
+      const int v = R(10);
+      if (v > 50) {
+        W(10, 100 - v);
+        W(13, 6);
+      } else if (v < -50) {
+        W(10, -100 - v);
+        W(13, 2);
+      }
+      W(28, R(28) + 1);
+      if (R(28) >= R(30)) SetEntityMode(machine, index, 11);
+      break;
+    }
+    case 4: {
+      g_seq_m4.Ensure(pt00_anim_frames_ent00_m4);
+      advance_one(g_seq_m4.frames, static_cast<int>(pt00_anim_ids_ent00_m4Count));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_m4[R(27)], 100);
+      W(28, R(28) + 1);
+      if (g_seq_m4.Last() <= R(28)) ResetEntityAction(machine, index);
+      break;
+    }
+    case 5:
+    case 6: {
+      const bool is5 = (R(4) == 5);
+      EntitySetAnim(machine, index,
+                    (R(28) >= R(30)) ? (is5 ? 17 : 19) : (is5 ? 18 : 20), 100);
+      if (R(28) == R(30)) {
+        ClearSharedBallBlock(machine);
+        RequestSe(machine, 15, 255);
+        RequestSeHit(machine, is5 ? 1 : 2);
+      }
+      W(28, R(28) + 1);
+      if (R(28) == R(30) + 30) {
+        if (GetD(machine, 76) == 7) {
+          EndAnimSequence(machine, index, 30);
+        } else {
+          SetEntityMode(machine, index, 10);
+        }
+      }
+      break;
+    }
+    case 7: {
+      g_seq_m7.Ensure(pt00_anim_frames_ent00_m7);
+      if (R(28) == 0) PickCharacter(machine, index + 10, 50, false);
+      advance_loop(g_seq_m7.frames, static_cast<int>(pt00_anim_ids_ent00_m7Count));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_m7[R(27)], 100);
+      if (R(28) == static_cast<int>(g_seq_m7.frames[2])) {
+        W(32, 5);
+        W(33, 1);
+      }
+      if (R(28) == static_cast<int>(g_seq_m7.frames[1])) RequestSeHit(machine, 4);
+      W(28, R(28) + 1);
+      if (R(28) == g_seq_m7.Last()) EndAnimSequence(machine, index, 30);
+      break;
+    }
+    case 8: {
+      W(6, 2);
+      g_seq_m8.Ensure(pt00_anim_frames_ent00_m8);
+      advance_loop(g_seq_m8.frames, static_cast<int>(pt00_anim_ids_ent00_m8Count));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_m8[R(27)], 100);
+      if (R(28) == 0) RequestSeHit(machine, 3);
+      W(28, R(28) + 1);
+      if (R(28) == g_seq_m8.Last()) ResetEntityAction(machine, index);
+      break;
+    }
+    case 9: {
+      W(6, 2);
+      g_seq_m9.Ensure(pt00_anim_frames_ent00_m9);
+      advance_loop(g_seq_m9.frames, static_cast<int>(pt00_anim_ids_ent00_m9Count));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_m9[R(27)], 100);
+      if (R(28) == 0) RequestSeHit(machine, 3);
+      W(28, R(28) + 1);
+      if (R(28) == g_seq_m9.Last()) ResetEntityAction(machine, index);
+      break;
+    }
+    case 10: {
+      g_seq_mA.Ensure(pt00_anim_frames_ent00_mA);
+      advance_loop(g_seq_mA.frames, static_cast<int>(pt00_anim_ids_ent00_mACount));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_mA[R(27)], 100);
+      if (R(28) == static_cast<int>(g_seq_mA.frames[1])) {
+        Ent00Idx8Extra(machine, index);
+      }
+      W(28, R(28) + 1);
+      if (R(28) == g_seq_mA.Last()) ResetEntityAction(machine, index);
+      break;
+    }
+    case 11: {
+      g_seq_mB.Ensure(pt00_anim_frames_ent00_mB);
+      advance_one(g_seq_mB.frames, static_cast<int>(pt00_anim_ids_ent00_mBCount));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_mB[R(27)], 100);
+      W(28, R(28) + 1);
+      if (g_seq_mB.Last() <= R(28)) {
+        if (GetD(machine, 91) == 1 || GetD(machine, 80) == 1) {
+          SetEntityMode(machine, index, 12);
+        } else if (GetD(machine, 500) < 7 || GetD(machine, 500) > 8) {
+          SetEntityMode(machine, index, 13);
+        } else {
+          SetEntityMode(machine, index, 14);
+        }
+      }
+      break;
+    }
+    case 12: {
+      g_seq_mC.Ensure(pt00_anim_frames_ent00_mC);
+      advance_one(g_seq_mC.frames, static_cast<int>(pt00_anim_ids_ent00_mCCount));
+      if (R(28) == 0) {
+        RequestSe(machine, 33, 255);
+        W(32, (GetD(machine, 76) == 4) ? 8 : 3);
+        W(33, 1);
+      }
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_mC[R(27)], 100);
+      if (GetD(machine, 76) == 4 && R(28) == 50) RequestSeExtra(machine, 127);
+      W(28, R(28) + 1);
+      if (GetD(machine, 76) == 4 && R(28) == 51) {
+        SetEntityMode(machine, index, 13);
+      }
+      if (g_seq_mC.Last() <= R(28)) SetEntityMode(machine, index, 13);
+      break;
+    }
+    case 13:
+      Ent00Idx8Launch(machine, index);
+      break;
+    case 14: {
+      g_seq_launch2.Ensure(pt00_anim_frames_ent00_launch2);
+      advance_one(g_seq_launch2.frames,
+                  static_cast<int>(pt00_anim_ids_ent00_launch2Count));
+      EntitySetAnim(machine, index, pt00_anim_ids_ent00_launch2[R(27)], 100);
+      W(28, R(28) + 1);
+      if (g_seq_launch2.Last() <= R(28)) SetEntityMode(machine, index, 13);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // func 71：实体每帧更新（sub_100050D0）。类型差异全在 vtable 的 idx6/idx7/idx8；
 // 这里实现通用骨架 + idx6（命中判定），idx7/idx8 还没有移植（它们由动画表驱动）。
 // 记录字段：+0 有效、+2 指令号、+4 模式、+5 触发、+6 命中相、+7/+9 棒位、+31 计数。
 // ---------------------------------------------------------------------------
 void EntityUpdate(RLMachine& machine, int index) {
-  static bool logged_idx78[22] = {};
+  static bool logged_idx7[22] = {};
+  static bool logged_idx8[22] = {};
 
   if (Ent(machine, index, 0) != 1) return;
   const int prev6 = Ent(machine, index, 6);
@@ -544,15 +1069,32 @@ void EntityUpdate(RLMachine& machine, int index) {
     call_idx7 = (Ent(machine, index, 6) == 1);
   }
   if (call_idx7) {
-    if (!logged_idx78[index]) {
-      logged_idx78[index] = true;
+    // idx7（拾球/守备）还没移植：它依赖另一张 9-dword 记录表
+    // （0x10023838..0x10023CC4）以及 sub_10001B50 / sub_10005750 / sub_10005860。
+    if (!logged_idx7[index]) {
+      logged_idx7[index] = true;
       std::cout << "[pt00] func71: entity " << index
-                << " idx7/idx8 (animation tables) not implemented yet"
-                << std::endl;
+                << " idx7 (pick/fielding) not implemented yet" << std::endl;
     }
   }
-  // idx8 同样未移植。原版这里还会把 record[10..12] 拷进对象 scratch、
-  // 推进 99 项历史缓冲、以及按 record[20..22] 的动画序号走 mode setter。
+  if (index == 0) {
+    Ent00Idx8(machine, index);
+  } else if (!logged_idx8[index]) {
+    logged_idx8[index] = true;
+    std::cout << "[pt00] func71: entity " << index
+              << " idx8 (animation) not implemented yet" << std::endl;
+  }
+  // 原版尾部还有：record[10..12] 拷进对象 scratch、99 项历史缓冲、
+  // 以及按对象 [5]/[6]/[7] 的动画序号走 mode setter —— 那三个字段还没找到写点，
+  // 先只做「延迟收尾」这条（obj+32 标志 + obj[9]/[10] 倒计时）。
+  if (g_obj[index].pending_finish) {
+    if (++g_obj[index].finish_counter >= g_obj[index].finish_limit) {
+      EntityFinish(machine, index);
+      g_obj[index].pending_finish = false;
+      g_obj[index].finish_limit = 0;
+      g_obj[index].finish_counter = 0;
+    }
+  }
   SetEnt(machine, index, 31, Ent(machine, index, 31) + 1);
 }
 
