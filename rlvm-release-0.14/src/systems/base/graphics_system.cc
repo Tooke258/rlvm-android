@@ -443,6 +443,13 @@ void GraphicsSystem::SetWindowSubtitle(const std::string& cp932str,
   // 那次是恒等转换，若照抄会把正确的转换结果冲掉。
   if (text_encoding != 0) {
     subtitle_cp932_ = rlvm_android::NormalizeTitleToCP932(cp932str, text_encoding);
+  } else if (subtitle_cp932_.empty() && !cp932str.empty()) {
+    // 兜底：上一个设置副标题的场景若是 GBK（汉化），且把副标题设成了**空串**，
+    // 归一化缓存就会一直卡在空；而「来源是 CP932 就不覆盖」的规则又让后续
+    // CP932 场景永远修不回来 —— 存档标题于是变成空白（真机日志：
+    // `save-title: enc=0 raw=82548c8e... used=(empty)`）。
+    // 只在缓存为空时兜底，所以仍然不会冲掉 GBK 场景得到的正确转换结果。
+    subtitle_cp932_ = cp932str;
   }
 }
 
