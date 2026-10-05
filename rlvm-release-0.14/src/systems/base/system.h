@@ -181,6 +181,9 @@ class System {
   bool force_fast_forward() { return force_fast_forward_; }
   // Set in lua_rlvm, to speed through the game with maximum speed!
   void set_force_fast_forward() { force_fast_forward_ = true; }
+  // Android 移植（v0.2.4）：影片起播前要能**清掉**快进标志（原来只有置位）。
+  // 理由见 modules/module_mov.cc 的 ResetTimeSaversBeforeMovie()。
+  void clear_force_fast_forward() { force_fast_forward_ = false; }
 
   bool force_wait() { return force_wait_; }
   void set_force_wait(bool in) { force_wait_ = in; }

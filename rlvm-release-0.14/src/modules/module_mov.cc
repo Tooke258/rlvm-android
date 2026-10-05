@@ -40,12 +40,23 @@
 #include "machine/rlmachine.h"
 #include "machine/rloperation.h"
 #include "machine/rloperation/default_value.h"
+#include "systems/base/system.h"
+#include "systems/base/text_system.h"
 
 namespace {
 
 // 脚本里写的是影片名（LBEX / Kud Wafter 都是 `movPlayEx("OP00", 0, 0, 799, 599)`），
 // 实际文件在 MOV/ 目录下、扩展名 .mpg。
 std::string MovieFileId(const std::string& name) { return "MOV/" + name + ".mpg"; }
+
+// 影片起播前把「快进 / 跳过」复位（真机反馈 v0.2.4）：
+// 开着 auto/skip 时，影片播放期间脚本里的 `wait` 会被快进直接跳掉，剧情就跟着影片
+// 一起往前跑（表现为"影片播放没有中断游戏"）。影片本身就是要「等它放完」，
+// 所以在这里把这两种省时模式关掉。
+void ResetTimeSaversBeforeMovie(RLMachine& machine) {
+  machine.system().text().SetSkipMode(0);
+  machine.system().clear_force_fast_forward();
+}
 
 // movPlayEx(name, x, y, w, h)：异步起播，脚本继续往下走（实测脚本后面接 wait()）。
 typedef RLOp_Void_5<StrConstant_T, IntConstant_T, IntConstant_T, IntConstant_T,
@@ -57,6 +68,7 @@ struct MovPlayEx : public MovPlaySignature {
                   int h) {
     const bool ok = rlvm_android::MovPlayer::Instance().Play(MovieFileId(name),
                                                              x, y, w, h);
+    ResetTimeSaversBeforeMovie(machine);
     // 指令级 trace（v0.2.4 查「影片播放时游戏没被中断」）：看脚本到底调了哪条、
     // 有没有真的起播。结果同时进应用日志（面板「日志」里能看）。
     rlvm_android::AppendAppLogLine(
@@ -71,6 +83,7 @@ struct MovPlay : public MovPlaySignature {
                   int h) {
     const bool ok = rlvm_android::MovPlayer::Instance().Play(MovieFileId(name),
                                                              x, y, w, h);
+    ResetTimeSaversBeforeMovie(machine);
     rlvm_android::AppendAppLogLine(
         "mov-op: movPlay(" + name + ") 起播" + (ok ? "成功" : "失败"));
   }
@@ -160,6 +173,7 @@ struct MovPlayExC : public MovPlaySignature {
   void operator()(RLMachine& machine, std::string name, int x, int y, int w,
                   int h) {
     rlvm_android::MovPlayer& player = rlvm_android::MovPlayer::Instance();
+    ResetTimeSaversBeforeMovie(machine);
     const bool ok = player.Play(MovieFileId(name), x, y, w, h);
     if (ok && player.playing()) {
       rlvm_android::AppendAppLogLine(
@@ -188,6 +202,7 @@ struct MovLoop : public MovPlaySignature {
                   int h) {
     const bool ok = rlvm_android::MovPlayer::Instance().Play(
         MovieFileId(name), x, y, w, h, 0, /*loop=*/true);
+    ResetTimeSaversBeforeMovie(machine);
     rlvm_android::AppendAppLogLine(
         "mov-op: movLoop(" + name + ") 起播" + (ok ? "成功（循环）" : "失败"));
   }
