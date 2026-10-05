@@ -805,6 +805,23 @@ static int step(void) {
       }
       return 0;
     }
+    case 0x80: case 0x82: { /* ALU r/m8, imm8（`orb $0xc,%ah` 就是 _ftol2 里的那条） */
+      ModRM m = modrm();
+      uint8_t im = imm8();
+      uint8_t a = rm_read8(m);
+      uint8_t r;
+      switch (m.reg) {
+        case 0: r = (uint8_t)(a + im); set_szp8(r); break;
+        case 1: r = (uint8_t)(a | im); set_szp8(r); break;
+        case 4: r = (uint8_t)(a & im); set_szp8(r); break;
+        case 5: r = (uint8_t)(a - im); set_szp8(r); break;
+        case 6: r = (uint8_t)(a ^ im); set_szp8(r); break;
+        case 7: { uint8_t s = (uint8_t)(a - im); set_szp8(s); } return 0;
+        default: UNIMPL("80 /x");
+      }
+      rm_write8(m, r);
+      return 0;
+    }
     case 0xc1: case 0xd1: case 0xd3: { /* 移位 */
       ModRM m = modrm();
       int cnt = (op == 0xc1) ? imm8() : (op == 0xd1 ? 1 : (int)(cpu.ecx & 31));
