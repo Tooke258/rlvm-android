@@ -19,7 +19,7 @@
 
 | 侧 | 取数方法 |
 | --- | --- |
-| Android（RLVM） | 已有：图形栈转储（`[lb-ext] graphics tree`，含 `Rendering Rect`/`Clipping Rect`/`Image:`；跑在 select 等待时刻）。可扩展成机器可读的一行一对象（便于 diff） |
+| Android（RLVM） | 已有：图形栈转储（`[lb-ext] graphics tree`，跑在 select 等待时刻）。**注意判据**：`GraphicsObject::Render()` 只在 `object_data_ != null && visible()` 时才输出该对象 → **转储里出现 = 这个对象确实被画了**；没出现 = 它没有 data 或不可见（A1 的「可见性」直接由此判定）。字段：`Object #N` / `Image: <名>` / `Rendering Rect(源) to Rect(目标)` / `Clipping Rect`+`After clipping` / `Properties`（alpha 只在 ≠255 时打印、mono/invert/tint/colour/composite/origin）/ `Mutators`。**暂缺**：图案号 `patt`、`z_order/layer/depth`（真要做 A1 时再补这两项即可） |
 | 原生 RL | 用 Cheat Engine / x64dbg 按「对象数组基址 + 步长」遍历（先找基址：可用「已知对象数 220+」或图像名指针反查；也可以直接读引擎里 `GraphicsObject` 数组） |
 
 对比目标：哪个槽位**原生可见而移植侧不可见**、或**原生有源矩形而移植侧是 0×0**。
