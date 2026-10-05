@@ -424,6 +424,14 @@ add_library(pt00_emu STATIC
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../tools/pt00_emu/emu.c"
 )
 target_compile_definitions(pt00_emu PRIVATE PT00_EMU_LIBRARY)
+# 执行器是一个**解释器热循环**：debug 构建默认 -O0 时它是整场卡顿的主因
+# （实测小游戏 ~15fps，其中 ~40ms/帧 全花在 emu.c 上，Refresh 只占 3~30ms）。
+# 只给这一个文件开 -O2，既拿到几倍提速，又不影响其余代码的可调试性。
+if (NOT MSVC)
+  set_source_files_properties(
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../../../tools/pt00_emu/emu.c"
+      PROPERTIES COMPILE_OPTIONS "-O2")
+endif()
 
 add_library(rlvm SHARED
     native-bridge.cpp
