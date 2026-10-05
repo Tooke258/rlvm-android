@@ -42,6 +42,13 @@ static int g_stub_count = 0;
 static int g_stub_hits[STUB_MAX];
 
 static uint32_t g_heap_ptr = 0x11400000u; /* CRT 堆的假实现：bump allocator */
+
+/* TIB 影子区：`fs:[x]` 一律映射到 TIB_BASE+x。
+ * 关键的是 fs:[0] —— 那是 **SEH 异常链的头指针**。之前我们把它当"永远 0"，
+ * 于是 CRT 注册的异常处理器被丢掉，一旦 unwind 走到链头就跳到 0
+ * （真机表现：eip=00000000）。fs:[0x18] 要存 TIB 自身地址，CRT 会读它。 */
+#define TIB_BASE 0x10300000u
+static int g_seg_fs = 0;
 static uint32_t guest_alloc(uint32_t n) {
   uint32_t p = g_heap_ptr;
   g_heap_ptr += (n + 15u) & ~15u;
@@ -169,6 +176,7 @@ static ModRM modrm(void) {
   }
   if (m.mod == 1) base += (int8_t)imm8();
   else if (m.mod == 2) base += imm32();
+  if (g_seg_fs) base += TIB_BASE;  /* fs:[x] → TIB 影子区 */
   m.addr = base;
   return m;
 }
@@ -381,6 +389,7 @@ static int step(void) {
   uint8_t op = imm8();
   int seg_fs = 0;
   int opsize16 = 0;
+  g_seg_fs = 0;
 
   /* 段前缀 26/2e/36/3e/64/65、操作数/地址前缀 66/67：忽略（这个 DLL 不用） */
   while (op == 0x26 || op == 0x2e || op == 0x36 || op == 0x3e || op == 0x64 ||
@@ -390,7 +399,7 @@ static int step(void) {
       if (n == 0xab) { while (cpu.ecx--) { wr32(cpu.edi, cpu.eax); cpu.edi += 4; } return 0; }
       UNIMPL("rep ...");
     }
-    if (op == 0x64) seg_fs = 1;   /* fs: —— CRT 用它做 SEH/TLS，给假值即可 */
+    if (op == 0x64) { seg_fs = 1; g_seg_fs = 1; }  /* fs: → TIB 影子区 */
     if (op == 0x66) opsize16 = 1; /* 操作数 16 位（SYSTEMTIME 那套用 16 位字段） */
     op = imm8();
   }
@@ -432,10 +441,10 @@ static int step(void) {
     case 0x98: /* cwtl */ cpu.eax = (uint32_t)(int32_t)(int16_t)cpu.eax; return 0;
     case 0x99: /* cltd */ cpu.edx = (cpu.eax & 0x80000000u) ? 0xffffffffu : 0; return 0;
     /* mov al/eax <-> moffs（CRT 的 `mov eax, fs:[0]` 走这里；fs 一律按 0 处理） */
-    case 0xa0: { uint32_t a = imm32(); *reg8(0) = seg_fs ? 0 : rd8(a); return 0; }
-    case 0xa1: { uint32_t a = imm32(); cpu.eax = seg_fs ? 0 : rd32(a); return 0; }
-    case 0xa2: { uint32_t a = imm32(); if (!seg_fs) wr8(a, *reg8(0)); return 0; }
-    case 0xa3: { uint32_t a = imm32(); if (!seg_fs) wr32(a, cpu.eax); return 0; }
+    case 0xa0: { uint32_t a = imm32() + (seg_fs ? TIB_BASE : 0); *reg8(0) = rd8(a); return 0; }
+    case 0xa1: { uint32_t a = imm32() + (seg_fs ? TIB_BASE : 0); cpu.eax = rd32(a); return 0; }
+    case 0xa2: { uint32_t a = imm32() + (seg_fs ? TIB_BASE : 0); wr8(a, *reg8(0)); return 0; }
+    case 0xa3: { uint32_t a = imm32() + (seg_fs ? TIB_BASE : 0); wr32(a, cpu.eax); return 0; }
     case 0x9c: push32(cpu.eflags); return 0;
     case 0x9d: cpu.eflags = pop32(); return 0;
     case 0x89: {
@@ -675,6 +684,10 @@ int main(int argc, char **argv) {
   cpu.esp = 0x10200000u;
   cpu.ebp = cpu.esp;
   cpu.eip = IMAGE_BASE + 0x11B0; /* reallive_dll_func_load（阶段 1 直接从这里起跑） */
+
+  /* TIB 影子：fs:[0x18] 存 TIB 自身地址；fs:[0]（SEH 链头）初始为 -1（无处理器） */
+  wr32(TIB_BASE + 0x18, TIB_BASE);
+  wr32(TIB_BASE + 0x00, 0xffffffffu);
 
   printf("# 从 %08x 开始执行（先跑 func_load）\n", cpu.eip);
   for (;;) {
