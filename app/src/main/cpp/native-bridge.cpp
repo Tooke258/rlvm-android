@@ -1053,11 +1053,26 @@ void RunEngineOn(System& system,
     while (std::getline(scs, tok, ',')) {
       const int id = std::atoi(tok.c_str());
       std::cout << "===== SEEN" << id << " =====" << std::endl;
-      libreallive::Scenario* scene = archive.GetScenario(id);
-      if (scene) {
-        DumpScenario(scene);
-      } else {
-        std::cout << "(没有这一幕)" << std::endl;
+      std::cout << std::flush;
+      try {
+        libreallive::Scenario* scene = archive.GetScenario(id);
+        if (scene) {
+          DumpScenario(scene);
+        } else {
+        // 之前这里只打「没有这一幕」，把「TOC 里明明有、却取不到」的 bug 掩盖了。
+        // 现在把失败原因也打出来（构造 Scenario 时的异常也一并捕获）。
+        std::cout << "(GetScenario(" << id << ") 返回空：TOC 里没有该条目，或构造失败)"
+                  << std::endl;
+        }
+        std::cout << std::flush;
+      } catch (const std::exception& e) {
+        std::cout << "(取/转储 SEEN" << id << " 时抛 std 异常: " << e.what() << ")"
+                  << std::endl;
+      } catch (...) {
+        // 关键：DumpScenario 在个别幕上会抛非 std 异常，之前它会把整个引擎带走、
+        // 连已缓冲的输出都丢掉（这份诊断因此骗过我一次）。这里兜住并继续下一幕。
+        std::cout << "(取/转储 SEEN" << id << " 时抛未知异常，跳过这一幕)"
+                  << std::endl;
       }
       std::cout << "===== SEEN" << id << " 结束 =====" << std::endl;
     }
