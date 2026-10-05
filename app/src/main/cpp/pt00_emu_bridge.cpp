@@ -154,6 +154,23 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       // 12(0,0,0,0)->1900=1300,1901=1100）。全 0 = 所有子对象的 dst 落到屏幕外。
       os << " | cam 1900..1904=";
       for (int i = 1900; i <= 1904; ++i) os << GetD(machine, i) << ",";
+      // 小游戏的状态机（脚本 SEEN7340/7420/7450 的分支全靠这些）：
+      //   600 = 投球相位（SEEN7420:101 goto_case(intD[600])）
+      //   630 = 投球动画帧计数（到 60 置 600=1）；733 = 回合帧计数（到 180 置 730=1）
+      //   740..746 = 攻守/结果标志；760 = 帧计数；770..772 = 回合开关；42/44/45 = 球数/结果
+      os << " | stm 600=" << GetD(machine, 600) << " 610..613=";
+      for (int i = 610; i <= 613; ++i) os << GetD(machine, i) << ",";
+      os << " 620..625=";
+      for (int i = 620; i <= 625; ++i) os << GetD(machine, i) << ",";
+      os << " 630=" << GetD(machine, 630) << " 42/44/45=" << GetD(machine, 42)
+         << "/" << GetD(machine, 44) << "/" << GetD(machine, 45);
+      os << " 730..746=";
+      for (int i = 730; i <= 746; ++i) os << GetD(machine, i) << ",";
+      os << " 760=" << GetD(machine, 760);
+      os << " 770..772=";
+      for (int i = 770; i <= 772; ++i) os << GetD(machine, i) << ",";
+      os << " 100/101/109=" << GetD(machine, 100) << "/" << GetD(machine, 101)
+         << "/" << GetD(machine, 109);
       os << " | intG[1900..1901]=" << GetG(machine, 1900) << "," << GetG(machine, 1901);
       std::cerr << os.str() << std::endl;
       DumpFuncHistogram();
