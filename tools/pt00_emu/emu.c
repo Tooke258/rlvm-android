@@ -644,8 +644,21 @@ static int step(void) {
 
   if (op >= 0x50 && op <= 0x57) { push32(*reg32(op - 0x50)); return 0; }
   if (op >= 0x58 && op <= 0x5f) { *reg32(op - 0x58) = pop32(); return 0; }
-  if (op >= 0x40 && op <= 0x47) { uint32_t *r = reg32(op - 0x40); alu_add(*r, 1); return 0; }
-  if (op >= 0x48 && op <= 0x4f) { uint32_t *r = reg32(op - 0x48); alu_sub(*r, 1); return 0; }
+  /* inc/dec r32：**必须把结果写回寄存器**！之前只算了标志没写回，
+   * 导致模式号 `decl` 后仍是原值 → switch 跳转表索引整体偏移一格
+   * （真机表现：idx8 的 case 1 走进了 case 2 的 body）。 */
+  if (op >= 0x40 && op <= 0x47) {
+    uint32_t *r = reg32(op - 0x40);
+    alu_add(*r, 1);
+    *r = *r + 1;
+    return 0;
+  }
+  if (op >= 0x48 && op <= 0x4f) {
+    uint32_t *r = reg32(op - 0x48);
+    alu_sub(*r, 1);
+    *r = *r - 1;
+    return 0;
+  }
   if (op >= 0x68 && op <= 0x68) { push32(imm32()); return 0; }
   if (op >= 0x6a && op <= 0x6a) { push32((uint32_t)(int32_t)rel8()); return 0; }
   if (op >= 0x70 && op <= 0x7f) { int8_t r = rel8(); if (cond(op - 0x70)) cpu.eip += r; return 0; }
