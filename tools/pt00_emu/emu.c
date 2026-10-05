@@ -474,10 +474,12 @@ static int x87(uint8_t op) {
         case 1: *XP(m.rm) *= *XP(0); return 0;
         case 2: fp_cmp(*XP(0), *XP(m.rm)); return 0;          /* fcom st(i) */
         case 3: fp_cmp(*XP(0), *XP(m.rm)); fp_pop(); return 0; /* fcomp st(i) */
-        case 4: *XP(m.rm) -= *XP(0); return 0;
-        case 5: { double t = *XP(0) - *XP(m.rm); *XP(m.rm) = t; return 0; }
-        case 6: *XP(m.rm) /= *XP(0); return 0;
-        case 7: { double t = *XP(0) / *XP(m.rm); *XP(m.rm) = t; return 0; }
+        /* DC 组：E0+i = FSUBR st(i),st0（st(i)=st0-st(i)）；E8+i = FSUB；F0+i = FDIVR；F8+i = FDIV。
+         * 注意 x87 的怪癖：**D8 组的 E0/E8 与 DC/DE 组正好相反**，D8 那边是对的，别一起改。 */
+        case 4: { double t = *XP(0) - *XP(m.rm); *XP(m.rm) = t; return 0; }
+        case 5: *XP(m.rm) -= *XP(0); return 0;
+        case 6: { double t = *XP(0) / *XP(m.rm); *XP(m.rm) = t; return 0; }
+        case 7: *XP(m.rm) /= *XP(0); return 0;
       }
     }
   } else if (op == 0xdd && m.mod != 3) { /* fld/fst/fstp m64 */
@@ -502,10 +504,12 @@ static int x87(uint8_t op) {
       switch (reg) {
         case 0: *XP(1) += *XP(0); fp_pop(); return 0;  /* faddp */
         case 1: *XP(1) *= *XP(0); fp_pop(); return 0;  /* fmulp */
-        case 4: *XP(1) -= *XP(0); fp_pop(); return 0;  /* fsubp */
-        case 5: { double t = *XP(0) - *XP(1); fp_pop(); *XP(0) = t; return 0; } /* fsubrp */
-        case 6: *XP(1) /= *XP(0); fp_pop(); return 0;  /* fdivp */
-        case 7: { double t = *XP(0) / *XP(1); fp_pop(); *XP(0) = t; return 0; } /* fdivrp */
+        /* DE 组：E0+i = FSUBRP st(i),st0（st(i)=st0-st(i) 后 pop）；E8+i = FSUBP（st(i)=st(i)-st0）。
+         * 球 B 的抛物线 `v0*t - 0.6t²` 用的就是 DE E9（FSUBP），原先方向反了 → 落点符号错 → 复位判定走另一支。 */
+        case 4: { double t = *XP(0) - *XP(1); fp_pop(); *XP(0) = t; return 0; }
+        case 5: { double t = *XP(1) - *XP(0); fp_pop(); *XP(0) = t; return 0; }
+        case 6: { double t = *XP(0) / *XP(1); fp_pop(); *XP(0) = t; return 0; }
+        case 7: { double t = *XP(1) / *XP(0); fp_pop(); *XP(0) = t; return 0; }
       }
     }
   } else if (op == 0xdf) {
