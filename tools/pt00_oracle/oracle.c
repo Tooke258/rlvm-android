@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -49,6 +50,46 @@ static int g_intf[INTF_COUNT];
 static int parse_int(const char *s) {
   if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) return (int)strtol(s + 2, NULL, 16);
   return (int)strtol(s, NULL, 10);
+}
+
+/* 让 oracle 与执行器**共用同一个确定性时间源**。
+ *
+ * 原因：PT00 的 `func_load` 开头是 `time(&t); srand(t);`，而 `func 71`
+ * （实体类型行为）里用 `rand()`。oracle 拿真实时间、emu 的 GetSystemTime 桩返回全 0，
+ * 两边随机序列从第一次 rand 起就分叉 —— 对照里表现为「只有 func 71 不一致」。
+ * 这里把 IAT 里的时间类导入改写成确定性桩，两边才可比。 */
+static uint32_t __stdcall StubReturnsZeroPtr(void *p) {
+  if (p) memset(p, 0, 16); /* SYSTEMTIME 正好 16 字节；别越界写坏调用者的栈 */
+  return 0;
+}
+
+static void patch_iat(HMODULE mod, const char *name, void *fn) {
+  unsigned char *base = (unsigned char *)mod;
+  IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)base;
+  IMAGE_NT_HEADERS32 *nt = (IMAGE_NT_HEADERS32 *)(base + dos->e_lfanew);
+  IMAGE_DATA_DIRECTORY dd =
+      nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+  if (!dd.VirtualAddress) return;
+  IMAGE_IMPORT_DESCRIPTOR *imp =
+      (IMAGE_IMPORT_DESCRIPTOR *)(base + dd.VirtualAddress);
+  for (; imp->Name; ++imp) {
+    uint32_t oft = imp->OriginalFirstThunk ? imp->OriginalFirstThunk
+                                           : imp->FirstThunk;
+    IMAGE_THUNK_DATA32 *ilt = (IMAGE_THUNK_DATA32 *)(base + oft);
+    IMAGE_THUNK_DATA32 *iat = (IMAGE_THUNK_DATA32 *)(base + imp->FirstThunk);
+    for (int i = 0; ilt[i].u1.AddressOfData; ++i) {
+      if (ilt[i].u1.Ordinal & 0x80000000u) continue;
+      IMAGE_IMPORT_BY_NAME *ibn =
+          (IMAGE_IMPORT_BY_NAME *)(base + ilt[i].u1.AddressOfData);
+      if (strcmp((const char *)ibn->Name, name) == 0) {
+        DWORD old = 0;
+        VirtualProtect(&iat[i].u1.Function, sizeof(void *), PAGE_READWRITE, &old);
+        iat[i].u1.Function = (uint32_t)(uintptr_t)fn;
+        VirtualProtect(&iat[i].u1.Function, sizeof(void *), old, &old);
+        return;
+      }
+    }
+  }
 }
 
 int main(int argc, char **argv) {
@@ -83,6 +124,13 @@ int main(int argc, char **argv) {
             (void *)p_call);
     return 1;
   }
+
+  /* 时间源确定性：与执行器（GetSystemTime/GetLocalTime/GetTimeZoneInformation
+   * 全返回 0）对齐，否则 srand 的种子不同 → rand 序列不同 → 只有用 rand 的
+   * func 71 会对不上。 */
+  patch_iat(mod, "GetSystemTime", (void *)StubReturnsZeroPtr);
+  patch_iat(mod, "GetLocalTime", (void *)StubReturnsZeroPtr);
+  patch_iat(mod, "GetTimeZoneInformation", (void *)StubReturnsZeroPtr);
 
   memset(&g_ctx, 0, sizeof(g_ctx));
   memset(g_intd, 0, sizeof(g_intd));
