@@ -285,9 +285,15 @@ static int stub_call(int idx) {
     cpu.eax = s;
   } else if (stub_is(idx, "HeapCreate") || stub_is(idx, "GetProcessHeap")) {
     cpu.eax = 0x00d00000u;
-  } else if (stub_is(idx, "HeapAlloc") || stub_is(idx, "HeapReAlloc") ||
-             stub_is(idx, "VirtualAlloc") || stub_is(idx, "HeapReAlloc")) {
+  } else if (stub_is(idx, "HeapAlloc")) {
+    /* HeapAlloc(hHeap, dwFlags, dwBytes) */
     cpu.eax = guest_alloc(arg_at(2) ? arg_at(2) : 64);
+  } else if (stub_is(idx, "HeapReAlloc")) {
+    /* HeapReAlloc(hHeap, dwFlags, lpMem, dwBytes)：原地返回老指针即可（假堆不回收） */
+    cpu.eax = arg_at(2);
+  } else if (stub_is(idx, "VirtualAlloc")) {
+    /* VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect) */
+    cpu.eax = guest_alloc(arg_at(1) ? arg_at(1) : 4096);
   } else if (stub_is(idx, "HeapFree") || stub_is(idx, "VirtualFree") ||
              stub_is(idx, "HeapDestroy") || stub_is(idx, "IsBadReadPtr") ||
              stub_is(idx, "IsBadWritePtr")) {
@@ -420,6 +426,20 @@ static int step(void) {
         if (r & 0x8000u) cpu.eflags |= SF;
       } else {
         alu_cmp(a, b);
+      }
+      return 0;
+    }
+    /* "r32, r/m32" 方向的 ALU 族（0x31/0x39 是反方向，已实现） */
+    case 0x03: case 0x0b: case 0x23: case 0x2b: case 0x33: {
+      ModRM m = modrm();
+      uint32_t a = *reg32(m.reg);
+      uint32_t b = m.is_reg ? *reg32(m.addr) : rd32(m.addr);
+      switch (op) {
+        case 0x03: alu_add(a, b); *reg32(m.reg) = a + b; break;
+        case 0x0b: *reg32(m.reg) = a | b; set_szp32(a | b); break;
+        case 0x23: *reg32(m.reg) = a & b; set_szp32(a & b); break;
+        case 0x2b: alu_sub(a, b); *reg32(m.reg) = a - b; break;
+        default:   *reg32(m.reg) = a ^ b; set_szp32(a ^ b); break;
       }
       return 0;
     }
