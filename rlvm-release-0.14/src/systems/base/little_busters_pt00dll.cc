@@ -1117,7 +1117,18 @@ void LogLoopState(RLMachine& machine) {
             << " 3=" << GetD(machine, 3) << " 4=" << GetD(machine, 4)
             << " 5=" << GetD(machine, 5) << " 6=" << GetD(machine, 6)
             << " 210=" << GetD(machine, 210) << " 500=" << GetD(machine, 500)
-            << " ent0=[";
+            << std::endl;
+  // 相位 guard 用到的那片 flag 区（见 dev-log/OPEN-ISSUES.jsonl）：
+  //   70..96  练习模式设定（SEEN7110 写）
+  //   101     7420 里 op<0:002:00030> 的 guard
+  //   771/772 7450 里 op<0:002:00032> 的 guard（SEEN7110 / SEEN7922 写）
+  std::cout << "           intD[70..96]=";
+  for (int i = 70; i <= 96; ++i) {
+    std::cout << (i == 70 ? "" : ",") << GetD(machine, i);
+  }
+  std::cout << " [101]=" << GetD(machine, 101) << " [771]=" << GetD(machine, 771)
+            << " [772]=" << GetD(machine, 772) << std::endl;
+  std::cout << "           ent0=[";
   for (int f = 0; f < 8; ++f) {
     std::cout << (f ? "," : "") << Ent(machine, 0, f);
   }
