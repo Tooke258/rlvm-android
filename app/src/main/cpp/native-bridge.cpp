@@ -38,6 +38,8 @@
 #include "libreallive/gameexe.h"
 #include "libreallive/intmemref.h"
 #include "long_operations/button_object_select_long_operation.h"
+#include "machine/rloperation/references.h"
+#include "machine/rloperation/rlop_store.h"
 #include "android/android_system.h"
 #include "android/android_graphics.h"
 #include "android/audio_engine.h"
@@ -778,6 +780,51 @@ struct RefreshWaitOp : public RLOp_Void_Void {
 // 参数元数不固定的指令（Sys 151 有 9 个参数、Sys 152 有 11 个）：走上游给
 // 「特殊情形」准备的逃生口，**不解析参数**直接吞掉，避免把后续字节码喂错。
 // 语义待反推；先让它别卡，并把实参原样打进日志供分析。
+// Sys 151 / 152：LBEX 小游戏的**输入轮询**（把「当前按下的鼠标键 / 键位」写进脚本
+// 给的引用里）。脚本原文：
+//     SEEN7310: op<1:4:151, 0>(intD[101], 5, 4, 49, 0, 1, 2, 3, 100)
+//     SEEN7310: op<1:4:152, 0>(intD[109], 81..89, 80)
+//     SEEN7420: if (intD[101] == 1) { intL[0] = objbtn_select(); if (intL[0] < 0) 挥棒 }
+// 也就是说小游戏的「挥棒」完全依赖 intD[101] 被每帧刷新。原来我们把它当「忽略」
+// 丢掉了 → intD[101] 恒为 0 → 挥棒分支永不执行，而且帧循环也走不下去。
+// 参数元数不定，所以和 LbIgnoreRawArgs 一样走 SpecialCase：自己解析第一个参数（引用）。
+class LbInputPollOp : public RLOp_SpecialCase {
+ public:
+  explicit LbInputPollOp(bool mouse) : mouse_(mouse) {}
+
+  void ParseParameters(const std::vector<std::string>&,
+                       libreallive::ExpressionPiecesVector&) override {}
+
+  void operator()(RLMachine& machine,
+                  const libreallive::CommandElement& f) override {
+    const libreallive::ExpressionPiecesVector& params = f.GetParsedParameters();
+    if (!params.empty()) {
+      unsigned int pos = 0;
+      IntReferenceIterator ref = IntReference_T::getData(machine, params, pos);
+      int value = 0;
+      if (mouse_) {
+        Point cursor;
+        int b1 = 0, b2 = 0;
+        machine.system().event().GetCursorPos(cursor, b1, b2);
+        value = b1;  // 1 = 左键按住，2 = 刚抬起（与 AndroidEventSystem 的约定一致）
+      }
+      // Sys 152（键盘）在全脚本里只写不读（intD[109] 无任何使用点），故先恒 0。
+      *ref = value;
+      static int logged = 0;
+      if (logged < 8) {
+        ++logged;
+        std::cout << "[lb-ext] input poll " << (mouse_ ? "mouse" : "key")
+                  << " -> " << value << " (ref " << ref.type() << ":"
+                  << ref.location() << ")" << std::endl;
+      }
+    }
+    machine.AdvanceInstructionPointer();
+  }
+
+ private:
+  bool mouse_;
+};
+
 class LbIgnoreRawArgs : public RLOp_SpecialCase {
  public:
   LbIgnoreRawArgs(int module_number, int opcode, const char* label)
@@ -883,14 +930,15 @@ struct ObjBtnNoop : public RLOp_Void_Void {
 
 // 30 / 32：等对象按钮点击，把被点按钮的下标写进 store 寄存器
 // （cancelable 的那条对应上游的 select_objbtn_cancel）。
-struct ObjBtnSelect : public RLOp_Void_Void {
+struct ObjBtnSelect : public RLOp_Store_Void {
   explicit ObjBtnSelect(bool cancelable) : cancelable_(cancelable) {}
-  void operator()(RLMachine& machine) {
+  int operator()(RLMachine& machine) override {
     if (machine.ShouldSetSelcomSavepoint()) machine.MarkSavepoint();
     // 诊断：把「这一组里到底有几个按钮、各自在哪」打出来 —— 小游戏卡住时
     // 最常见的原因就是按钮组是空的（对象没标成按钮 / 组号不对），或者点位不对。
     {
       int fg = 0, btns = 0, idx = -1;
+      int hit = -1;  // 本帧鼠标点中的组内按钮编号（-1 = 点在非按钮处）
       GraphicsSystem& g = machine.system().graphics();
       for (GraphicsObject& o : g.GetForegroundObjects()) {
         ++fg; ++idx;
@@ -921,9 +969,32 @@ struct ObjBtnSelect : public RLOp_Void_Void {
           }
         }
       }
-      std::cout << "[lb-ext] objbtn select group=" << g_objbtn_group
-                << " cancelable=" << (cancelable_ ? 1 : 0) << " fg_objects=" << fg
-                << " buttons_in_group=" << btns << std::endl;
+      // 命中判定：鼠标当前按着时，落在哪个组内按钮的屏幕矩形里。
+      Point pos;
+      int b1 = 0, b2 = 0;
+      machine.system().event().GetCursorPos(pos, b1, b2);
+      if (b1 != 0 || b2 != 0) {
+        for (GraphicsObject& o : g.GetForegroundObjects()) {
+          auto consider = [&](GraphicsObject& b, GraphicsObject* parent) {
+            if (!b.IsButton() || b.GetButtonGroup() != g_objbtn_group) return;
+            if (!b.has_object_data()) return;
+            Rect r = b.GetObjectData().DstRect(b, parent);
+            if (r.Contains(pos)) hit = b.GetButtonNumber();
+          };
+          consider(o, nullptr);
+          if (o.has_object_data()) {
+            ParentGraphicsObjectData* parent =
+                dynamic_cast<ParentGraphicsObjectData*>(&o.GetObjectData());
+            if (parent) {
+              for (GraphicsObject& c : parent->objects()) consider(c, &o);
+            }
+          }
+        }
+      }
+      std::cout << "[lb-ext] objbtn poll group=" << g_objbtn_group
+                << " at=" << pos.x() << "," << pos.y() << " b1=" << b1
+                << " b2=" << b2 << " fg_objects=" << fg
+                << " buttons_in_group=" << btns << " -> " << hit << std::endl;
       // 就在「要等玩家点选」这一刻把图形栈转储出来：小游戏卡住时画面到底有什么、
       // 每个对象的源/目标矩形是不是 0×0，一望便知（引擎卡着不会走到退出路径的 dump）。
       static int tree_dumps = 0;
@@ -932,12 +1003,12 @@ struct ObjBtnSelect : public RLOp_Void_Void {
         std::ostringstream tree;
         g.Refresh(&tree);
         std::cout << "[lb-ext] graphics tree:" << std::endl << tree.str() << std::endl;
+        // 同一刻把脚本侧 intD 整片打出来 —— 给「PC pt00_probe --full」逐项对照用
+        // （小游戏的相机/相位差异都在这块数组里）。
+        pt00emu::DumpIntD(machine);
       }
+      return hit;  // 非阻塞：本帧直接给出结果（-1 = 点在非按钮处 = 脚本判「挥棒」）
     }
-    ButtonObjectSelectLongOperation* op =
-        new ButtonObjectSelectLongOperation(machine, g_objbtn_group);
-    if (cancelable_) op->set_cancelable();
-    machine.PushLongOperation(op);
   }
 
  private:
@@ -974,10 +1045,10 @@ class AndroidRLMachine : public RLMachine {
                         new LbIgnoreRawArgs(11, 201, "Mem201"));
     } else if (module != nullptr && module->module_type() == 1 &&
                module->module_number() == 4) {
-      module->AddOpcode(151, 0, "lb_ignore_151",
-                        new LbIgnoreRawArgs(4, 151, "Sys151"));
-      module->AddOpcode(152, 0, "lb_ignore_152",
-                        new LbIgnoreRawArgs(4, 152, "Sys152"));
+      // 151/152 = LBEX 的输入轮询（见 LbInputPollOp 的注释）：必须真的写回引用，
+      // 否则小游戏的「挥棒」判定（intD[101] == 1）永远不成立。
+      module->AddOpcode(151, 0, "lb_input_mouse", new LbInputPollOp(true));
+      module->AddOpcode(152, 0, "lb_input_key", new LbInputPollOp(false));
       // LBEX 小游戏/演出还用了一批 RLVM 没登记的 Sys 号（真机日志实测）：
       // 150/210/211/215/216 出现在 SEEN7110/515，436/441/446/451/456 出现在 SEEN7010。
       // 一律容错占位（不解析参数 + 自己推进 IP），先让脚本不被它们挡住；

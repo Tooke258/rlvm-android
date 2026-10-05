@@ -26,6 +26,10 @@ void SetTick31(bool on);
 // 卸载状态（换游戏目录时用）。
 void Reset();
 
+// 诊断：把脚本侧的 intD[0..1999] 整片打到 stderr（在 objbtn 诊断/图形栈转储那一刻调用，
+// 用来和 PC 侧 pt00_probe 的 --full 输出逐项对照；小游戏的相机/相位差异都在这块数组里）。
+void DumpIntD(class RLMachine& machine);
+
 }  // namespace pt00emu
 
 #endif  // PT00_EMU_BRIDGE_H_

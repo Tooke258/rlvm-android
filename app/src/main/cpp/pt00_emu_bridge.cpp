@@ -60,6 +60,20 @@ void SetTraceCtx(bool on) { pt00_emu_set_trace_ctx(on ? 1 : 0, 800); }
 
 void SetTick31(bool on) { g_tick31 = on; }
 
+void DumpIntD(RLMachine& machine) {
+  std::cerr << "[pt00] full intD[0..1999] (dump on demand), 16 per line:" << std::endl;
+  std::ostringstream os;
+  for (int i = 0; i < kIntDCount; ++i) {
+    if (i % 16 == 0) {
+      if (i > 0) std::cerr << os.str() << std::endl;
+      os.str("");
+      os << "  [" << i << "]";
+    }
+    os << " " << GetD(machine, i);
+  }
+  std::cerr << os.str() << std::endl;
+}
+
 bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   if (!g_tried) {
     g_tried = true;
@@ -165,6 +179,8 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
   pt00_emu_set_intd(g_intd.data(), kIntDCount);
+  int cam_before[5];
+  for (int i = 0; i < 5; ++i) cam_before[i] = g_intd[1900 + i];
   // 试验（可用 pt00_tick31=1 开关 A/B）：原引擎每帧替脚本驱动 DLL 一次
   // 「每帧主推进」。脚本这段循环里从不调 31，但 PC 上抓到的真实帧形态里
   // 71×22 之后就是 31 —— 判定帧首用 `72(0)`（每帧第一个 AI 调用）标记。
@@ -177,6 +193,24 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   }
   pt00_emu_call(func, a1, a2, a3, a4);
   pt00_emu_get_intd(g_intd.data(), kIntDCount);
+  // 相机回写取证：脚本的 intD[1900..1904] 全靠 CallDLL(func=12) 写；
+  // 这里分别报告「执行器里变了没有」与「写回脚本数组了没有」，把两种失败分开：
+  //   emu 变了但脚本没变 → 兼容层的同步问题；emu 也没变 → DLL 本身没写（要看输入）。
+  {
+    static const int kCamFirst = 1900, kCamLast = 1904;
+    bool emu_changed = false, script_changed = false;
+    for (int i = kCamFirst; i <= kCamLast; ++i) {
+      if (g_intd[i] != cam_before[i]) emu_changed = true;
+      if (g_intd[i] != GetD(machine, i)) script_changed = true;
+    }
+    if (emu_changed || script_changed) {
+      std::cerr << "[pt00] cam after func=" << func << " emu_changed="
+                << (emu_changed ? 1 : 0) << " script_changed="
+                << (script_changed ? 1 : 0) << " now=";
+      for (int i = kCamFirst; i <= kCamLast; ++i) std::cerr << g_intd[i] << ",";
+      std::cerr << std::endl;
+    }
+  }
   for (int i = 0; i < kIntDCount; ++i) {
     if (g_intd[i] != GetD(machine, i)) SetD(machine, i, g_intd[i]);
   }
