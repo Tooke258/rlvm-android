@@ -96,10 +96,14 @@ count 全局在 `0x1001F0AC` —— 说明地址与条目数都取对了。
 | `tools/pt00_emu/emu.c` | **执行器**：自研最小 x86-32（PE 装载 / 整数 / 内存栈 / x87 / 导入桩 / TIB 影子 / 栈断言 / `--trace-func N`），约 1300 行 C |
 | `tools/pt00_oracle/compare.py` | 同序列同种子跑两边**逐位对照**，退出码可当门禁 |
 
-当前状态：`calls_sample.txt` **7/7 逐位一致**；`calls_long.txt`（280 次）有 184 处差异，
-集中在 `func 71`，**怀疑是 `time()`→`srand()` 的非确定性**（下一步对齐时间源）。
+当前状态（2026-10-05，提交 `2f4b79f`）：`calls_sample.txt` **7/7 逐位一致**；
+`calls_long.txt`（280 次，8 帧真实形态）**首处差异收敛到第 10 次调用 `func 71(1)`**。
+早期的「184 处差异」已证伪为**两侧不同种子**造成的假警报（时间源 IAT 已确定性化，
+对照必须带 `--seed`）。夹具由 `tools/pt00_oracle/make_fixtures.py` 生成到 `build/pt00-fixtures/`。
 
 规模已量死：可达代码 **4897 条指令 / 82 种助记符，无 SSE2**（详见同一份日志的 `static_analysis`）。
+已修的 9 个 bug 全在宿主执行器；**完整交接（契约 / 命令 / bug 清单 / 原始差异输出）见
+[`docs/PT00-EMU-HANDOFF.md`](PT00-EMU-HANDOFF.md)**。
 
 > 构建注意：Windows 侧用 VS 时**必须 `cl /utf-8`**——MSVC 默认按本地代码页读源文件，
 > 中文注释会被错解、把后面的代码吞进注释里，表现为莫名其妙的语法错误。

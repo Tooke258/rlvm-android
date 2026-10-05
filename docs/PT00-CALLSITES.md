@@ -152,11 +152,11 @@ DLL 不读输入。输入在脚本侧，走**引擎对象按钮（Sel objbtn）*
 鼠标坐标本身（`op<1:004:00133>` GetCursorPos，全库 278 处）**没有出现在这 15 个棒球场景里**，
 说明棒球的操作就是靠 objbtn。
 
-⚠️ **前置阻塞项**：RLVM 的 `SelModule`（`modules/module_sel.cc`）只实现了
+✅ **前置阻塞项（已解决）**：RLVM 的 `SelModule`（`modules/module_sel.cc`）只实现了
 `select_w/select/select_s2/select_s/select_objbtn`(0–4) 与 `select_objbtn_cancel`(14)、`objbtn_init`(20)；
 而 LBEX 还用到了 `op<0:002:00021>` `00022` `00023` `00030` `00032` —— 这些在 RLVM 里会走
-`UnimplementedOpcode`。**M2 之前得先把这一组 objbtn 指令补上**（属于脚本模块层，
-和 PT00 本身无关，但决定「能不能操作」）。
+`UnimplementedOpcode`。这一组已在**平台层**补齐（`66d58af`，`app/src/main/cpp/native-bridge.cpp`
+的 `ObjBtnConfig2` / `ObjBtnSelect`，不动 `libreallive`/`machine` 语义）。
 
 ### 4.4 返回值语义
 
@@ -228,7 +228,8 @@ DLL 侧的 `900/901`、`910/911`、`920/921`、`930/931` 就是这个 begin/step
 
 ## 6. 下一步 / 未决
 
-1. **M2 前置**：补 `SelModule` 的 `objbtn_*`(21/22/23/30/32) 指令（外层：不碰 `libreallive`/`machine` 语义）。
+1. ~~**M2 前置**：补 `SelModule` 的 `objbtn_*`(21/22/23/30/32) 指令~~ → **已完成**（`66d58af`，平台层）。
+   路线已切换为兼容层（跑原版 DLL），当前进度见 `docs/PT00-EMU-HANDOFF.md`。
 2. M2 只做主线：`30/31`（复位+主推进）、`10/11/12`（坐标换算）、`60`（边界 clamp）、
    `900/901`+`920/921`（投球与球飞行）、`72`（实体 AI），其余 func 返回安全默认值（`return 1`，
    不改 intD 或只清标志）。

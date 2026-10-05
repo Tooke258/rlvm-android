@@ -33,6 +33,12 @@ build.ninja
 tools/_smoke/*.so
 tools/_smoke/*.o
 
+# ---- PT00 工具链的本机构建产物（VS 编译出的 exe/obj，不入库）----
+tools/pt00_emu/*.exe
+tools/pt00_emu/*.obj
+tools/pt00_oracle/*.exe
+tools/pt00_oracle/*.obj
+
 # ---- 第三方依赖（体积大，由 tools/setup_third_party.ps1 获取）----
 third_party/
 

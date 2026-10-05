@@ -10,6 +10,25 @@
 > `docs/DECISIONS.md`（决策 D-001~D-013）、`docs/COMPATIBILITY.md`（游戏与补丁兼容）、
 > `docs/TESTING.md`（真机测试流程），以及 `dev-log/*.jsonl`（逐任务日志）。
 
+## 0. 当前焦点（2026-10-05）
+
+**PT00（LBEX 棒球小游戏）正在走「兼容层」路线：不再手写重写，而是在 Android 侧跑一个自研 x86-32
+执行器，直接执行原版 `PT00.dll`（DLL 由用户游戏数据在运行时提供，绝不进仓库 / APK）。**
+
+进度（PC 侧，不需要真机）：
+
+* 三个工具已落地：`tools/pt00_oracle/`（原生真值）、`tools/pt00_emu/`（执行器）、
+  `tools/pt00_oracle/compare.py`（逐位对照门禁）；
+* 最小夹具 **7/7 逐位一致**；长序列夹具（280 次调用）**首处差异 = 第 10 次调用 `func 71(1)`**；
+* 已修 9 个 bug，**全部在宿主执行器**，`PT00.dll` 一行没改。
+
+下一步：收掉 `func 71` 的 idx8 类型分派 → 把执行器接进 `LittleBustersPT00DLL::CallDLL()` → 真机实测。
+
+👉 **细节全部在 [`docs/PT00-EMU-HANDOFF.md`](PT00-EMU-HANDOFF.md)**（契约 / 工具命令 / bug 清单 / 原始差异输出 / 路径速查）。
+
+其余进行中的工作：视频通路（v0.2.3 起）、快进指示符与影片并行的收尾（v0.2.4 起）、
+对话栏渲染与影片音画同步（`dev-log/OPEN-ISSUES.jsonl`）。
+
 ## 1. 一句话现状
 
 **真实游戏（Kud Wafter）已经在真机上跑出画面：标题背景、START/LOAD/CONFIG/EXIT 菜单、
