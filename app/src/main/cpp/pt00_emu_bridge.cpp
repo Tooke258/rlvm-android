@@ -90,13 +90,25 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   if (!g_ready) return false;
 
   // 真机诊断：前 40 次调用打出来，用来确认脚本确实走到了 PT00，
-  // 以及它按什么顺序驱动 func（日志走 rlvm-stderr）。
-  static int logged = 0;
-  if (logged < 40) {
-    ++logged;
+  // 调用日志：实体 AI 循环（70/71/72）每帧几十条会把别的都淹掉 —— 之前只记前 40 条，
+  // 结果整段日志全是 72/70，看不出「相机 func=12 到底有没有被调」。改成：
+  //   1) 只记 func 不在 {70,71,72} 的调用（上限放宽到 400 条）；
+  //   2) 顺带记一份 func 直方图，随帧快照/图形栈转储一起打出来。
+  static int g_func_counts[4096] = {0};
+  if (func >= 0 && func < 4096) ++g_func_counts[func];
+  static int logged_other = 0;
+  if (func != 70 && func != 71 && func != 72 && logged_other < 400) {
+    ++logged_other;
     std::cerr << "[pt00] CallDLL func=" << func << " a=(" << a1 << "," << a2
               << "," << a3 << "," << a4 << ")" << std::endl;
   }
+  auto DumpFuncHistogram = [&]() {
+    std::ostringstream os;
+    os << "[pt00] func histogram:";
+    for (int i = 0; i < 4096; ++i)
+      if (g_func_counts[i] > 0) os << " " << i << "x" << g_func_counts[i];
+    std::cerr << os.str() << std::endl;
+  };
 
   // 每 ~35 次调用（= 脚本一帧）打一次关键 intD 快照：用来判断 DLL 的状态机
   // 到底有没有推进（卡在小游戏时最需要看这个）。前 3 帧全打，之后每 60 帧一次。
@@ -123,8 +135,14 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       os << " | phase 70..95=";
       for (int i = 70; i <= 95; ++i) os << GetD(machine, i) << ",";
       // A2 锚点要用 intG（原生侧同样可读）——小游戏相位标志就在这两个上。
+      // 相机：小游戏把世界坐标转屏幕全靠它；脚本从不写这几个槽，只有
+      // CallDLL(func=12) 写（PC 真值：12(-6000,0,3100,0)->1900=700,1901=790；
+      // 12(0,0,0,0)->1900=1300,1901=1100）。全 0 = 所有子对象的 dst 落到屏幕外。
+      os << " | cam 1900..1904=";
+      for (int i = 1900; i <= 1904; ++i) os << GetD(machine, i) << ",";
       os << " | intG[1900..1901]=" << GetG(machine, 1900) << "," << GetG(machine, 1901);
       std::cerr << os.str() << std::endl;
+      DumpFuncHistogram();
     }
   }
 
@@ -142,6 +160,8 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
                 << tree.str() << std::endl;
     }
   }
+  // 每 200 次调用打一次 func 直方图：一眼看出「func=12（相机）到底有没有被调」。
+  if (call_count % 200 == 0) DumpFuncHistogram();
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
   pt00_emu_set_intd(g_intd.data(), kIntDCount);
