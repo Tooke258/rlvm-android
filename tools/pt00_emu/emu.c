@@ -49,6 +49,12 @@ static uint32_t g_heap_ptr = 0x11400000u; /* CRT 堆的假实现：bump allocato
  * （真机表现：eip=00000000）。fs:[0x18] 要存 TIB 自身地址，CRT 会读它。 */
 #define TIB_BASE 0x10300000u
 static int g_seg_fs = 0;
+
+/* 给导出准备的运行环境（地址都在 guest 空间内，互相不重叠） */
+#define SENTINEL 0x30000000u   /* 哨兵返回地址：跑到它就说明"这个函数返回了" */
+#define INTD_BASE 0x10400000u  /* intD[2000] */
+#define INTF_BASE 0x10500000u  /* intF[2000] */
+#define CTX_BASE 0x10600000u   /* 假的引擎上下文；+0x14 处放 intD 基址 */
 static uint32_t guest_alloc(uint32_t n) {
   uint32_t p = g_heap_ptr;
   g_heap_ptr += (n + 15u) & ~15u;
@@ -165,8 +171,11 @@ static ModRM modrm(void) {
       int ss = sib >> 6, idx = (sib >> 3) & 7, bs = sib & 7;
       uint32_t idxv = (idx == 4) ? 0 : *reg32(idx);
       uint32_t bsv;
-      if (bs == 5 && (sib >> 6) == 0 && m.mod == 0) bsv = imm32();
-      else bsv = (bs == 5 && m.mod != 0) ? cpu.ebp : *reg32(bs);
+      /* SIB 里 base==5 且 mod==0 表示 base 是 disp32（与 scale 无关！）。
+       * 之前多写了个 (sib>>6)==0 的条件，导致 scale 非 0 的跳转表
+       * （jmpl *table(,%ecx,4)）被当成 base=ebp，直接跳到栈上去执行。 */
+      if (bs == 5 && m.mod == 0) bsv = imm32();
+      else bsv = (bs == 5) ? cpu.ebp : *reg32(bs);
       base = bsv + (idxv << ss);
       break;
     }
@@ -183,6 +192,9 @@ static ModRM modrm(void) {
 
 /* ------------------------------------------------------------- 指令实现 */
 static int g_steps = 0;
+static int g_last_rc = -1;
+static int g_trace = 0;      /* 1 = 打印每条指令 */
+static int g_trace_left = 0; /* 还能打印多少条 */
 static int g_max_steps = 20000000;
 static int g_verbose = 0;
 
@@ -426,6 +438,10 @@ static int step(void) {
     cpu.eip = ret;
     cpu.esp += (uint32_t)stub_argc(idx) * 4u;  /* stdcall：被调方清参数 */
     return 0;
+  }
+  if (g_trace && g_trace_left-- > 0) {
+    fprintf(stderr, "  %08x eax=%08x ecx=%08x esp=%08x ebp=%08x\n", cpu.eip,
+            cpu.eax, cpu.ecx, cpu.esp, cpu.ebp);
   }
   uint32_t start = cpu.eip;
   hist_add(start);
@@ -752,21 +768,92 @@ int main(int argc, char **argv) {
   /* TIB 影子：fs:[0x18] 存 TIB 自身地址；fs:[0]（SEH 链头）初始为 -1（无处理器） */
   wr32(TIB_BASE + 0x18, TIB_BASE);
   wr32(TIB_BASE + 0x00, 0xffffffffu);
+  /* 引擎上下文：+0x14 处放 intD 基址（这是 PT00 唯一用到的约定） */
+  wr32(CTX_BASE + 0x14, INTD_BASE);
 
-  printf("# 从 %08x 开始执行（先跑 func_load）\n", cpu.eip);
-  for (;;) {
-    if (step() != 0) break;
-    /* 跳到镜像外（且不是导入桩区间）就停下并回溯 */
-    const int in_image =
-        cpu.eip >= IMAGE_BASE && cpu.eip < IMAGE_BASE + 0x30000u;
-    const int in_stub =
-        cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE;
-    if (!in_image && !in_stub) {
-      fprintf(stderr, "[emu] eip=%08x 跑出镜像范围，停止\n", cpu.eip);
-      hist_dump();
-      break;
+  /* 跑一个导出：入口处压哨兵当返回地址，跑到哨兵即视为正常返回。
+   * 参数按 stdcall 约定从右往左压，最上面是哨兵。 */
+  #define RUN_EXPORT(entry, argc, ...)                              \
+    do {                                                            \
+      uint32_t a_[8] = {0, 0, 0, 0, 0, 0, 0, 0};                    \
+      const uint32_t vals_[8] = {__VA_ARGS__};                      \
+      for (int i_ = 0; i_ < (argc) && i_ < 8; ++i_) a_[i_] = vals_[i_]; \
+      for (int i_ = (argc) - 1; i_ >= 0; --i_) push32(a_[i_]);      \
+      push32(SENTINEL);                                             \
+      emu_call_push((entry), SENTINEL, cpu.esp); /* 最外层也登记一帧 */ \
+      cpu.eip = (entry);                                            \
+      int rc_ = -1;                                                 \
+      for (;;) {                                                    \
+        if (step() != 0) break;                                     \
+        if (cpu.eip == SENTINEL) { rc_ = 0; break; }                 \
+        if (!(cpu.eip >= IMAGE_BASE && cpu.eip < IMAGE_BASE + 0x30000u) && \
+            !(cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE)) { \
+          fprintf(stderr, "[emu] eip=%08x 跑出镜像范围，停止\n", cpu.eip); \
+          hist_dump();                                              \
+          break;                                                    \
+        }                                                           \
+      }                                                             \
+      if (rc_ == 0) { cpu.esp += (argc) * 4u; } /* stdcall：清参数 */  \
+      g_last_rc = rc_;                                              \
+    } while (0)
+
+  printf("# 跑 func_load(%08x)\n", CTX_BASE);
+  RUN_EXPORT(IMAGE_BASE + 0x11B0, 2, CTX_BASE, 0);
+  printf("# func_load 结束 rc=%d（步数 %d）\n", g_last_rc, g_steps);
+  if (g_last_rc != 0) return 1;
+  /* 关键检查：func_load 的副作用落地了吗？
+   *   dword_100237C4 = 22 个实体对象指针的数组（应当已填满堆指针）
+   *   dword_10023D18 = 引擎上下文槽（应当 = 我们传进去的 CTX_BASE） */
+  printf("# 检查 func_load 的副作用：\n");
+  printf("#   pt00_dll_ctx[10023D18] = %08x（期望 %08x）\n",
+         rd32(IMAGE_BASE + 0x23D18), CTX_BASE);
+  printf("#   pt00_entities[100237C4] = %08x  [C8]=%08x  [CC]=%08x\n",
+         rd32(IMAGE_BASE + 0x237C4), rd32(IMAGE_BASE + 0x237C8),
+         rd32(IMAGE_BASE + 0x237CC));
+  printf("#   堆已用 = %u 字节（起点 %08x 现在 %08x）\n",
+         (unsigned)(g_heap_ptr - 0x11400000u), 0x11400000u, g_heap_ptr);
+  printf("#   eax=%08x\n", cpu.eax);
+
+  printf("# 跑 func_init\n");
+  RUN_EXPORT(IMAGE_BASE + 0x1670, 0);
+  printf("# func_init 结束 rc=%d\n", g_last_rc);
+
+  if (argc > 2) {
+    FILE *f = fopen(argv[2], "r");
+    if (!f) { fprintf(stderr, "打不开调用脚本 %s\n", argv[2]); return 1; }
+    char line[512];
+    int n = 0;
+    int prev[INTD_COUNT];
+    for (int i = 0; i < INTD_COUNT; ++i) prev[i] = rd32(INTD_BASE + i * 4);
+    while (fgets(line, sizeof(line), f)) {
+      char *p = line;
+      while (*p == ' ' || *p == '\t') ++p;
+      if (*p == '#' || *p == '\n' || *p == '\r' || *p == 0) continue;
+      int v[5] = {0, 0, 0, 0, 0};
+      int got = sscanf(p, "%d %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &v[4]);
+      if (got < 1) continue;
+      /* --trace：只把第一次调用全量打出来（默认关） */
+      for (int i = 3; i < argc; ++i) {
+        if (strcmp(argv[i], "--trace") == 0 && n == 0) {
+          g_trace = 1;
+          g_trace_left = 400;
+          break;
+        }
+      }
+      RUN_EXPORT(IMAGE_BASE + 0x1680, 5, (uint32_t)v[0], (uint32_t)v[1],
+                 (uint32_t)v[2], (uint32_t)v[3], (uint32_t)v[4]);
+      g_trace = 0;
+      ++n;
+      printf("%d func=%d(%d,%d,%d,%d) ret=%d", n, v[0], v[1], v[2], v[3], v[4],
+             (int)cpu.eax);
+      for (int i = 0; i < INTD_COUNT; ++i) {
+        uint32_t cur = rd32(INTD_BASE + i * 4);
+        if ((int)cur != prev[i]) { printf(" intD[%d]=%d", i, (int)cur); prev[i] = (int)cur; }
+      }
+      printf("\n");
     }
+    fclose(f);
   }
-  printf("# 停止于 eip=%08x（步数 %d）\n", cpu.eip, g_steps);
+  printf("# 结束于 eip=%08x（步数 %d）\n", cpu.eip, g_steps);
   return 0;
 }
