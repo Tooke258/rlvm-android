@@ -32,6 +32,25 @@
 #define GUEST_BASE 0x10000000u
 static uint8_t *g_mem;
 
+/* 运行环境与 trace 开关（放前面：wr32 的写入日志要用到） */
+#define SENTINEL 0x30000000u
+#define INTD_BASE 0x10400000u
+#define INTF_BASE 0x10500000u
+#define CTX_BASE 0x10600000u
+static int g_trace = 0;
+static int g_trace_left = 0;
+static uint32_t g_trace_min = 0;
+
+/* CPU 状态（放前面：wr32 的写入日志要用 cpu.eip） */
+typedef struct {
+  uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi;
+  uint32_t eip;
+  uint32_t eflags;
+  uint8_t *fpregs[8];
+  int fptop;
+} CPU;
+static CPU cpu;
+
 /* 导入桩：给每个 KERNEL32 导入函数分一个 guest 地址，写进 IAT。
  * 执行器在 step() 里拦截落在桩区间的 eip，改调宿主实现，然后按 cdecl ret。 */
 #define STUB_BASE 0x20000000u
@@ -50,11 +69,6 @@ static uint32_t g_heap_ptr = 0x11400000u; /* CRT 堆的假实现：bump allocato
 #define TIB_BASE 0x10300000u
 static int g_seg_fs = 0;
 
-/* 给导出准备的运行环境（地址都在 guest 空间内，互相不重叠） */
-#define SENTINEL 0x30000000u   /* 哨兵返回地址：跑到它就说明"这个函数返回了" */
-#define INTD_BASE 0x10400000u  /* intD[2000] */
-#define INTF_BASE 0x10500000u  /* intF[2000] */
-#define CTX_BASE 0x10600000u   /* 假的引擎上下文；+0x14 处放 intD 基址 */
 static uint32_t guest_alloc(uint32_t n) {
   uint32_t p = g_heap_ptr;
   g_heap_ptr += (n + 15u) & ~15u;
@@ -72,6 +86,10 @@ static uint32_t rd32(uint32_t a) {
   return in_guest(a, 4) ? *(uint32_t *)gp(a) : 0;
 }
 static void wr32(uint32_t a, uint32_t v) {
+  if (g_trace && a >= INTD_BASE && a < INTD_BASE + 8000 && (a & 3) == 0) {
+    fprintf(stderr, "      WRITE intD[%u]=%d @%08x\n", (a - INTD_BASE) / 4, (int)v,
+            cpu.eip);
+  }
   if (in_guest(a, 4)) *(uint32_t *)gp(a) = v;
 }
 static void wr8(uint32_t a, uint8_t v) {
@@ -79,16 +97,6 @@ static void wr8(uint32_t a, uint8_t v) {
 }
 
 /* ------------------------------------------------------------------ CPU */
-typedef struct {
-  uint32_t eax, ecx, edx, ebx, esp, ebp, esi, edi;
-  uint32_t eip;
-  uint32_t eflags;
-  uint8_t *fpregs[8]; /* 阶段 2 用：x87 栈 */
-  int fptop;
-} CPU;
-
-static CPU cpu;
-
 enum { CF = 1u << 0, PF = 1u << 2, AF = 1u << 4, ZF = 1u << 6, SF = 1u << 7,
        DF = 1u << 10, OF = 1u << 11 };
 
@@ -196,8 +204,6 @@ static ModRM modrm(void) {
 /* ------------------------------------------------------------- 指令实现 */
 static int g_steps = 0;
 static int g_last_rc = -1;
-static int g_trace = 0;      /* 1 = 打印每条指令 */
-static int g_trace_left = 0; /* 还能打印多少条 */
 static int g_max_steps = 20000000;
 static int g_verbose = 0;
 
@@ -596,12 +602,18 @@ static int step(void) {
     cpu.esp += (uint32_t)stub_argc(idx) * 4u;  /* stdcall：被调方清参数 */
     return 0;
   }
-  if (g_trace && g_trace_left-- > 0) {
+  if (g_trace && cpu.eip >= g_trace_min && g_trace_left-- > 0) {
     fprintf(stderr,
             "  %08x eax=%08x ecx=%08x edx=%08x esp=%08x ebp=%08x"
             " st0=%.6g st1=%.6g st2=%.6g sw=%04x\n",
             cpu.eip, cpu.eax, cpu.ecx, cpu.edx, cpu.esp, cpu.ebp, *XP(0), *XP(1),
             *XP(2), g_fpu_sw);
+    /* 前缀和表：参数错会让它把表后面一大片内存写花，单独打出来 */
+    if (cpu.eip == IMAGE_BASE + 0x22D0) {
+      fprintf(stderr, "      ^ 调 prefix_sum(dst=%08x src=%08x count=%d) 来自 %08x\n",
+              rd32(cpu.esp + 4), rd32(cpu.esp + 8), (int)rd32(cpu.esp + 12),
+              g_frame_n > 1 ? g_frames[g_frame_n - 1].ret_addr : 0);
+    }
   }
   uint32_t start = cpu.eip;
   hist_add(start);
@@ -1097,12 +1109,15 @@ int main(int argc, char **argv) {
           g_trace_left = 400;
           break;
         }
-        if (strcmp(argv[i], "--trace-func") == 0 && i + 1 < argc &&
+        if (strcmp(argv[i], "--trace-func") == 0 && i + 1 < argc && !g_trace &&
             v[0] == atoi(argv[i + 1])) {
           g_trace = 1;
-          g_trace_left = 3000;
+          g_trace_left = 40000;
           fprintf(stderr, "# trace func=%d\n", v[0]);
           break;
+        }
+        if (strcmp(argv[i], "--trace-min") == 0 && i + 1 < argc) {
+          g_trace_min = (uint32_t)strtoul(argv[i + 1], NULL, 16);
         }
       }
       RUN_EXPORT(IMAGE_BASE + 0x1680, 5, (uint32_t)v[0], (uint32_t)v[1],
