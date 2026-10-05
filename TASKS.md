@@ -184,7 +184,27 @@ MediaCodec 的兼容性，再定"解码 → 帧回填 → 呈现"的接口形状
 - 真机：OP 播放期间 active_channels=1、peak_in_window≈2 万（真实波形），到点自动收尾。
 - 余项：点击跳过、movPlayExC 的 C 语义、movWait 超时、音画同步细调。
 
-### v0.2.4 / v0.3.0 计划（DLL 输入模拟 + 小游戏，后移）
+### v0.2.4（已发布）：一小时试玩的五项反馈 + 一批诊断工具
+
+**发布**：tag `v0.2.4`（见 git tag），Release 附 `app-release.apk`：
+https://github.com/Tooke258/rlvm-android/releases/tag/v0.2.4
+
+| 反馈项 | 结果 |
+| --- | --- |
+| 英文字体左右分布不齐 | 先做 `font_selftest` 量出「拉丁是比例宽度、日文是整格」→ ASCII 改按原版 MS Gothic 的**半角定宽格**（字数/2、字墨居中）→ 真机复查日期行均匀（§19.1） |
+| 选项图标不见、点击还在 | 根因在**上游** `DrawFrame()` 从未遍历 `final_renderers_`（选项窗口=final renderer，像素从没画过）→ 补一遍遍历，真机确认可见（§19.2 / D-035） |
+| 影片播放时脚本仍在前进 | trace 证明等待链路有效；真凶是影片开播时 `skip=1` → 起播前 `SetSkipMode(0)+SetAutoMode(false)+clear_force_fast_forward()+set_force_wait(true)`；游戏自身 Skip 的重新武装按原版语义**保留**（§19.3 / D-036） |
+| 长按呼出右键 → 显式开关 | 面板「长按右键：开/关」（持久化；关掉后长按也只发左键，右键走按键栏） |
+| 运行/停止按钮一体化 | 合并为单按钮（运行中显示「停止引擎」，收尾后自动变回「运行引擎」） |
+
+**工具**：`font_selftest` / `enc_selftest` / `mov_test(_loop/_ms)` / mov 指令级 trace / 影片前
+`auto·skip·ShouldFastForward` 状态行 / **面板「导出渲染树」按钮**（运行时抓图层栈）/「日志」全屏视图
+与日志落盘 `rlvm-log.txt`。细节见 `任务日志.md` §19。
+
+**遗留（后续）**：游戏自身 Skip 状态的清除（需在脚本 dump 里定位菜单变量）；Skip 指示灯滞后；
+`movPlayExC` 的 C 语义；引擎标准存档 UI。
+
+### v0.2.5 / v0.3.0 计划（DLL 输入模拟 + 小游戏，后移）
 
 打包处理——主线是「让 DLL 驱动的玩法真正能玩」，其余顺带：
 

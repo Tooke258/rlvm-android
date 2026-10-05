@@ -898,3 +898,47 @@ Unicode→CP932 字节表（只建一次）。注意转换失败（CP932 没有�
 
 **验证**：真机 LOAD 界面文字落在行内、不截断；同屏可见槽 01/05 已是正确中文（D-033 的编码
 修复同时生效），其余槽是修复前写的旧档，重存即刷新。临时探针已撤。
+
+## D-035 选项窗口不可见：上游 `DrawFrame` 缺少 final renderers 绘制
+
+**日期**：2026-10-05　**状态**：真机通过
+
+**现象**：选项（选择肢）图标看不见，但点击映射仍在原位置生效。
+
+**根因**：选项窗口以 `graphics->AddRenderable(this)`（`long_operations/select_long_operation.cc:249`）
+注册为 **final renderer**，而 `GraphicsSystem::DrawFrame()` 的顺序是
+`[背景] → RenderObjects() → text().Render()`，**从未遍历 `final_renderers_`**——该容器在上游只有
+插入（`AddRenderable`）与删除（`RemoveRenderable`），没有绘制。于是选项窗口的像素永远不出现，
+而它的布局矩形仍参与命中判定。
+
+**修法**：`DrawFrame()` 末尾补一遍：
+
+```cpp
+for (Renderable* r : final_renderers_) { if (r) r->Render(tree); }
+```
+
+放最后 = 画在最上层；顺带让「导出渲染树」能列出这些渲染器（此前只有 `UNDER CONSTRUCTION` 占位）。
+头文件补 `systems/base/renderable.h`。
+
+**定位手段**：面板新增的**「导出渲染树」按钮**（运行时在引擎线程导出当前帧图层栈，不用重启引擎）
++ `RenderToScreen` 子表面探针（`font_probe=1` 时输出）。
+
+## D-036 影片与 auto/skip 的交互
+
+**日期**：2026-10-05　**状态**：真机通过（一项按用户要求保留）
+
+**现象**：影片播放时/播放后，脚本仍在快速前进（"一口气跑到下一章开头的动画"）。
+
+**查实**（指令级 trace）：
+
+1. `movPlayExC` 的等待长操作**一直是有效的**：等待压上 → 影片停/被跳过 → 才返回「脚本继续」。
+   早期"阻塞不成立"的判断源于看错日志顺序，已更正。
+2. 前进行为来自 **Skip 仍开着**：影片开播瞬间的状态行显示 `auto=0 skip=1 ShouldFastForward=1`。
+   跳过 OP 后脚本继续执行，游戏自身的 Skip 状态重新武装引擎 skip → 一路快进到下一个停点。
+
+**修法**：四条起播指令起播前统一做
+`text().SetSkipMode(0)` + `text().SetAutoMode(false)` + `clear_force_fast_forward()` +
+`system().set_force_wait(true)`（最后一条打帧边界，使当前字节码批停在影片调用这条上）。
+
+**保留项**：**不**去清游戏脚本自己的 Skip 标志——开着 Skip 时「跳到下一个停点（选项/章节）」是原版
+语义，用户决定保留；要清它需要在脚本 dump 里定位菜单变量，留待后续版本。
