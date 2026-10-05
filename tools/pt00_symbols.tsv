@@ -1,0 +1,161 @@
+# PT00.dll 符号清单（layer 1）。格式：地址<TAB>类型<TAB>名字<TAB>注释
+# 地址都是 VA（imagebase 0x10000000）。类型：func / data。
+# 来源：docs/PT00-CALLSITES.md、dev-log/PT00-RECON.jsonl、dev-log/PT00-M2A.jsonl
+# 以及 tools/dump_vtables.py + tools/dump_tables.py 的导出结果。
+# 由 tools/ida_apply_symbols.py 幂等应用（不依赖 .idb 的持久化）。
+#
+# ---- 导出入口（reallive_dll_func_call 的分派目标）----
+0x10002780	func	pt00_func10_project_billboard	f10：3D 投影，写 intD[1900..1904]
+0x100029D0	func	pt00_func11_project_billboard_half	f11：同 f10 但 a2/2
+0x10002A00	func	pt00_func12_set_screen_from_world	f12：直接换算 intD[1900..1904]
+0x10002AA0	func	pt00_func30_reset_state	f30：全局复位（intD[210,220..281]）
+0x10002D40	func	pt00_func31_step_game	f31：主推进（按 intD[210] 状态机）
+0x10003BB0	func	pt00_func50_set_state2	f50：置 intD[210]=2（跑垒/守备）
+0x10004380	func	pt00_func60_clamp_field_x	f60：场地横向 clamp → intD[320]
+0x10004470	func	pt00_func61_pick_character	f61：选角色/装姿态
+0x10004BA0	func	pt00_func72_entity_ai	f72：实体 AI 选目标点
+0x10007330	func	pt00_func100_set_entity0_mode1	f100：obj0 mode=1
+0x10007340	func	pt00_func102_set_entity0_mode11	f102：obj0 mode=11
+0x10007350	func	pt00_func103_set_entity0_mode4	f103：obj0 mode=4
+0x10011D50	func	pt00_func101_190_set_mode2	f101（obj0）/ f190（obj9）mode=2
+0x100144F0	func	pt00_func900_batter_init	f900：打者/投球 init（intD[1800..1804]）
+0x10014550	func	pt00_func901_batter_step	f901：打者/投球每帧
+0x10014970	func	pt00_func910_ballA_init	f910：球 A 复位（intD[1830..1841]）
+0x10014A40	func	pt00_func911_ballA_step	f911：球 A 每帧
+0x10014B40	func	pt00_func920_ballB_init	f920：球 B 复位（intD[1850..1865]）
+0x10014C60	func	pt00_func921_ballB_step	f921：球 B 每帧（抛物线+反弹）
+0x10014F40	func	pt00_func930_scene_init	f930：场次计数复位
+0x10014F50	func	pt00_func931_scene_step	f931：场次计数推进（写 intD[30]=7）
+#
+# ---- func 31 的状态机内部 ----
+0x10002E90	func	pt00_dispatch_state	按 intD[210] 分派：1=飞行 2=守备
+0x10002EC0	func	pt00_state1_tick	状态 1 一帧
+0x10002F30	func	pt00_ball_flight_integrate	球飞行积分（intD[220..245]）
+0x100031B0	func	pt00_mirror_ball_to_screen	intD[220..231] → intD[250..261]（x/z 翻倍）
+0x100031F0	func	pt00_state2_tick	状态 2 一帧（跑垒/守备）
+0x100032F0	func	pt00_state2_fielding_step	状态 2：场上判定
+0x100034D0	func	pt00_state2_fielding_followup	状态 2：后续处理
+0x10003660	func	pt00_mirror_screen_to_ball	intD[250..261] → intD[220..231]（x/z 折半）
+0x10003B50	func	pt00_end_state2	收尾：intD[20]=3、intD[210]=0
+0x10003B80	func	pt00_begin_hit_countdown	起 120 帧倒计时、intD[252]=0
+0x100045C0	func	pt00_notify_scene_change	场景切换通知
+0x10002C40	func	pt00_set_ball_velocity	设球的速度分量
+0x10001A00	func	pt00_vec2_normalize	二维向量归一化
+0x10001A70	func	pt00_dist2	两点距离
+0x100022D0	func	pt00_prefix_sum_table	增量表 → 前缀和（帧阈值表）
+0x10014F20	func	pt00_ballB_clear	清球 B 的有效标志
+0x10014F90	func	pt00_request_se	写 intD[200]/[204]（音效请求）
+0x10014FD0	func	pt00_request_se_hit	命中音效
+0x10014FF0	func	pt00_request_se_extra	附加音效
+#
+# ---- 实体对象（vtable 前 6 槽：idx0..idx5 所有类型共用）----
+0x10004B00	func	pt00_entity_ctor	对象构造（只设 vtable）
+0x10004B40	func	pt00_entity_bind_intd	把对象接到 intD（record/state 指针）
+0x10004B80	func	pt00_entity_func70_reset	f70：清对象 scratch
+0x100050D0	func	pt00_entity_func71_update	f71：实体每帧更新（分发 idx6/7/8）
+0x100052F0	func	pt00_entity_idx4_reset_action	idx4：重置 record[4/5/6/27/28/29/32]，[33]=1
+0x10005330	func	pt00_entity_set_mode	idx5：设 record[4]=模式、[5]=1
+0x10005380	func	pt00_entity_set_anim	设 record[20]=动画序号、[21]=速率、[22]=1
+0x10005770	func	pt00_entity_idx8_after_anim	动画阶段结束时的收尾
+0x10005790	func	pt00_entity_finish_a	收尾：record[6]=0、intD[210]=0、intD[20]=3
+0x100057D0	func	pt00_entity_finish_b	同 finish_a 但不通知场景切换
+0x10005880	func	pt00_entity_end_anim	动画序列结束
+0x1000CDD0	func	pt00_entity06_ctor	6 号对象的专用构造
+#
+# ---- 实体类型差异（vtable idx6/idx7/idx8）----
+0x100051D0	func	pt00_ent_idx6_hit_check	idx6：挥棒命中判定（0/4/9/13..21 共用）
+0x10005C40	func	pt00_ent00_idx7	类型 0 idx7
+0x10005BA0	func	pt00_ent00_idx8	类型 0 idx8：动画状态机（10 分支）
+0x10005C80	func	pt00_ent00_idx7_check_a	类型 0 idx7 的分支检查
+0x10005DF0	func	pt00_ent00_idx7_check_b	类型 0 idx7 的分支检查
+0x100064E0	func	pt00_ent00_idx8_launch	类型 0 idx8 case 0xD：起球
+0x10006680	func	pt00_launch_calc_a	起球参数 a
+0x10006760	func	pt00_launch_calc_b	起球参数 b
+0x100067F0	func	pt00_launch_calc_c	起球参数 c
+0x10006820	func	pt00_launch_ball	起球：置 intD[210]=1 与初值
+0x100071F0	func	pt00_ent00_idx8_extra	类型 0 idx8 case 0xA 的附加处理
+0x10007360	func	pt00_ent01_idx6	类型 1 idx6
+0x100073F0	func	pt00_ent01_idx7	类型 1 idx7
+0x100079E0	func	pt00_ent01_idx8	类型 1 idx8
+0x10008EA0	func	pt00_ent02_idx6	类型 2 idx6
+0x10008EE0	func	pt00_ent02_idx7	类型 2 idx7
+0x10008E50	func	pt00_ent02_idx8	类型 2 idx8
+0x10009980	func	pt00_ent03_idx6	类型 3 idx6
+0x10009A00	func	pt00_ent03_idx7	类型 3 idx7
+0x10009F30	func	pt00_ent03_idx8	类型 3 idx8
+0x1000B130	func	pt00_ent04_idx7	类型 4 idx7
+0x1000B790	func	pt00_ent04_idx8	类型 4 idx8
+0x1000C5A0	func	pt00_ent05_idx6	类型 5 idx6
+0x1000C5F0	func	pt00_ent05_idx7	类型 5 idx7
+0x1000C780	func	pt00_ent05_idx8	类型 5 idx8
+0x1000CEC0	func	pt00_ent07_idx6	类型 7 idx6
+0x1000CF60	func	pt00_ent07_idx7	类型 7 idx7
+0x1000D760	func	pt00_ent07_idx8	类型 7 idx8
+0x1000E9B0	func	pt00_ent08_idx6	类型 8 idx6
+0x1000EA00	func	pt00_ent08_idx7	类型 8 idx7
+0x1000F050	func	pt00_ent08_idx8	类型 8 idx8
+0x100102A0	func	pt00_ent09_idx7	类型 9 idx7
+0x100101C0	func	pt00_ent09_idx8	类型 9 idx8
+0x10011EE0	func	pt00_ent10_idx6	类型 10 idx6
+0x10011EF0	func	pt00_ent10_idx7	类型 10 idx7
+0x10011EA0	func	pt00_ent10_idx8	类型 10 idx8
+0x10013510	func	pt00_ent11_idx6	类型 11 idx6
+0x10013770	func	pt00_ent11_idx7	类型 11 idx7
+0x100137F0	func	pt00_ent11_idx8	类型 11 idx8
+0x10013EE0	func	pt00_ent12_idx6	类型 12 idx6
+0x10013FE0	func	pt00_ent12_idx7	类型 12 idx7
+0x10014020	func	pt00_ent12_idx8	类型 12 idx8
+0x10012290	func	pt00_ent13_idx7	类型 13..21 idx7
+0x10012620	func	pt00_ent13_idx8	类型 13..21 idx8
+#
+# ---- 全局对象 / 状态块 ----
+0x100237C4	data	pt00_entities	22 个实体对象指针的数组
+0x10023D18	data	pt00_dll_ctx	func_load 存下的引擎上下文（+0x14 = intD 基址）
+0x10023838	data	pt00_game_state	func30/31 的大状态块（含 +1200 的主对象指针）
+0x10023828	data	pt00_state60_block	func60/idx6 用的状态块（+1280 = intD[320]）
+0x10023824	data	pt00_state50_block	func50 用的状态块
+0x10023CF8	data	pt00_batter_state	func900/901 的状态块
+0x10023D10	data	pt00_ballA_state	func910/911 的状态块
+0x1002381C	data	pt00_ballB_state	func920/921 的状态块
+0x100237B8	data	pt00_scene_counter	func930/931 的状态块
+#
+# ---- 动画表：ids = 动画序号表，frames = 帧增量表（运行期做前缀和），count = 条目数 ----
+0x1001F050	data	pt00_anim_ids_ent00_mB	类型 0 idx8 case 0xB
+0x1001F054	data	pt00_anim_frames_ent00_mB	
+0x1001F058	data	pt00_anim_count_ent00_mB	
+0x1001F05C	data	pt00_anim_ids_ent00_mC	类型 0 idx8 case 0xC
+0x1001F060	data	pt00_anim_frames_ent00_mC	
+0x1001F064	data	pt00_anim_count_ent00_mC	
+0x1001F068	data	pt00_anim_ids_ent00_launch2	类型 0 idx8 case 0xE
+0x1001F06C	data	pt00_anim_frames_ent00_launch2	
+0x1001F070	data	pt00_anim_count_ent00_launch2	
+0x1001F074	data	pt00_anim_ids_ent00_launch	类型 0 idx8 case 0xD（起球）
+0x1001F090	data	pt00_anim_frames_ent00_launch	
+0x1001F0AC	data	pt00_anim_count_ent00_launch	
+0x1001F0B0	data	pt00_anim_ids_ent00_m4	类型 0 idx8 case 4
+0x1001F0EC	data	pt00_anim_frames_ent00_m4	
+0x1001F128	data	pt00_anim_count_ent00_m4	
+0x1001F12C	data	pt00_anim_ids_ent00_m7	类型 0 idx8 case 7
+0x1001F148	data	pt00_anim_frames_ent00_m7	
+0x1001F164	data	pt00_anim_count_ent00_m7	
+0x1001F168	data	pt00_anim_ids_ent00_m8	类型 0 idx8 case 8
+0x1001F17C	data	pt00_anim_frames_ent00_m8	
+0x1001F190	data	pt00_anim_count_ent00_m8	
+0x1001F194	data	pt00_anim_ids_ent00_m9	类型 0 idx8 case 9
+0x1001F1A8	data	pt00_anim_frames_ent00_m9	
+0x1001F1BC	data	pt00_anim_count_ent00_m9	
+0x1001F1C0	data	pt00_anim_ids_ent00_mA	类型 0 idx8 case 0xA
+0x1001F1D4	data	pt00_anim_frames_ent00_mA	
+0x1001F1E8	data	pt00_anim_count_ent00_mA	
+#
+# ---- 运行期动画表（由 pt00_prefix_sum_table 填出来）----
+0x10023D2C	data	pt00_rt_frames_ent00_mB	
+0x10023D30	data	pt00_rt_frames_ent00_mC	
+0x10023D34	data	pt00_rt_frames_ent00_launch2	
+0x10023D38	data	pt00_rt_frames_ent00_launch	
+0x10023D40	data	pt00_launch_frame	起球发生在这一帧
+0x10023D54	data	pt00_rt_frames_ent00_m4	
+0x10023D90	data	pt00_rt_frames_ent00_m7	
+0x10023DAC	data	pt00_rt_frames_ent00_m8	
+0x10023DC0	data	pt00_rt_frames_ent00_m9	
+0x10023DD4	data	pt00_rt_frames_ent00_mA	
