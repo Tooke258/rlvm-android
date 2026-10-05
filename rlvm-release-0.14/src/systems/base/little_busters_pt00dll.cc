@@ -1128,6 +1128,16 @@ void LogLoopState(RLMachine& machine) {
   }
   std::cout << " [101]=" << GetD(machine, 101) << " [771]=" << GetD(machine, 771)
             << " [772]=" << GetD(machine, 772) << std::endl;
+  // SEEN7030 ep0 的总旗在 intF：`goto_unless (intF[1930] == 1)` ——
+  // 为 1 时 ep0 绕回开头重跑，非 1 才 return 把控制权交回剧情。
+  // 演示场结束与否就看这几个数。
+  auto GetF = [&machine](int i) {
+    return machine.GetIntValue(IntMemRef(libreallive::INTF_LOCATION, i));
+  };
+  std::cout << "           intF[172]=" << GetF(172) << " [1910]=" << GetF(1910)
+            << " [1920]=" << GetF(1920) << " [1921]=" << GetF(1921)
+            << " [1930]=" << GetF(1930) << " [1990]=" << GetF(1990)
+            << std::endl;
   std::cout << "           ent0=[";
   for (int f = 0; f < 8; ++f) {
     std::cout << (f ? "," : "") << Ent(machine, 0, f);
