@@ -1,0 +1,130 @@
+/* PT00 原生对照 / oracle（32 位控制台程序）。
+ *
+ * 用途：把原版 PT00.dll 直接跑起来，喂给它一串调用，记录每步对 intD 的改动。
+ * 之后拿这个轨迹当"真值"，与我们自己的实现（或用执行器跑的同一份 DLL）逐项对比。
+ *
+ * 为什么只需要这么点代码：PT00.dll 只导入 KERNEL32，和引擎的全部交互就是
+ *    reallive_dll_func_load(ctx, a2)     —— ctx 里偏移 +0x14 处放着 intD 基址
+ *    reallive_dll_func_call(func,a1..a4) —— 脚本通过 intD 读写数据
+ * 这两件事都已实测验证（见 docs/LB-MINIGAME-RETRO.md §4）。
+ *
+ * 用法：
+ *   oracle.exe <PT00.dll 路径> <调用脚本.txt> [intd 快照输出.bin]
+ *
+ * 调用脚本每行一次调用：  func a1 a2 a3 a4        （十进制或 0x 十六进制，后四个可省）
+ * 以 '#' 开头或空行忽略。
+ *
+ * 每次调用后打印一行：调用序号、func、参数、返回值、以及 intD 里发生变化的槽位。
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#error "This oracle is a 32-bit Windows program."
+#endif
+
+#define INTD_COUNT 2000
+#define INTF_COUNT 2000
+
+typedef int(__stdcall *func_load_t)(void *ctx, int a2);
+typedef int(__stdcall *func_free_t)(void);
+typedef int(__stdcall *func_init_t)(void);
+typedef int(__stdcall *func_call_t)(int func, int a1, int a2, int a3, int a4);
+
+/* 引擎上下文：DLL 只从 +0x14 取 intD 基址，其余留空即可。 */
+static struct {
+  void *slots[32];
+} g_ctx;
+
+static int g_intd[INTD_COUNT];
+static int g_intf[INTF_COUNT];
+
+static int parse_int(const char *s) {
+  if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) return (int)strtol(s + 2, NULL, 16);
+  return (int)strtol(s, NULL, 10);
+}
+
+int main(int argc, char **argv) {
+  if (argc < 3) {
+    fprintf(stderr, "usage: oracle <PT00.dll> <calls.txt> [intd_out.bin]\n");
+    return 2;
+  }
+
+  HMODULE mod = LoadLibraryA(argv[1]);
+  if (!mod) {
+    fprintf(stderr, "LoadLibrary failed: %lu\n", (unsigned long)GetLastError());
+    return 1;
+  }
+
+  func_load_t p_load = (func_load_t)GetProcAddress(mod, "reallive_dll_func_load");
+  func_free_t p_free = (func_free_t)GetProcAddress(mod, "reallive_dll_func_free");
+  func_init_t p_init = (func_init_t)GetProcAddress(mod, "reallive_dll_func_init");
+  func_call_t p_call = (func_call_t)GetProcAddress(mod, "reallive_dll_func_call");
+  if (!p_load || !p_call) {
+    fprintf(stderr, "missing exports (load=%p call=%p)\n", (void *)p_load,
+            (void *)p_call);
+    return 1;
+  }
+
+  memset(&g_ctx, 0, sizeof(g_ctx));
+  memset(g_intd, 0, sizeof(g_intd));
+  memset(g_intf, 0, sizeof(g_intf));
+  *(void **)((char *)&g_ctx + 0x14) = g_intd; /* 引擎上下文里的 intD 基址 */
+
+  int ret_load = p_load(&g_ctx, 0);
+  printf("# func_load -> %d   (intd=%p)\n", ret_load, (void *)g_intd);
+  if (p_init) printf("# func_init -> %d\n", p_init());
+
+  FILE *f = fopen(argv[2], "r");
+  if (!f) {
+    fprintf(stderr, "cannot open calls file: %s\n", argv[2]);
+    return 1;
+  }
+
+  char line[512];
+  int n = 0;
+  int prev[INTD_COUNT];
+  memcpy(prev, g_intd, sizeof(g_intd));
+  while (fgets(line, sizeof(line), f)) {
+    char *p = line;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p == '#' || *p == '\n' || *p == '\r' || *p == 0) continue;
+    int func = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0;
+    char tok[5][64];
+    int got = sscanf(p, "%63s %63s %63s %63s %63s", tok[0], tok[1], tok[2], tok[3],
+                     tok[4]);
+    if (got < 1) continue;
+    func = parse_int(tok[0]);
+    if (got > 1) a1 = parse_int(tok[1]);
+    if (got > 2) a2 = parse_int(tok[2]);
+    if (got > 3) a3 = parse_int(tok[3]);
+    if (got > 4) a4 = parse_int(tok[4]);
+
+    int ret = p_call(func, a1, a2, a3, a4);
+    ++n;
+    printf("%d func=%d(%d,%d,%d,%d) ret=%d", n, func, a1, a2, a3, a4, ret);
+    for (int i = 0; i < INTD_COUNT; ++i) {
+      if (g_intd[i] != prev[i]) printf(" intD[%d]=%d", i, g_intd[i]);
+    }
+    printf("\n");
+    memcpy(prev, g_intd, sizeof(g_intd));
+  }
+  fclose(f);
+
+  if (argc > 3) {
+    FILE *o = fopen(argv[3], "wb");
+    if (o) {
+      fwrite(g_intd, sizeof(int), INTD_COUNT, o);
+      fwrite(g_intf, sizeof(int), INTF_COUNT, o);
+      fclose(o);
+      printf("# intd+intf snapshot -> %s\n", argv[3]);
+    }
+  }
+
+  if (p_free) printf("# func_free -> %d\n", p_free());
+  return 0;
+}
