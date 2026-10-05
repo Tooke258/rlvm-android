@@ -40,6 +40,11 @@ void SetD(RLMachine& machine, int index, int value) {
                       value);
 }
 
+int GetG(RLMachine& machine, int index) {
+  return machine.GetIntValue(
+      libreallive::IntMemRef(libreallive::INTG_LOCATION, index));
+}
+
 }  // namespace
 
 namespace pt00emu {
@@ -117,6 +122,8 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       // farcall 参数 intL[2] 写入，所以这里必须看它们的真实值）。
       os << " | phase 70..95=";
       for (int i = 70; i <= 95; ++i) os << GetD(machine, i) << ",";
+      // A2 锚点要用 intG（原生侧同样可读）——小游戏相位标志就在这两个上。
+      os << " | intG[1900..1901]=" << GetG(machine, 1900) << "," << GetG(machine, 1901);
       std::cerr << os.str() << std::endl;
     }
   }
