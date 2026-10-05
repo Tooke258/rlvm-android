@@ -378,6 +378,24 @@ static int FindStr(DWORD pid, const char *needle, int max_hits) {
             putchar((c >= 32 && c < 127) ? (char)c : '.');
           }
           printf("\"\n");
+          {
+            /* 反查「宿主引擎里的图形对象结构」：对象里存着资源名，附近就是 x/y/可见性。
+             * 这里把命中处前后各 64 字节按 hex + int32 打出来。 */
+            SIZE_T b = (i >= 64) ? i - 64 : 0;
+            SIZE_T e = (i + nlen + 64 < got) ? (i + nlen + 64) : got;
+            printf("    hex:");
+            for (SIZE_T k = b; k < e; ++k) {
+              if ((k - b) % 16 == 0) printf("\n      %+04d:", (int)(k - i));
+              printf(" %02x", buf[k]);
+            }
+            printf("\n    i32:");
+            for (SIZE_T k = b; k + 4 <= e; k += 4) {
+              int32_t v;
+              memcpy(&v, buf + k, 4);
+              printf(" [%+d]=%d", (int)(k - i), (int)v);
+            }
+            printf("\n");
+          }
           ++hits;
         }
       }

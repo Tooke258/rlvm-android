@@ -1892,6 +1892,25 @@ jint CopyFrameToBuffer(JNIEnv* env, jobject /*thiz*/, jobject buffer) {
   if (capacity < static_cast<jlong>(bytes)) return -1;
 
   std::memcpy(address, g_frame_pixels.data(), bytes);
+  // 诊断：GL 线程每次取帧时统计一次内容哈希。用来区分
+  //   「引擎在产新画面、但没上屏（GL/present 的问题）」 vs
+  //   「引擎产出的画面本身就是同一张（合成/对象的问题）」。
+  {
+    static uint64_t n = 0;
+    ++n;
+    if (n % 60 == 0) {
+      uint64_t h = 1469598103934665603ull;
+      const uint32_t* p = g_frame_pixels.data();
+      const size_t step = 997;  // 抽样步长，避免每帧扫 48 万像素
+      for (size_t i = 0; i < g_frame_pixels.size(); i += step) {
+        h = (h ^ p[i]) * 1099511628211ull;
+      }
+      __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                          "frame content hash=%016llx serial=%u n=%llu",
+                          (unsigned long long)h, g_frame_serial,
+                          (unsigned long long)n);
+    }
+  }
   return static_cast<jint>(g_frame_serial);
 }
 
