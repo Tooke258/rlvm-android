@@ -39,22 +39,51 @@ idat.exe -A -L"$tmp\ida-sym.log" -S"<repo>\tools\ida_apply_symbols.py <repo>\too
 | `pt00_rt_frames_*` | 运行期表（`pt00_prefix_sum_table` 把帧增量表前缀和后的结果） |
 | `pt00_*_state` · `pt00_*_block` | 全局状态块 |
 
-## Layer 2 · 数据提取（声明式清单 + 生成器，已落地）
+## Layer 2 · 数据提取（`codeex tables`，已落地）
 
-**2026-10-05 已落地**：`tools/dump_tables.py` 升级为「声明式清单 + 生成器」，一条命令可复现提取：
+**2026-10-05 定稿**：以用户并行项目 CodeEX 的 `codeex tables` 作为 Layer 2 的生成器。
 
 ```powershell
-python tools/dump_tables.py --manifest tools/pt00_tables.json --dll <PT00.dll> --out generated/pt00_tables.inc
+codeex tables "<PT00.dll>" --manifest tools\pt00_tables.json --out generated\pt00_tables.inc
 ```
 
-* 清单 `tools/pt00_tables.json` = 单一事实来源：每张表 地址 / 条目数（固定值 或 `count_from` 全局 dword VA，生成时先读该地址的 uint32）/ C++ 数组名 / 备注。新增表只加一行。
-* 产物 `generated/pt00_tables.inc`：`const uint32_t pt00_anim_frames_*[]` + `constexpr size_t pt00_anim_count_*`，命名对齐 Layer 1 约定（帧增量表 / 条目数 / 序号表）。
-* 保留 `pt00_prefix_sum_table` 语义：`.data` 里是**帧增量**，运行期前缀和才是阈值（注释里显式标注）。
-* 生成器对每张表显式回报（名称 / 地址 / 条目数来源 / 实读条目数 / 字节数），任一步失败即报错并 exit≠0（不静默跳过）。
-* 旧交互模式（`--range` / 裸地址）保留。
+（本机 `codeex` 不在 PATH 上；最新构建在
+`C:\Users\tooke\.codeex-build\bin\CodeEX.Cli\Debug\net10.0\codeex.exe`。）
 
-与外部 CLI 的接口约定（若 CodeEX 的 CLI 想对齐）：输出「地址 → 整数数组」的文本/JSON，
-条目数从另一个全局地址读取，并保留 `pt00_prefix_sum_table` 的语义。
+* `tools/pt00_tables.json` = **单一事实来源**：每张表 地址 / 条目数（固定 `count` 或
+  `count_from` 全局 dword VA）/ C++ 数组名 / 备注。新增表只加一段。
+* `generated/pt00_tables.inc` = 生成物，头部带生成命令、`DO NOT EDIT`。
+* 保留 `pt00_prefix_sum_table` 语义：`.data` 里是**帧增量**，运行期前缀和之后才是帧阈值；
+  `.inc` 保持原始增量，前缀和由实现侧做。
+* 每张表显式回报（名称 / 地址 / 条目数来源 / 实读条目数 / 字节数），任一步失败即报错 exit≠0。
+
+### 已提取：类型 0 的 9 组动画表（18 张）
+
+| 动画集合 | ids | frames | count |
+| --- | --- | --- | --- |
+| `mB` | 0x1001F050 | 0x1001F054 | 0x1001F058 = 1 |
+| `mC` | 0x1001F05C | 0x1001F060 | 0x1001F064 = 1 |
+| `launch2` | 0x1001F068 | 0x1001F06C | 0x1001F070 = 1 |
+| `launch` | 0x1001F074 | 0x1001F090 | 0x1001F0AC = 7 |
+| `m4` | 0x1001F0B0 | 0x1001F0EC | 0x1001F128 = 15 |
+| `m7` | 0x1001F12C | 0x1001F148 | 0x1001F164 = 7 |
+| `m8` | 0x1001F168 | 0x1001F17C | 0x1001F190 = 5 |
+| `m9` | 0x1001F194 | 0x1001F1A8 | 0x1001F1BC = 5 |
+| `mA` | 0x1001F1C0 | 0x1001F1D4 | 0x1001F1E8 = 5 |
+
+**布局自校验**：九组都严格满足 `[ids(count 项)] [frames(count 项)] [count 全局]` 首尾相接，
+例如 `launch` 的 ids 占 `0x1001F074..0x1001F08F`（28B）、frames 占 `0x1001F090..0x1001F0AB`（28B）、
+count 全局在 `0x1001F0AC` —— 说明地址与条目数都取对了。
+
+> 注意别把 `0x1001F040` 当成表头：`0x1001F040` 起的头几项是 `0x1001986B`（指向 `.text` 的指针）等
+> 别处的数据，只有从上面这些**具体地址**起才是表。
+
+### 与 `tools/dump_tables.py` 的关系
+
+`dump_tables.py` 在 `b27b80d` 里也加了等价的 `--manifest` 模式（同一套 schema，两者可以喂同一份清单），
+产物只差条目数常量的命名（`pt00_anim_count_*` vs `<name>Count`）。**建议以 `codeex tables` 为唯一生成器**，
+`dump_tables.py` 退回「按 VA 抽查几个 dword / 小范围」的检查用途（`--range`、裸地址），
+避免同一份数据有两套格式。
 
 ## Layer 3 · Oracle 与差分回归（待做）
 
