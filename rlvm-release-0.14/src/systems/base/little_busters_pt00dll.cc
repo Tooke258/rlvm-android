@@ -25,6 +25,7 @@
 // -----------------------------------------------------------------------
 
 #include "systems/base/little_busters_pt00dll.h"
+#include "pt00_emu_bridge.h"  // 平台层：PT00 兼容层（原版 DLL 执行器）
 
 #include <cmath>
 #include <cstdlib>
@@ -1174,6 +1175,10 @@ int LittleBustersPT00DLL::CallDLL(RLMachine& machine,
                                   int arg2,
                                   int arg3,
                                   int arg4) {
+  // 平台层兼容层：能用**原版 PT00.dll** 就交给自研 x86-32 执行器
+  // （app/src/main/cpp/pt00_emu_bridge.cpp，验收见 docs/PT00-EMU-HANDOFF.md）。
+  // 拿不到 DLL 时返回 false，下面的行为级重写继续兜底。
+  if (pt00emu::CallDLL(machine, func, arg1, arg2, arg3, arg4)) return 1;
   switch (func) {
     case 10:
       LogCall(func, arg1, arg2, arg3, arg4, nullptr);
