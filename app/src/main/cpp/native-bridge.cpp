@@ -792,8 +792,14 @@ class LbInputPollOp : public RLOp_SpecialCase {
  public:
   explicit LbInputPollOp(bool mouse) : mouse_(mouse) {}
 
-  void ParseParameters(const std::vector<std::string>&,
-                       libreallive::ExpressionPiecesVector&) override {}
+  // 必须真的把第一个参数解析成**引用**（脚本写的是 intD[101]）。
+  // 空实现会让 params 为空 —— 执行期的 IntReference_T::getData 拿不到东西，
+  // `*ref = v` 就写到别处。真机表现正是「op 每帧都在跑、intD[101] 却恒为 0」。
+  void ParseParameters(const std::vector<std::string>& input,
+                       libreallive::ExpressionPiecesVector& output) override {
+    unsigned int pos = 0;
+    IntReference_T::ParseParameters(pos, input, output);
+  }
 
   void operator()(RLMachine& machine,
                   const libreallive::CommandElement& f) override {
