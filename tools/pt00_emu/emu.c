@@ -85,6 +85,43 @@ static inline int in_guest(uint32_t a, uint32_t n) {
 }
 static inline uint8_t *gp(uint32_t a) { return g_mem + (a - GUEST_BASE); }
 
+/* 来宾越界访问的兜底：x87 的存取以前是裸指针，DLL 一旦算出野指针就直接 SIGSEGV
+ * （真机崩在 pt00_emu_call 里，fault addr 是宿主地址 = g_mem + 巨大偏移）。
+ * 这里统一记一笔并返回 NULL，由调用点退化成 0 —— 不崩，才能看出「是哪个 eip、
+ * 访问哪个地址」。
+ */
+static int g_fault_count = 0;
+static uint32_t rd32(uint32_t a);   /* 下面定义；guest_fault 里要 dump ctx */
+/* 最近执行过的来宾 eip（环形）：越界访问时打出来，就能还原「DLL 走到哪一步崩的」 */
+#define EIP_RING 64
+static uint32_t g_eip_ring[EIP_RING];
+static int g_eip_ring_pos = 0;
+static void guest_fault(uint32_t a, const char *what) {
+  ++g_fault_count;
+  if (g_fault_count > 64) return;
+  fprintf(stderr, "[pt00] GUEST FAULT %s addr=%08x eip=%08x esp=%08x\n", what, a,
+          cpu.eip, cpu.esp);
+  if (g_fault_count == 1) {
+    /* 第一次越界时把现场摊开：最近 32 条 eip + ctx 块 */
+    fprintf(stderr, "[pt00] FAULT eip ring (old->new):");
+    for (int i = 0; i < 32; ++i) {
+      int p = (g_eip_ring_pos - 32 + i + EIP_RING * 2) % EIP_RING;
+      fprintf(stderr, " %08x", g_eip_ring[p]);
+    }
+    fprintf(stderr, "\n[pt00] FAULT ctx block:");
+    for (int i = 0; i < 0x40; i += 4)
+      fprintf(stderr, " +%02x=%08x", i, rd32(CTX_BASE + (uint32_t)i));
+    fprintf(stderr, "\n");
+  }
+}
+static inline uint8_t *gpc(uint32_t a, unsigned n, const char *what) {
+  if (!in_guest(a, n)) {
+    guest_fault(a, what);
+    return NULL;
+  }
+  return gp(a);
+}
+
 static uint8_t rd8(uint32_t a) { return in_guest(a, 1) ? *gp(a) : 0; }
 static uint32_t rd32(uint32_t a) {
   if (g_trace_ctx && g_ctx_log_left > 0 &&
@@ -426,9 +463,22 @@ static int x87(uint8_t op) {
       }
     }
   } else if (op == 0xd9) {
-    if (m.mod != 3 && reg == 0) { float v = *(float *)gp(m.addr); fp_push(v); return 0; }
-    if (m.mod != 3 && reg == 2) { *(float *)gp(m.addr) = (float)*XP(0); return 0; }
-    if (m.mod != 3 && reg == 3) { *(float *)gp(m.addr) = (float)fp_pop(); return 0; }
+    /* 一律走 gpc()：越界只记一笔，不再把整台引擎带走 */
+    if (m.mod != 3 && reg == 0) {
+      uint8_t *p = gpc(m.addr, 4, "fld m32");
+      fp_push(p ? *(float *)p : 0.0f);
+      return 0;
+    }
+    if (m.mod != 3 && reg == 2) {
+      uint8_t *p = gpc(m.addr, 4, "fst m32");
+      if (p) *(float *)p = (float)*XP(0);
+      return 0;
+    }
+    if (m.mod != 3 && reg == 3) {
+      uint8_t *p = gpc(m.addr, 4, "fstp m32");
+      if (p) *(float *)p = (float)fp_pop();
+      return 0;
+    }
     if (m.mod != 3 && reg == 5) { g_fpu_cw = rd16(m.addr); return 0; } /* fldcw */
     if (m.mod != 3 && reg == 7) { wr16(m.addr, g_fpu_cw); return 0; }  /* fnstcw */
     if (m.mod == 3) {
@@ -462,7 +512,11 @@ static int x87(uint8_t op) {
       }
     }
   } else if (op == 0xdb && m.mod != 3) { /* fild m32 / fistp m32 */
-    if (reg == 0) { fp_push((double)*(int32_t *)gp(m.addr)); return 0; }
+    if (reg == 0) {
+      uint8_t *p = gpc(m.addr, 4, "fild m32");
+      fp_push(p ? (double)*(int32_t *)p : 0.0);
+      return 0;
+    }
     if (reg == 3) { uint32_t v = (uint32_t)fp_to_int(*XP(0)); fp_pop(); wr32(m.addr, v); return 0; }
   } else if (op == 0xda && m.mod == 3 && m.raw == 0xe9) { /* fucompp */
     fp_cmp(*XP(0), *XP(1));
@@ -474,7 +528,8 @@ static int x87(uint8_t op) {
     return 0;
   } else if (op == 0xdc) { /* m64real */
     if (m.mod != 3) {
-      double v = *(double *)gp(m.addr);
+      uint8_t *pv = gpc(m.addr, 8, "m64real");
+      double v = pv ? *(double *)pv : 0.0;
       switch (reg) {
         case 0: *XP(0) += v; return 0;
         case 1: *XP(0) *= v; return 0;
@@ -500,9 +555,21 @@ static int x87(uint8_t op) {
       }
     }
   } else if (op == 0xdd && m.mod != 3) { /* fld/fst/fstp m64 */
-    if (reg == 0) { fp_push(*(double *)gp(m.addr)); return 0; }
-    if (reg == 2) { *(double *)gp(m.addr) = *XP(0); return 0; }
-    if (reg == 3) { *(double *)gp(m.addr) = fp_pop(); return 0; }
+    if (reg == 0) {
+      uint8_t *p = gpc(m.addr, 8, "fld m64");
+      fp_push(p ? *(double *)p : 0.0);
+      return 0;
+    }
+    if (reg == 2) {
+      uint8_t *p = gpc(m.addr, 8, "fst m64");
+      if (p) *(double *)p = *XP(0);
+      return 0;
+    }
+    if (reg == 3) {
+      uint8_t *p = gpc(m.addr, 8, "fstp m64");
+      if (p) *(double *)p = fp_pop();
+      return 0;
+    }
   } else if (op == 0xdd) { /* dd 寄存器形式：ffree / fst st(i) / fstp st(i) / fucom(p) */
     if (m.raw >= 0xc0 && m.raw <= 0xc7) return 0;                                   /* ffree st(i) */
     if (m.raw >= 0xd0 && m.raw <= 0xd7) { *XP(m.raw - 0xd0) = *XP(0); return 0; }   /* fst st(i) */
@@ -534,7 +601,11 @@ static int x87(uint8_t op) {
       cpu.eax = (cpu.eax & 0xffff0000u) | (uint32_t)g_fpu_sw;
       return 0;
     }
-    if (m.mod != 3 && reg == 5) { fp_push((double)*(int16_t *)gp(m.addr)); return 0; } /* fild m16 */
+    if (m.mod != 3 && reg == 5) { /* fild m16 */
+      uint8_t *p = gpc(m.addr, 2, "fild m16");
+      fp_push(p ? (double)*(int16_t *)p : 0.0);
+      return 0;
+    }
     /* DF /7 = fistpll：**8 字节** int64（不是 int16）。写错的话，紧接着的
      * `movl -0x8(%ebp),%edx` 会读到旧垃圾，整数结果就变成 0xEFDFxxxx 那种值。 */
     if (m.mod != 3 && reg == 7) {
@@ -698,6 +769,8 @@ static int stub_call(int idx) {
 }
 
 static int step(void) {
+  g_eip_ring[g_eip_ring_pos] = cpu.eip;
+  g_eip_ring_pos = (g_eip_ring_pos + 1) % EIP_RING;
   if (++g_steps > g_max_steps) {
     fprintf(stderr, "[emu] 步数上限 %d 用尽\n", g_max_steps);
     hist_dump();

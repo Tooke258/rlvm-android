@@ -404,3 +404,37 @@ emu.exe    <dll> <calls> --dump e.bin --dump-image emu_img.bin --seed seed.bin
 
 > 读中文文件用 `cmd /c "chcp 65001 >nul & type <文件>"`；PowerShell 管道会乱码。
 > Gradle 构建、git 写操作、adb 都需要提权（沙箱把 `~/.gradle` 与 `.git` 设为只读）。
+
+## 9. 2026-10-06 续：真机小游戏跑起来后，执行器被 DLL 的野指针带崩
+
+### 9.1 现象
+
+小游戏修复了「跑一帧就停」的两个实现错误（`Sel 30/32` 非阻塞查询、`Sys151/152` 输入轮询，
+见 `docs/LB-MINIGAME-NATIVE-ANCHORS.md` §7）之后，真机**角色渲染出来了**；
+接着进入「运镜」，然后 **SIGSEGV 闪退**。tombstone：
+
+```
+signal 11 (SIGSEGV), fault addr 0x6f8c7d4004         ← 宿主堆地址
+#02 pt00_emu_call+100
+#03 pt00emu::CallDLL(...)   #04 LittleBustersPT00DLL::CallDLL(...)
+```
+
+### 9.2 原因
+
+`fault addr` 落在宿主堆区间（`0x6f…`）而栈在 `pt00_emu_call` 里面 = **执行器自己访问了宿主内存**。
+查代码：x87 的内存操作数走的是**裸指针** `gp(m.addr)`（没有 `in_guest()` 检查），
+一旦 DLL 算出越界/野的来宾地址，`g_mem + (addr - GUEST_BASE)` 就飞出映射区 → 直接段错误。
+（`rd32/wr32/gp` 这些常规通路本来有检查，只有 x87 那几处漏了。）
+
+### 9.3 修复（不改语义，只加兜底 + 取证）
+
+* 新增 `gpc(addr, n, what)`：越界就记一笔 `[pt00] GUEST FAULT <what> addr=… eip=… esp=…`
+  并返回 NULL，调用点退化成 0 / 丢弃写入；`fld/fst/fstp m32|m64`、`fild m16|m32`、`m64real` 全部改走它。
+* 首次越界时额外打印**最近 32 条来宾 eip**（eip 环形缓冲，step() 里维护）和 **ctx 块 0x40 字节**
+  —— 用来还原「DLL 走到哪一步、想要什么指针」。
+* 复验：越界兜底**不影响逐位一致性**（`calls_long` 仍 280/280）。
+
+### 9.4 下一步
+
+拿真机日志里的 `GUEST FAULT` 行（addr + eip + eip 环）去反汇编 DLL 对应位置，
+看它是在读哪个结构体字段（很可能是 ctx 里我们没填的某个指针，或某个我们没实现的引擎回调）。
