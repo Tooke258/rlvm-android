@@ -315,7 +315,16 @@ int GanGraphicsObjectData::GetRenderingAlpha(const GraphicsObject& go,
 
 void GanGraphicsObjectData::ObjectInfo(std::ostream& tree) {
   tree << "  GAN file: " << gan_filename_ << " (Using image: " << img_filename_
-       << ")" << endl;
+       << ")";
+  // 诊断：Gan 对象「存在且 vis=1 却不出现在渲染列表」时，问题一定在
+  //   CurrentSurface()：它要求 current_set_/current_frame_ 都已设定、且该帧 pattern != -1。
+  // 这里把这三项直接打出来（sets=载入的动画集合数，cur=当前集合/帧，patt0=集合 0 首帧的图案号）。
+  tree << " sets=" << animation_sets.size() << " cur=" << current_set_ << "/"
+       << current_frame_;
+  size_t n0 = animation_sets.empty() ? 0 : animation_sets[0].size();
+  tree << " set0frames=" << n0;
+  if (n0) tree << " patt0=" << animation_sets[0][0].pattern;
+  tree << endl;
 }
 
 void GanGraphicsObjectData::PlaySet(int set) {
