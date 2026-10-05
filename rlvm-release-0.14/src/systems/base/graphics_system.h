@@ -269,7 +269,19 @@ class GraphicsSystem : public EventListener {
   const std::string& window_subtitle() const { return subtitle_; }
   // Android 移植（D-033）：副标题的 **CP932 归一化副本**，供存档标题使用。
   // 对话框里的副标题要按当前场景编码显示（保持原样），而存档要的是 CP932。
-  const std::string& window_subtitle_cp932() const { return subtitle_cp932_; }
+  // 读取时兜底：归一化副本为空就用**当前副标题**本身。
+  //
+  // 为什么在这里兜而不在写入时兜（真机踩过两次）：
+  //   * 小游戏/菜单这类场景是原版 CP932，从不走 GBK 那条转换路，缓存可能自始至终
+  //     为空 —— 此时保存那一刻的 subtitle_ 本来就是 CP932，直接拿来用就是对的
+  //     （真机日志：`save-title: enc=0 raw=82548c8e8250825393fa288c8e29` 就是日期）；
+  //   * 若改成「写入时用 CP932 场景兜底填回缓存」，菜单场景会**抢先**把缓存占成
+  //     菜单自己的标题，之后真正的日期反而因为「缓存已非空」被跳过（LOAD 里显示成
+  //     菜单的片假名副标题）。读取时兜底没有这个排序问题：缓存保持为空，
+  //     每次取到的都是当下的值。
+  const std::string& window_subtitle_cp932() const {
+    return subtitle_cp932_.empty() ? subtitle_ : subtitle_cp932_;
+  }
 
   // Wether we should display the subtitle.
   bool should_display_subtitle() const { return display_subtitle_; }
