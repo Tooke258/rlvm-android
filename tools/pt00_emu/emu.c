@@ -578,8 +578,11 @@ static int step(void) {
     return 0;
   }
   if (g_trace && g_trace_left-- > 0) {
-    fprintf(stderr, "  %08x eax=%08x ecx=%08x esp=%08x ebp=%08x\n", cpu.eip,
-            cpu.eax, cpu.ecx, cpu.esp, cpu.ebp);
+    fprintf(stderr,
+            "  %08x eax=%08x ecx=%08x edx=%08x esp=%08x ebp=%08x"
+            " st0=%.6g st1=%.6g st2=%.6g sw=%04x\n",
+            cpu.eip, cpu.eax, cpu.ecx, cpu.edx, cpu.esp, cpu.ebp, *XP(0), *XP(1),
+            *XP(2), g_fpu_sw);
   }
   uint32_t start = cpu.eip;
   hist_add(start);
@@ -1047,6 +1050,13 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--trace") == 0 && n == 0) {
           g_trace = 1;
           g_trace_left = 400;
+          break;
+        }
+        if (strcmp(argv[i], "--trace-func") == 0 && i + 1 < argc &&
+            v[0] == atoi(argv[i + 1])) {
+          g_trace = 1;
+          g_trace_left = 3000;
+          fprintf(stderr, "# trace func=%d\n", v[0]);
           break;
         }
       }
