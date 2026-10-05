@@ -831,8 +831,27 @@ void AndroidSystem::Run(RLMachine& machine) {
   //
   // 设备侧诊断文件写 dirty_gate=0 可以退回旧行为做对比。
   if (!IsDirtyGateEnabled() || graphics_->screen_needs_refresh()) {
+    // 诊断：小游戏里「脚本 ~16 帧/秒、画面却只有 ~1 帧/秒」，先量清这 1 秒花在哪。
+    const auto t0 = std::chrono::steady_clock::now();
     graphics_->Refresh(nullptr);
     graphics_->OnScreenRefreshed();  // 上游在 Refresh 之后清脏标记
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    static int n = 0;
+    static long long acc = 0;
+    static int slow = 0;
+    ++n;
+    acc += us;
+    if (us > 50000) ++slow;   // 超过 50ms 记一次「慢帧」
+    if (n % 120 == 0) {
+      __android_log_print(ANDROID_LOG_INFO, "rlvm-graphics",
+                          "refresh: n=%d avg=%.1fms slow(>50ms)=%d last=%.1fms",
+                          n, (double)acc / n / 1000.0, slow, (double)us / 1000.0);
+      n = 0;
+      acc = 0;
+      slow = 0;
+    }
   }
 }
 
