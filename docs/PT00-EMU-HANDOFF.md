@@ -470,3 +470,138 @@ tombstone 的 `#00` 落在 `step()`，反汇编 + `addr2line` 指向报错块；
 
 > 推测：假堆这个 bug 很可能同时解释了「左窗口人物错位」—— 角色坐标都是 DLL 算出来写进
 > intD 的，DLL 内存被踩坏时算出来的位置自然也是错的。
+
+## 10. 2026-10-06 里程碑：小游戏全链路打通（4 个宿主 bug + 1 个上游空指针）
+
+**结果**：LBEX 棒球小游戏不再卡 `time`；人物/球正常渲染；第一场（20 球，脚本驱动）
+能跑完 → 结算 → 后面的剧情文本正常出现，并能一路点下去。用户真机确认：
+**「现在游戏能正常推进了」**。
+
+这一轮的每个结论都是**先取证再修**（工具见 §10.6），以下按发现顺序。
+
+### 10.1 入口是 stdcall，参数被清两次 → `esp` 每次 CallDLL 漂 +20 字节
+
+* `PT00.dll` 入口 `reallive_dll_func_call`（`0x10001680`）每条出口都是 `retl $0x14`
+  —— **被调方自己清 5 个参数**；执行器返回后又做了一次 `cpu.esp += argc*4`。
+* 真机实测：8963 次调用后 `esp` 从 `0x10200000` 漂到 `0x1022bc40`
+  （20 × 8963 ≈ 179260 = 0x2BC3C ✓）。桩命中日志显示被调用的导入
+  （GetLocalTime / GetSystemTime / GetLastError / TlsGetValue / HeapAlloc /
+  TlsSetValue / GetCurrentThreadId / SetLastError）**都在 argc 表里**，
+  所以不存在反向漂移，算术闭合。
+* 后果：DLL 的栈窗口每个 CallDLL 平移 20 字节 —— 「同一个栈槽里躺着上一帧别的字段」
+  的经典条件。
+* 修：`emu_run()` / `RUN_EXPORT` 记住调用前 `esp`，返回后复位（不平衡时打一行日志）。
+  复验 `calls_long` = **280/280 逐位一致**。
+
+### 10.2 `cmp r32, r/m32`（opcode 0x3B）寄存器形式截断成低 16 位 → 死循环
+
+* 现象：固定帧、每次同一处，`[emu] 步数上限 200000000 用尽`，eip 环 =
+  `10004932..10004942` —— DLL 里 vector 扩容的前缀拷贝
+  `for (p = begin; p != pos; p += 4) *dst++ = *p;`（8 条指令一圈）。
+* 取证：新增**观察点** `pt00_watch=10004932`：每次 CallDLL 首次命中该 eip 就记录
+  寄存器 + `[edi-0x10 .. edi+0x1c]`（vector 的三个指针在 `edi+4/+8/+0xc`），
+  步数上限时整环转储。拿到入口现场后：
+  `eax(begin)=0x11406E60`、`ebx(pos)=0x11406E64` **只差 4 字节**，而中止时 `eax`
+  已经涨了 99,999,792（= 4 × 24,999,948 次迭代）
+  ⇒ **不是 begin/end 不自洽，是"比较失败"**。
+  （旧结论里"野指针 / 内存被踩"是误读：`eax=0x17364D70` 只是循环里
+  `add $4,%eax` 累积出来的假象。）
+* 根因：`case 0x3b` 写成 `m.is_reg ? (*reg32(m.addr) & 0xffffu) : ...` —— 寄存器形式被
+  **无条件截断 16 位**。于是 `0x11406E64 - 0x00006E64 = 0x11400000 ≠ 0`，`jne` 永远成立。
+  这也解释了为什么其它 9000 次调用没事：编译器绝大多数比较是 `cmp reg, [mem]`
+  （`m.is_reg == 0`，走正确分支），只有"两个指针都在寄存器里"的比较才踩坑。
+* 修：只有 `opsize16` 才截断；并加了指令级回归自测（见 §10.6）。
+
+### 10.3 x87 `DA` 组（m32int 整数算术）整族未实现 → 每次调用被中途放弃
+
+* 修完 10.2 后小游戏能画但逻辑不推进；日志里 **221 次**
+  `[emu] 未实现指令 x87 @ 100033ed`（字节 `da 46 4c` = `fiadd dword [esi+0x4c]`）。
+  UNIMPL 会让**整个 CallDLL 中途放弃**（不逐层 ret 直接返回），于是每帧只有一半逻辑落地。
+* 修：补齐 `DA /0../7`（FIADD / FIMUL / FICOM / FICOMP / FISUB / FISUBR / FIDIV /
+  FIDIVR m32int）；同时修正 `DE` 组内存形式（原来 `reg == 0` 只做 `fp_pop()`，
+  会顺手毁掉整个 x87 栈）；补 `FIST m32`。
+* 自测：`4 + 4` 经 `fild / fiadd / fistp` 得 8 → PASS。
+
+### 10.4 汉化版 GAMEEXE.INI 缺窗口属性 → `TextWindow` 构造抛异常 → `Msg pause` 永不完成
+
+* 现象：第一场结束后回到 `SEEN515` 第一句对话，**画面冻结、音乐正常、进程 187% CPU**，
+  stdout 以 **55Hz** 刷
+  `(SEEN515)(Line 2163): Unknown Gameexe key 'WINDOW.032.ATTR_MOD'`。
+* 反汇编定位：`SEEN515 line 2163` = `koePlay(...)` + 读取标记 + 文本 +
+  **`op<0:003:00017>`**，而 `Msg` 模块（modtype 0 / module 3）的 opcode 17 = **`pause`**
+  —— 阻塞 op。每帧重试说明当前指令一直没完成。
+* 根因：异常来自 `TextWindow` 的**构造函数**（`text_window.cc:119` 的
+  `window("ATTR_MOD")`）。汉化版数据只给"常规"窗口（000..010、012..014）写全属性；
+  小游戏用的 **020/021/031/032** 缺
+  `ATTR_MOD / ATTR / KEYCUR_MOD / MOJI_REP / MOJI_POS / POS`（032 连 `NAME_*` 整套都没有）。
+  原生 RealLive 对缺失键取默认值（RLVM 自己的代码里 `window_attr_mod_ == 0` 那一支
+  就是"改用全局 `#WINDOW_ATTR`"），RLVM 却抛 `Unknown Gameexe key` → 窗口构造不出来 →
+  永不进缓存 → 每帧重试每帧抛。
+* 修（**平台层，不动 `libreallive`**，见 D-037）：构造完 Gameexe 后对"数据里真实存在
+  的窗口"补齐缺失键，值取**窗口 000 的同名值**，注入走 `Gameexe::parseLine`
+  （与文件解析同一条路径，多值/带引号都能正确落地）。**只补缺失的键**，绝不覆盖已有值。
+* 教训：第一版把"本来就有默认值的键"也一起照抄（`WAKU_SETNO` 等），等于改掉原有行为、
+  把流程带偏（见 §10.5）。正确范围是：RLVM 读取时**没有默认值**的那些键。
+
+### 10.5 上游 RLVM：`TextWindow::Render` 先解引用后判空 → 名牌空指针崩溃
+
+* 修完 10.4 后流程往下走了，但**改成崩**（logcat: `Zygote: Process N exited cleanly (132)`）。
+* 取证踩的两个坑（都已修）：
+  1. 执行器原来的 SIGSEGV 兜底处理器直接 `_exit(132)`，**把 tombstone 一起吞掉** ——
+     真机只留下"正常退出"。现在改为**链回原处理器**（bionic/ART 那个才会去叫 debuggerd）。
+  2. 处理函数运行期间本信号被**自动屏蔽**，`raise(sig)` 只会排队、然后走到兜底的
+     `_exit` —— 必须 `sigprocmask(SIG_UNBLOCK)` 之后再 raise。
+* 另外 API 31 **没有 `backtrace()`**（API 33 才引入），改用 `_Unwind_Backtrace` +
+  `dladdr` 把地址换算成**模块内偏移**写进日志（`[pt00] HOST BT: ...`），
+  本机拿未 strip 的 `librlvm.so` 就能符号化。
+* tombstone 结果（决定性）：
+  ```text
+  #00 TextWindow::GetNameboxWakuRect() const+76
+  #01 TextWindow::Render(...)+616
+  #02 TextSystem::Render(...)     #03 GraphicsSystem::DrawFrame(...)
+  ```
+  `text_window.cc` 里 **341 / 449 行先解引用 `namebox_waku_`，443 行才判空**；
+  而 `namebox_waku_` 只在 `NAME_MOD == 1 && NAME_WAKU_SETNO 存在` 时创建 →
+  窗口 032 没有任何 `NAME_*` → 一旦这行文本带说话人名（`GetNameSurface()` 非空）
+  就空指针。
+* 修：把 `NAME_MOD / NAME_WAKU_SETNO / NAME_MOJI_REP / NAME_MOJI_POS / NAME_POS /
+  NAME_MOJI_SIZE` 也纳入 §10.4 的补键范围（值照抄窗口 000）→ 名牌被正常创建。
+* 备选方案：给上游那三行加判空（属改 RLVM 核心渲染路径，按 AGENTS.md 需用户点头），
+  **本轮没做**。
+
+### 10.6 本轮新增/固化的取证工具
+
+| 工具 | 用途 |
+| --- | --- |
+| diag 键 `pt00_watch=<hex>` | 观察点：每次 CallDLL 首次命中该 eip 记录寄存器 + `[edi-0x10..+0x1c]`；步数上限时整环转储 |
+| `[emu] INTD 读环` | 512 条 intD 读取（含 eip）；步数上限时整环转储 → 与 PC 侧 `--full` 逐项比对 |
+| `[emu] mem edi-0x30 / esp / esi` | 步数上限时的内存窗口转储 |
+| `[emu] 调用前后 esp 不平衡` | 栈平衡回归告警（§10.1） |
+| `emu.exe --selftest` | 指令级回归：`cmp r32,r/m32` 大值寄存器比较、x87 `fiadd m32int` |
+| `emu.exe --watch <hex> / --max-steps N` | CLI 侧复现观察点与步数上限 |
+| 崩溃处理器（`emu_fault_handler`） | 宿主回溯（unwinder + 模块内偏移）+ **链回系统处理器**保留 tombstone |
+| `tools/rlvm-diag.pt00-watch.txt` | 上述开关的现成 diag 文件（`lb_minigame=1` + `pt00_trace_ctx=1` + `pt00_watch=10004932`） |
+
+### 10.7 复验配方
+
+```powershell
+cmd /c "tools\pt00_emu\build.bat"      # 执行器（本机）
+
+python tools/pt00_oracle/compare.py "G:\Little Busters! EX\Little Busters! EX\PT00.dll" `
+  build/pt00-fixtures/calls_long.txt --seed build/pt00-fixtures/seed.bin   # → 280/280 逐位一致
+
+tools\pt00_emu\emu.exe "G:\Little Busters! EX\Little Busters! EX\PT00.dll" --selftest
+# → selftest cmp r32,r/m32(reg,reg) 大值相等：PASS / selftest x87 fiadd m32int：PASS
+```
+
+### 10.8 仍未解决（下一步清单）
+
+1. 小游戏结算段有未实现 opcode（引擎层 `Undefined`，被跳过）：
+   `op<1:4:461, 1>` 与 `op<1:12:1103, 1>(10,100,10,100,5,5,1,1,1,1,0)`；
+2. `[lb_child_obj_1058]: Tried to call empty RLOp_SpecialCase::Dispatch()`
+   （`SEEN7340` line 110/111/145/146）—— 平台层 LB 扩展对象 1058 那四条 op 还没实现；
+3. 小游戏表现层还需逐项对齐（多回合、打者动作、结算画面……），用户反馈"问题还不少"；
+4. 性能：小游戏脚本约 16fps（执行器每帧约 48 次调用）；
+5. 存档标题乱码（测试用，暂缓）、影片音画不同步 —— 见 `dev-log/OPEN-ISSUES.jsonl`。
+
+> 归档时间：2026-10-06（用户确认里程碑）。未提交改动见 `git status`。

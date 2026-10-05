@@ -1,0 +1,13 @@
+# 取证：小游戏 DLL 死循环的「入口现场」
+#
+# lb_minigame=1     : 不跳过小游戏 + 打开 [pt00] 调用日志
+# pt00_trace_ctx=1  : 执行器记录 intD 的读数（进环形缓冲，步数上限时整环转储；
+#                     环里剩的就是卡住那次调用读过的槽位，可与 PC 侧 --full 对比）
+# pt00_watch=<hex>  : 观察点。每次 CallDLL 第一次命中该 eip 时，把寄存器 +
+#                     [edi-0x10 .. edi+0x1c] 记进环形缓冲（步数上限时转储）。
+#                     死循环里的 add 会把 eax 推歪，只有入口现场能拿回 begin/end。
+#
+# 卡住的是 vector 扩容的 4 字节拷贝循环（0x10004932），edi = vector 本体。
+lb_minigame=1
+pt00_trace_ctx=1
+pt00_watch=10004932

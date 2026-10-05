@@ -24,7 +24,9 @@
 #include <math.h> /* 缺失时 sqrt/sin/cos/pow/atan2/... 会被隐式声明成 int，浮点路径全错 */
 #if !defined(_WIN32)
 #include <signal.h>   /* 崩溃自证处理器（Android 宿主） */
+#include <unwind.h>   /* _Unwind_Backtrace：API 31 上还没有 backtrace() */
 #include <unistd.h>   /* write() */
+#include <dlfcn.h>    /* dladdr：取本模块加载基址，把崩溃地址变成"模块内偏移" */
 #endif
 
 #define GUEST_SIZE (64u * 1024u * 1024u) /* 平坦 32 位空间的一部分，够这个 DLL 用 */
@@ -127,6 +129,27 @@ static int g_fault_count = 0;
 /* 上一次 pt00_emu_call 是否撞到步数上限（= DLL 在内层死循环）。桥那边用它来触发
  * 「最近 N 次 CallDLL」的转储，从而知道是哪个 func 把 DLL 内部状态搞坏的。 */
 static int g_last_hit_step_limit = 0;
+
+/* 诊断：监视某个 eip「每次 CallDLL 首次命中」的寄存器 + 结构体现场。
+ * 死循环里的 `add $4,%eax` 会把 eax 推到离谱的值（200M 步约 +100MB），事后看
+ * 崩溃寄存器根本反推不出循环入口的真实 begin/end，必须靠这个入口现场。 */
+static uint32_t g_watch_eip = 0;
+static int g_watch_left = 0;
+static int g_watch_seen = 0;
+static int g_watch_hits = 0;
+
+/* 观察点：eip 命中时记录「每次 CallDLL 第一次命中」的寄存器/结构体现场。
+ * 定义放在这里（不受 PT00_EMU_LIBRARY 分支影响），CLI 与 Android 库两边共用。 */
+void pt00_emu_set_watch(uint32_t eip, int max_lines) {
+  g_watch_eip = eip;
+  /* max_lines < 0：只进环形缓冲、不逐条打印（默认用法，日志只留步数上限时的转储）。 */
+  g_watch_left = max_lines < 0 ? 0 : (max_lines > 0 ? max_lines : 120);
+  g_watch_hits = 0;
+  g_watch_seen = 0;
+}
+
+static void intd_ring_add(uint32_t idx, uint32_t val, uint32_t eip); /* 定义见下 */
+
 static uint32_t rd32(uint32_t a);   /* 下面定义；guest_fault 里要 dump ctx */
 
 #if !defined(_WIN32)
@@ -135,7 +158,52 @@ static uint32_t rd32(uint32_t a);   /* 下面定义；guest_fault 里要 dump ct
  * 展开器给的是返回地址），根本看不出到底访问了哪儿。这里自己装 SIGSEGV/SIGBUS
  * 处理器：把「来宾 eip + 寄存器 + 宿址与 g_mem 的偏移」直接写 stderr，然后干净退出。
  * （write() 是 async-signal-safe 的；snprintf 在这里只做只读格式化，实践中可用。）*/
-static void emu_fault_handler(int sig, siginfo_t *info, void * /*uc*/) {
+/* 记下被我们替换掉的处理器：bionic/ART 那个才会去叫 debuggerd 生成 tombstone。 */
+static struct sigaction g_prev_segv;
+static struct sigaction g_prev_bus;
+/* 本模块（librlvm.so）的加载基址：崩溃地址减去它，就能直接拿本机未 strip 的
+ * librlvm.so 做符号化（否则 ASLR 会让地址对不上）。安装处理器时算一次。 */
+static uintptr_t g_host_base = 0;
+
+/* 崩溃时的最小宿主回溯：API 31 上还没有 backtrace()，用 C++ unwinder 取返回地址
+ * （不分配内存，只往 fd 2 写十六进制地址），事后用未 strip 的 librlvm.so 符号化。 */
+struct emu_bt_state {
+  uintptr_t ips[40];
+  int n;
+};
+
+static _Unwind_Reason_Code emu_bt_cb(struct _Unwind_Context *ctx, void *arg) {
+  struct emu_bt_state *st = (struct emu_bt_state *)arg;
+  if (st->n >= 40) return _URC_END_OF_STACK;
+  uintptr_t ip = (uintptr_t)_Unwind_GetIP(ctx);
+  if (ip) st->ips[st->n++] = ip;
+  return _URC_NO_REASON;
+}
+
+static void emu_bt_dump(void) {
+  struct emu_bt_state st;
+  st.n = 0;
+  _Unwind_Backtrace(emu_bt_cb, &st);
+  const char *tag = "[pt00] HOST BT:";
+  ssize_t ignored = write(2, tag, strlen(tag));
+  (void)ignored;
+  for (int i = 0; i < st.n; ++i) {
+    char b[24];
+    const unsigned long long rel =
+        (g_host_base && st.ips[i] >= g_host_base)
+            ? (unsigned long long)(st.ips[i] - g_host_base)
+            : (unsigned long long)st.ips[i];
+    int k = snprintf(b, sizeof(b), " %llx", rel);
+    if (k > 0) {
+      ignored = write(2, b, (size_t)k);
+      (void)ignored;
+    }
+  }
+  ignored = write(2, "\n", 1);
+  (void)ignored;
+}
+
+static void emu_fault_handler(int sig, siginfo_t *info, void *uc) {
   char buf[512];
   int n = snprintf(buf, sizeof(buf),
                    "[pt00] HOST FAULT sig=%d addr=%p | g_mem=%p off=%lld | "
@@ -150,7 +218,31 @@ static void emu_fault_handler(int sig, siginfo_t *info, void * /*uc*/) {
     ssize_t ignored = write(2, buf, (size_t)n);
     (void)ignored;
   }
-  _exit(132);
+  /* 上面那些寄存器是**来宾**状态，宿主崩（例如空指针）时它们毫无用处 ——
+   * 真正要看的是宿主返回地址。 */
+  emu_bt_dump();
+  /* 1) 优先链回原处理器：bionic/ART 的那个会去叫 debuggerd 生成 tombstone。 */
+  {
+    const struct sigaction *prev = (sig == SIGSEGV) ? &g_prev_segv : &g_prev_bus;
+    if (prev->sa_flags & SA_SIGINFO) {
+      if (prev->sa_sigaction) prev->sa_sigaction(sig, info, uc);
+    } else if (prev->sa_handler && prev->sa_handler != SIG_DFL &&
+               prev->sa_handler != SIG_IGN) {
+      prev->sa_handler(sig);
+    }
+  }
+  /* 2) 没人接：先解除屏蔽（处理函数运行期间本信号被自动屏蔽，不解除 raise 只会
+   *    排队），再交回默认动作 —— 至少让进程带着正确信号干净地死掉，而不是被
+   *    _exit() 伪装成"正常退出"。 */
+  {
+    sigset_t unblock;
+    sigemptyset(&unblock);
+    sigaddset(&unblock, sig);
+    sigprocmask(SIG_UNBLOCK, &unblock, NULL);
+  }
+  signal(sig, SIG_DFL);
+  raise(sig);
+  _exit(132); /* 兜底 */
 }
 
 static void emu_install_fault_handler(void) {
@@ -158,8 +250,14 @@ static void emu_install_fault_handler(void) {
   memset(&sa, 0, sizeof(sa));
   sa.sa_sigaction = emu_fault_handler;
   sa.sa_flags = SA_SIGINFO;
-  sigaction(SIGSEGV, &sa, NULL);
-  sigaction(SIGBUS, &sa, NULL);
+  {
+    Dl_info di;
+    memset(&di, 0, sizeof(di));
+    if (dladdr((void *)&emu_install_fault_handler, &di) && di.dli_fbase)
+      g_host_base = (uintptr_t)di.dli_fbase;
+  }
+  sigaction(SIGSEGV, &sa, &g_prev_segv);
+  sigaction(SIGBUS, &sa, &g_prev_bus);
 }
 #else
 static void emu_install_fault_handler(void) {}   /* Windows 宿主只用于 CLI */
@@ -202,6 +300,17 @@ static uint32_t rd32(uint32_t a) {
     --g_ctx_log_left;
     fprintf(stderr, "      CTXRD %08x = %08x @%08x\n", a,
             in_guest(a, 4) ? *(uint32_t *)gp(a) : 0, cpu.eip);
+  }
+  // pt00_trace_ctx=1 时顺带把 **intD 的读数**也记下来：DLL 死循环时，坏掉的
+  // 「数量/大小」几乎一定来自它读的某个 intD 槽 —— 把这些槽位和 PC 侧对比即可定位。
+  if (g_trace_ctx && a >= INTD_BASE && a < INTD_BASE + 8000 && (a & 3) == 0) {
+    uint32_t idx = (a - INTD_BASE) / 4u;
+    uint32_t val = in_guest(a, 4) ? *(uint32_t *)gp(a) : 0;
+    intd_ring_add(idx, val, cpu.eip);
+    if (g_ctx_log_left > 0) {
+      --g_ctx_log_left;
+      fprintf(stderr, "      INTDRD [%u]=%d @%08x\n", idx, (int)val, cpu.eip);
+    }
   }
   return in_guest(a, 4) ? *(uint32_t *)gp(a) : 0;
 }
@@ -350,6 +459,87 @@ static void hist_dump(void) {
     fprintf(stderr, " %08x", g_hist[k]);
   }
   fprintf(stderr, "\n");
+}
+
+/* 按 4 字节打印来宾内存窗口（越界一律退化成 0，不会崩）。 */
+static void dump_words(const char *tag, uint32_t a, int nwords) {
+  fprintf(stderr, "[emu] %s @%08x:", tag, a);
+  for (int i = 0; i < nwords; ++i)
+    fprintf(stderr, " %08x", rd32(a + 4u * (uint32_t)i));
+  fprintf(stderr, "\n");
+}
+
+/* 观察点环形缓冲：每次 CallDLL 首次命中只记一条，所以「卡住的那次调用」的入口
+ * 现场一定在环里（步数上限时 200M 步的 add 早就把寄存器推歪了，事后看没用）。 */
+#define WATCH_RING 16
+static struct {
+  uint32_t eip, eax, ebx, ecx, edx, esi, edi, ebp, esp;
+  uint32_t win[12]; /* edi-0x10 .. edi+0x1c */
+  uint32_t stk[6];  /* esp .. esp+0x14 */
+  int valid;
+} g_watch_ring[WATCH_RING];
+static int g_watch_pos = 0;
+
+static void watch_record(void) {
+  int k = g_watch_pos++ % WATCH_RING;
+  g_watch_ring[k].eip = cpu.eip;
+  g_watch_ring[k].eax = cpu.eax;
+  g_watch_ring[k].ebx = cpu.ebx;
+  g_watch_ring[k].ecx = cpu.ecx;
+  g_watch_ring[k].edx = cpu.edx;
+  g_watch_ring[k].esi = cpu.esi;
+  g_watch_ring[k].edi = cpu.edi;
+  g_watch_ring[k].ebp = cpu.ebp;
+  g_watch_ring[k].esp = cpu.esp;
+  for (int i = 0; i < 12; ++i)
+    g_watch_ring[k].win[i] = rd32(cpu.edi - 0x10u + 4u * (uint32_t)i);
+  for (int i = 0; i < 6; ++i)
+    g_watch_ring[k].stk[i] = rd32(cpu.esp + 4u * (uint32_t)i);
+  g_watch_ring[k].valid = 1;
+}
+
+static void watch_dump_ring(void) {
+  int cnt = g_watch_pos < WATCH_RING ? g_watch_pos : WATCH_RING;
+  fprintf(stderr, "[emu] WATCH 环（%d 条，旧->新），最后一条就是卡住的那次调用：\n",
+          cnt);
+  for (int i = 0; i < cnt; ++i) {
+    int k = (g_watch_pos - cnt + i + WATCH_RING * 2) % WATCH_RING;
+    if (!g_watch_ring[k].valid) continue;
+    fprintf(stderr,
+            "[emu]  W%d eip=%08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x "
+            "edi=%08x ebp=%08x esp=%08x\n",
+            i, g_watch_ring[k].eip, g_watch_ring[k].eax, g_watch_ring[k].ebx,
+            g_watch_ring[k].ecx, g_watch_ring[k].edx, g_watch_ring[k].esi,
+            g_watch_ring[k].edi, g_watch_ring[k].ebp, g_watch_ring[k].esp);
+    fprintf(stderr, "[emu]   edi-0x10:");
+    for (int j = 0; j < 12; ++j) fprintf(stderr, " %08x", g_watch_ring[k].win[j]);
+    fprintf(stderr, "\n[emu]   esp    :");
+    for (int j = 0; j < 6; ++j) fprintf(stderr, " %08x", g_watch_ring[k].stk[j]);
+    fprintf(stderr, "\n");
+  }
+}
+
+/* intD 读取的环形缓冲：死循环是「最后一次调用」卡住的，所以步数上限时环里剩的
+ * 恰好就是那次调用读过的槽位 —— 拿去和 PC 侧 --full 的 intD 逐项对比即可。 */
+#define INTDRD_RING 512
+static struct { uint32_t idx, val, eip; } g_intd_ring[INTDRD_RING];
+static int g_intd_ring_pos = 0;
+
+static void intd_ring_add(uint32_t idx, uint32_t val, uint32_t eip) {
+  int k = g_intd_ring_pos++ % INTDRD_RING;
+  g_intd_ring[k].idx = idx;
+  g_intd_ring[k].val = val;
+  g_intd_ring[k].eip = eip;
+}
+
+static void intd_dump_ring(void) {
+  int cnt = g_intd_ring_pos < INTDRD_RING ? g_intd_ring_pos : INTDRD_RING;
+  fprintf(stderr, "[emu] INTD 读环（%d 条，旧->新；卡住那次调用的读取）:\n", cnt);
+  for (int i = 0; i < cnt; ++i) {
+    int k = (g_intd_ring_pos - cnt + i + INTDRD_RING * 2) % INTDRD_RING;
+    fprintf(stderr, "[emu]  R intD[%u]=%d @%08x\n", g_intd_ring[k].idx,
+            (int)g_intd_ring[k].val, g_intd_ring[k].eip);
+  }
 }
 
 #define UNIMPL(op)                                                       \
@@ -601,6 +791,23 @@ static int x87(uint8_t op) {
       return 0;
     }
     if (reg == 3) { uint32_t v = (uint32_t)fp_to_int(*XP(0)); fp_pop(); wr32(m.addr, v); return 0; }
+    if (reg == 2) { wr32(m.addr, (uint32_t)fp_to_int(*XP(0))); return 0; } /* fist m32 */
+  } else if (op == 0xda && m.mod != 3) { /* m32int 整数算术（FIADD…FIDIVR）
+     * 真机正是死在这一族的缺失实现上：0x100033ED 的 `da 46 4c`（fiadd dword
+     * [esi+0x4c]）以前报「未实现指令」→ 每次 CallDLL 都被中途放弃，小游戏被
+     * 截断成"半执行"（能画但逻辑不推进）。 */
+    uint8_t *p = gpc(m.addr, 4, "m32int");
+    double v = p ? (double)*(int32_t *)p : 0.0;
+    switch (reg) {
+      case 0: *XP(0) += v; return 0;
+      case 1: *XP(0) *= v; return 0;
+      case 2: fp_cmp(*XP(0), v); return 0;
+      case 3: fp_cmp(*XP(0), v); fp_pop(); return 0;
+      case 4: *XP(0) -= v; return 0;
+      case 5: *XP(0) = v - *XP(0); return 0;
+      case 6: *XP(0) /= v; return 0;
+      case 7: *XP(0) = v / *XP(0); return 0;
+    }
   } else if (op == 0xda && m.mod == 3 && m.raw == 0xe9) { /* fucompp */
     fp_cmp(*XP(0), *XP(1));
     fp_pop();
@@ -659,8 +866,25 @@ static int x87(uint8_t op) {
     if (m.raw >= 0xd8 && m.raw <= 0xdf) { *XP(m.raw - 0xd8) = fp_pop(); return 0; } /* fstp st(i) */
     if (m.raw >= 0xe0 && m.raw <= 0xe7) { fp_cmp(*XP(0), *XP(m.raw - 0xe0)); return 0; }
     if (m.raw >= 0xe8 && m.raw <= 0xef) { fp_cmp(*XP(0), *XP(m.raw - 0xe8)); fp_pop(); return 0; }
-  } else if (op == 0xde) { /* 出栈式算术 + fcompp */
-    if (m.mod != 3 && reg == 0) { fp_pop(); return 0; } /* fiadd m16：少见，先按空过 */
+  } else if (op == 0xde) { /* 出栈式算术 + fcompp；内存形式是 m16int 整数算术 */
+    if (m.mod != 3) {
+      /* DE /0../7 = FIADD/FIMUL/FICOM/FICOMP/FISUB/FISUBR/FIDIV/FIDIVR m16int。
+       * 以前 reg==0 只做 fp_pop()（把 st0 弹掉），是错的 —— 整数加法会顺手毁掉
+       * 整个 FPU 栈。 */
+      uint8_t *p = gpc(m.addr, 2, "m16int");
+      double v = p ? (double)*(int16_t *)p : 0.0;
+      switch (reg) {
+        case 0: *XP(0) += v; return 0;
+        case 1: *XP(0) *= v; return 0;
+        case 2: fp_cmp(*XP(0), v); return 0;
+        case 3: fp_cmp(*XP(0), v); fp_pop(); return 0;
+        case 4: *XP(0) -= v; return 0;
+        case 5: *XP(0) = v - *XP(0); return 0;
+        case 6: *XP(0) /= v; return 0;
+        case 7: *XP(0) = v / *XP(0); return 0;
+      }
+      return 0;
+    }
     if (m.mod == 3) {
       if (m.raw == 0xd9) { /* fcompp */
         fp_cmp(*XP(0), *XP(1));
@@ -879,6 +1103,11 @@ static int step(void) {
             cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp,
             cpu.esp);
     hist_dump();
+    dump_words("mem edi-0x30", cpu.edi - 0x30u, 36);
+    dump_words("mem esp", cpu.esp, 12);
+    dump_words("mem esi", cpu.esi, 8);
+    watch_dump_ring();
+    intd_dump_ring();
     fprintf(stderr, "[emu] 调用栈：");
     for (int i = g_frame_n - 1; i >= 0 && i > g_frame_n - 10; --i)
       fprintf(stderr, " %08x<-%08x", g_frames[i].callee, g_frames[i].ret_addr);
@@ -911,6 +1140,20 @@ static int step(void) {
   uint32_t start = cpu.eip;
   hist_add(start);
   g_insn_addr = start;
+  if (g_watch_eip && start == g_watch_eip && !g_watch_seen) {
+    g_watch_seen = 1;
+    watch_record();
+    if (g_watch_left > 0) {
+      --g_watch_left;
+      fprintf(stderr,
+              "[emu] WATCH #%d %08x eax=%08x ebx=%08x ecx=%08x edx=%08x esi=%08x "
+              "edi=%08x ebp=%08x esp=%08x\n",
+              ++g_watch_hits, start, cpu.eax, cpu.ebx, cpu.ecx, cpu.edx, cpu.esi,
+              cpu.edi, cpu.ebp, cpu.esp);
+      dump_words("  [edi-0x10]", cpu.edi - 0x10u, 12);
+      dump_words("  [esp]", cpu.esp, 6);
+    }
+  }
   uint8_t op = imm8();
   int seg_fs = 0;
   int opsize16 = 0;
@@ -1010,7 +1253,12 @@ static int step(void) {
     }
     case 0x3b: { /* cmp r32, r/m32 */
       ModRM m = modrm();
-      uint32_t b = m.is_reg ? (*reg32(m.addr) & 0xffffu) : (opsize16 ? rd16(m.addr) : rd32(m.addr));
+      /* 注意：寄存器形式以前被无条件截断成低 16 位（只有 opsize16 才该截断）。
+       * 后果是 `cmp %ebx,%eax` 在两边都是堆指针时永远「不等」——DLL 里 vector 扩容的
+       * 前缀拷贝 `for (p = begin; p != pos; p += 4)` 就此变成死循环（真机卡小游戏
+       * 的根因，200M 步上限每次都在 0x10004932 打转）。 */
+      uint32_t b = m.is_reg ? *reg32(m.addr) : (opsize16 ? rd16(m.addr) : rd32(m.addr));
+      if (opsize16) b &= 0xffffu;
       uint32_t a = *reg32(m.reg);
       if (opsize16) {
         uint32_t r = (a & 0xffffu) - b;
@@ -1384,6 +1632,8 @@ static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
   g_frame_n = 0;
   g_steps = 0;
   g_last_hit_step_limit = 0;
+  g_watch_seen = 0;
+  uint32_t esp0 = cpu.esp;
   for (int i = argc_ - 1; i >= 0; --i) push32(args[i]);
   push32(SENTINEL);
   emu_call_push(entry_, SENTINEL, cpu.esp);
@@ -1396,7 +1646,19 @@ static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
         !(cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE))
       break;
   }
-  if (rc == 0) cpu.esp += (uint32_t)argc_ * 4u;
+  /* 栈必须回到调用前。入口 reallive_dll_func_call 本身是 stdcall（每条出口都是
+   * `ret 0x14`，已经清掉 5 个参数），再补一次 argc*4 会让 esp 每个 CallDLL 漂
+   * 20 字节 —— 真机实测 8963 次调用后 esp 从 0x10200000 漂到 0x1022bc40。 */
+  if (rc == 0) {
+    if (cpu.esp != esp0) {
+      static int drift_logged = 0;
+      if (drift_logged++ < 10)
+        fprintf(stderr,
+                "[emu] 调用前后 esp 不平衡：%08x -> %08x（差 %d 字节），已强制复位\n",
+                esp0, cpu.esp, (int)(cpu.esp - esp0));
+    }
+    cpu.esp = esp0;
+  }
   return rc;
 }
 
@@ -1522,6 +1784,8 @@ int main(int argc, char **argv) {
       uint32_t a_[8] = {0, 0, 0, 0, 0, 0, 0, 0};                    \
       const uint32_t vals_[8] = {__VA_ARGS__};                      \
       for (int i_ = 0; i_ < (argc) && i_ < 8; ++i_) a_[i_] = vals_[i_]; \
+      uint32_t esp0_ = cpu.esp;                                     \
+      g_watch_seen = 0;                                             \
       for (int i_ = (argc) - 1; i_ >= 0; --i_) push32(a_[i_]);      \
       push32(SENTINEL);                                             \
       emu_call_push((entry), SENTINEL, cpu.esp); /* 最外层也登记一帧 */ \
@@ -1537,7 +1801,8 @@ int main(int argc, char **argv) {
           break;                                                    \
         }                                                           \
       }                                                             \
-      if (rc_ == 0) { cpu.esp += (argc) * 4u; } /* stdcall：清参数 */  \
+      /* 入口自己就是 stdcall（ret 0x14 已清参数），把 esp 复位到调用前即可。 */ \
+      if (rc_ == 0) { cpu.esp = esp0_; }                            \
       g_last_rc = rc_;                                              \
     } while (0)
 
@@ -1588,6 +1853,46 @@ int main(int argc, char **argv) {
   RUN_EXPORT(IMAGE_BASE + 0x1670, 0);
   printf("# func_init 结束 rc=%d\n", g_last_rc);
 
+  /* 指令自测（回归）：`cmp r32, r/m32` 的寄存器-寄存器形式必须用**完整 32 位**。
+   * 以前 rm 侧被无条件截断成低 16 位，导致 DLL 里 `cmp %ebx,%eax; jne` 在两边
+   * 都是堆指针时永远不等 —— vector 扩容的前缀拷贝就成了死循环（真机卡小游戏）。 */
+  for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--selftest") != 0) continue;
+    static const uint8_t kCmpCode[] = {
+        0xB8, 0x64, 0x6E, 0x40, 0x11, /* mov eax,0x11406E64 */
+        0xBB, 0x64, 0x6E, 0x40, 0x11, /* mov ebx,0x11406E64 */
+        0x3B, 0xC3,                   /* cmp eax,ebx */
+        0x75, 0x06,                   /* jne +6 → fail */
+        0xB8, 0x01, 0x00, 0x00, 0x00, /* mov eax,1（相等） */
+        0xC3,                         /* ret */
+        0xB8, 0x00, 0x00, 0x00, 0x00, /* mov eax,0（不等） */
+        0xC3,                         /* ret */
+    };
+    const uint32_t at = IMAGE_BASE + 0x2F000u; /* 映像内、无 section 覆盖的零区 */
+    for (size_t k = 0; k < sizeof(kCmpCode); ++k)
+      wr8(at + (uint32_t)k, kCmpCode[k]);
+    RUN_EXPORT(at, 0);
+    printf("# selftest cmp r32,r/m32(reg,reg) 大值相等：eax=%d → %s\n",
+           (int)cpu.eax, cpu.eax == 1 ? "PASS" : "FAIL（低 16 位截断回归）");
+    /* x87 回归：FIADD m32int（真机日志里 0x100033ED 的 `da 46 4c` 就是这条）。
+     * 4 + 4 后 fistp 回内存再读 eax，期望 8。 */
+    static const uint8_t kX87Code[] = {
+        0xC7, 0x05, 0x00, 0x01, 0x2F, 0x10, 0x04, 0x00, 0x00, 0x00, /* mov dword [0x1002F100],4 */
+        0xDB, 0x05, 0x00, 0x01, 0x2F, 0x10,                         /* fild dword [0x1002F100] */
+        0xDB, 0x05, 0x00, 0x01, 0x2F, 0x10,                         /* fild dword [0x1002F100] */
+        0xDA, 0x05, 0x00, 0x01, 0x2F, 0x10,                         /* fiadd dword [0x1002F100] */
+        0xDB, 0x1D, 0x00, 0x01, 0x2F, 0x10,                         /* fistp dword [0x1002F100] */
+        0xA1, 0x00, 0x01, 0x2F, 0x10,                               /* mov eax,[0x1002F100] */
+        0xC3,                                                       /* ret */
+    };
+    const uint32_t at2 = IMAGE_BASE + 0x2F200u;
+    for (size_t k = 0; k < sizeof(kX87Code); ++k)
+      wr8(at2 + (uint32_t)k, kX87Code[k]);
+    RUN_EXPORT(at2, 0);
+    printf("# selftest x87 fiadd m32int（4+4）：eax=%d → %s\n", (int)cpu.eax,
+           cpu.eax == 8 ? "PASS" : "FAIL（m32int 组未实现或算错）");
+  }
+
   if (argc > 2) {
     FILE *f = fopen(argv[2], "r");
     if (!f) { fprintf(stderr, "打不开调用脚本 %s\n", argv[2]); return 1; }
@@ -1618,6 +1923,12 @@ int main(int argc, char **argv) {
         }
         if (strcmp(argv[i], "--trace-min") == 0 && i + 1 < argc) {
           g_trace_min = (uint32_t)strtoul(argv[i + 1], NULL, 16);
+        }
+        if (strcmp(argv[i], "--watch") == 0 && i + 1 < argc) {
+          pt00_emu_set_watch((uint32_t)strtoul(argv[i + 1], NULL, 16), 400);
+        }
+        if (strcmp(argv[i], "--max-steps") == 0 && i + 1 < argc) {
+          g_max_steps = atoi(argv[i + 1]);
         }
       }
       RUN_EXPORT(IMAGE_BASE + 0x1680, 5, (uint32_t)v[0], (uint32_t)v[1],

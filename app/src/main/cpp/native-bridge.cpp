@@ -278,6 +278,10 @@ struct DiagOptions {
   bool pt00_tick31 = false;
   // 小游戏逐调用日志（默认关；见 pt00_emu_bridge.h 的 SetVerbose 注释）。
   bool pt00_verbose = false;
+  // 执行器观察点：pt00_watch=10004932（十六进制 eip）时，每次 CallDLL 首次命中该
+  // 地址就打印寄存器 + [edi-0x10] 结构体窗口。死循环里的寄存器被 add 推歪之后
+  // 看不出入口现场，这是唯一能拿回「循环入口 begin/end」的手段。
+  unsigned pt00_watch = 0;
   bool dump_graphics = false;
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
@@ -371,6 +375,9 @@ DiagOptions LoadDiagOptions() {
       options.pt00_tick31 = (number != 0);
     } else if (key == "pt00_verbose") {
       options.pt00_verbose = (number != 0);
+    } else if (key == "pt00_watch") {
+      options.pt00_watch =
+          static_cast<unsigned>(std::strtoul(value.c_str(), nullptr, 16));
     } else if (key == "mov_probe_path") {
       options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
     } else if (key == "mov_codec") {
@@ -407,6 +414,95 @@ DiagOptions LoadDiagOptions() {
 }
 
 /** 把图形系统当前的帧缓冲拷进呈现缓冲。 */
+/** 生成 "WINDOW.032.ATTR_MOD" 这种三位零填充的 Gameexe 键。 */
+std::string WindowGameexeKey(int index, const std::string& suffix) {
+  std::string key = "WINDOW.";
+  key += static_cast<char>('0' + (index / 100) % 10);
+  key += static_cast<char>('0' + (index / 10) % 10);
+  key += static_cast<char>('0' + index % 10);
+  key += suffix;
+  return key;
+}
+
+/** 取 Gameexe.ini 文本里 "#WINDOW.000.<suffix>=<value>" 的 value（找不到返回空）。 */
+std::string FindWindow000Value(const std::string& text,
+                               const std::string& suffix) {
+  const std::string needle = "#WINDOW.000." + suffix + "=";
+  const std::string::size_type pos = text.find(needle);
+  if (pos == std::string::npos) return std::string();
+  const std::string::size_type begin = pos + needle.size();
+  std::string::size_type end = text.find_first_of("\r\n", begin);
+  if (end == std::string::npos) end = text.size();
+  const std::string raw = text.substr(begin, end - begin);
+  const std::string::size_type a = raw.find_first_not_of(" \t");
+  if (a == std::string::npos) return std::string();
+  const std::string::size_type b = raw.find_last_not_of(" \t");
+  return raw.substr(a, b - a + 1);
+}
+
+/**
+ * 汉化版 GAMEEXE.INI 只给"常规"窗口（000..010、012..014）写全属性；小游戏用的
+ * 特例窗口（020/021/031/032）只有 POS、MOJI_xxx、WAKU_SETNO，缺 ATTR_MOD、
+ * KEYCUR_MOD 等键。真实 RealLive 引擎对缺失键按默认值处理（ATTR_MOD 缺省 = 0，
+ * 即"改用全局 #WINDOW_ATTR"，RLVM 自己的代码里就有这一支），但 RLVM 的
+ * GameexeInterpretObject 会抛 Unknown Gameexe key —— TextWindow 构造失败，
+ * 而构造不出来就永远不进缓存，于是每帧重试、每帧抛异常：阻塞型 op（Msg 17
+ * «pause»）永远完不成。
+ *
+ * 真机现象：小游戏结束后回到 SEEN515 的第一句对话，画面冻结、音乐正常、引擎
+ * 55Hz 空转，stdout 反复刷 "Unknown Gameexe key 'WINDOW.032.XXX'"。
+ *
+ * 这里按"用窗口 000 的同名值兜底"补齐：只给**数据里真实存在**的窗口补，且只补
+ * 缺失的键（key 已存在时 parseLine 的 insert 不会覆盖）。
+ */
+void AddMissingWindowDefaults(Gameexe& gameexe, const std::string& gameexe_text) {
+  /* 只补 TextWindow 构造函数里**没有默认值**的那些键。像 WAKU_SETNO / MOJI_SIZE /
+   * LUBY_SIZE / INDENT_USE / R_COMMAND_MOD / NAME_MOD 这些，RLVM 用的是 `.ToInt(默认)`
+   * ——它们本来就不会抛，改成"照抄窗口 000"反而会改掉原有行为（上一版就是这么把
+   * 小游戏带崩的）。 */
+  static const char* const kSuffixes[] = {
+      "ATTR_MOD", "ATTR", "KEYCUR_MOD", "MOJI_CNT", "MOJI_REP", "MOJI_POS", "POS",
+      /* 名字框（名牌）那一族：TextWindow 只在「NAME_MOD==1 且 NAME_WAKU_SETNO 存在」
+       * 时才创建 namebox_waku_，但 Render() 只要有说话人名就会去解引用它
+       * （text_window.cc:341/449 在 443 的判空之前）—— 数据缺这些键时真机会直接
+       * 空指针崩溃（tombstone #00 TextWindow::GetNameboxWakuRect）。缺哪个补哪个，
+       * 值照抄窗口 000。 */
+      "NAME_MOD", "NAME_WAKU_SETNO", "NAME_MOJI_REP", "NAME_MOJI_POS",
+      "NAME_POS", "NAME_MOJI_SIZE"};
+
+  bool seen[100] = {false};
+  for (std::string::size_type pos = 0;
+       (pos = gameexe_text.find("#WINDOW.", pos)) != std::string::npos;
+       pos += 8) {
+    if (pos + 11 >= gameexe_text.size()) continue;
+    const char* d = gameexe_text.data() + pos + 8;
+    if (d[0] < '0' || d[0] > '9' || d[1] < '0' || d[1] > '9' ||
+        d[2] < '0' || d[2] > '9' || d[3] != '.')
+      continue;
+    const int n = (d[0] - '0') * 100 + (d[1] - '0') * 10 + (d[2] - '0');
+    if (n >= 0 && n < 100) seen[n] = true;
+  }
+
+  int added = 0;
+  for (int i = 0; i < 100; ++i) {
+    if (!seen[i]) continue;
+    for (const char* suffix : kSuffixes) {
+      const std::string key = WindowGameexeKey(i, std::string(".") + suffix);
+      if (gameexe.Exists(key)) continue;
+      std::string value = FindWindow000Value(gameexe_text, suffix);
+      if (value.empty()) value = "0";
+      // 用 parseLine 注入（与文件解析同一路径：多值/带引号的值都能正确落地）。
+      gameexe.parseLine("#" + key + "=" + value);
+      ++added;
+    }
+  }
+  if (added > 0) {
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "Gameexe: 补 %d 个缺失的窗口属性键（窗口 000 同名值兜底）",
+                        added);
+  }
+}
+
 void CaptureFrame(AndroidGraphicsSystem& graphics) {
   std::shared_ptr<AndroidSurface> frame = graphics.frame_buffer();
   if (!frame) return;
@@ -1140,6 +1236,9 @@ void RunEngineOn(System& system,
   pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
   pt00emu::SetTick31(diag.pt00_tick31);
   pt00emu::SetVerbose(diag.pt00_verbose);
+  /* max_lines = -1：只进环形缓冲，步数上限时才整环转储（避免每帧几十条刷屏）。 */
+  if (diag.pt00_watch != 0)
+    pt00emu::SetWatch(diag.pt00_watch, -1);
   if (!diag.dump_scenes.empty()) {
     // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
     // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。
@@ -1570,6 +1669,16 @@ jstring RunScenario(JNIEnv* env, jobject /*thiz*/, jstring jdir,
     Gameexe gameexe(gameexe_path);
     // 上游 RLVMInstance 会写入 __GAMEPATH；资源查找层需要它。
     gameexe("__GAMEPATH") = dir;
+    {
+      std::string gameexe_text;
+      std::ifstream gameexe_in(gameexe_path.string(), std::ios::binary);
+      if (gameexe_in) {
+        std::ostringstream buffer;
+        buffer << gameexe_in.rdbuf();
+        gameexe_text = buffer.str();
+      }
+      AddMissingWindowDefaults(gameexe, gameexe_text);
+    }
     rlvm_android::SetGameFileSystem(
         rlvm_android::MakePosixGameFileSystem(dir));
     // 注意：这里**不**把存档指到游戏目录（SAF 侧）——存档菜单除了按槽位查
@@ -1635,6 +1744,7 @@ jstring RunScenarioSaf(JNIEnv* env, jobject /*thiz*/, jint max_instructions) {
     Gameexe gameexe(gameexe_stream);
     // SAF 下没有真实路径；__GAMEPATH 只在退化为普通路径后端时才会被使用。
     gameexe("__GAMEPATH") = std::string("saf:/");
+    AddMissingWindowDefaults(gameexe, gameexe_text);
     rlvm_android::SetGameFileSystem(rlvm_android::MakeSafGameFileSystem());
     // 同上：SAF 下暂不指定覆盖，继续用 $HOME/.rlvm/<REGNAME>/（真实路径，
     // 写入/读取/槽位检查/目录枚举四处都能工作）。

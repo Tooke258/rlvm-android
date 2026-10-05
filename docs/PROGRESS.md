@@ -320,3 +320,28 @@ frame_log_every=120
 
 SAF 目录授权需要人工在系统选择器里点一次（SAF 的固有环节，无法绕过）；
 授权会持久化，之后无需重复操作。
+
+## 10. 2026-10-06 里程碑：LBEX 小游戏全链路打通
+
+**最新交接请看 [`docs/HANDOFF-2026-10-06.md`](HANDOFF-2026-10-06.md)**（本日归档）；
+每一处 bug 的现场/日志/反汇编证据在 [`docs/PT00-EMU-HANDOFF.md`](PT00-EMU-HANDOFF.md) §10。
+
+**一句话**：小游戏不再卡 `time`，人物与球正常渲染，第一场（脚本驱动）跑完 → 结算 →
+后续剧情文本正常出现并能继续点击推进。用户真机确认「现在游戏能正常推进了」。
+
+修掉的真 bug（全部有真机 / 夹具证据）：
+
+| # | 一句话根因 |
+| --- | --- |
+| 1 | 入口 `reallive_dll_func_call` 是 stdcall（`retl $0x14` 已清参数），执行器又清一次 → `esp` 每次 CallDLL 漂 +20 字节（8963 次后 `0x10200000 → 0x1022bc40`） |
+| 2 | `cmp r32, r/m32`（opcode `0x3B`）寄存器形式被截断低 16 位 → vector 前缀拷贝 `p != pos` 永远成立 → 死循环（观察点抓到入口现场才定位） |
+| 3 | x87 `DA` 组（m32int 整数算术）整族未实现 → 每次 `UNIMPL` 让整个 CallDLL 中途放弃 → "能画但逻辑不推进" |
+| 4 | 汉化版 GAMEEXE.INI 缺窗口属性（020/021/031/032）→ `TextWindow` 构造抛异常 → `Msg 17 = pause` 永不完成 → 画面冻结、音乐正常、55Hz 空转 |
+| 5 | 上游 `TextWindow::Render` 先解引用后判空 → 名牌 waku 空指针崩溃（靠 tombstone 符号定位） |
+
+新增取证设施：观察点 `pt00_watch=<hex>`（寄存器 + `[edi-0x10..+0x1c]` 环形转储）、
+`INTD 读环`、`mem edi/esp/esi` 窗口、`emu.exe --selftest`（cmp / x87 指令级回归）、
+崩溃处理器改为**链回系统处理器**（保留 tombstone）+ `_Unwind_Backtrace` 模块内偏移回溯。
+
+仍待处理见 `HANDOFF-2026-10-06.md` §5（结算段未实现 opcode、`lb_child_obj_1058` 四条 op、
+表现层对齐、小游戏 ~16fps 等）。

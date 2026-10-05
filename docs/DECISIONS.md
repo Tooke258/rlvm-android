@@ -942,3 +942,55 @@ for (Renderable* r : final_renderers_) { if (r) r->Render(tree); }
 
 **保留项**：**不**去清游戏脚本自己的 Skip 标志——开着 Skip 时「跳到下一个停点（选项/章节）」是原版
 语义，用户决定保留；要清它需要在脚本 dump 里定位菜单变量，留待后续版本。
+
+## D-037 小游戏兼容层遇「引擎要的 Gameexe 键在汉化版数据里缺失」：平台层补默认值
+
+**日期**：2026-10-06　**状态**：真机通过（用户确认小游戏里程碑）
+
+**现象**：LBEX 小游戏第一场结束后回到 `SEEN515`，第一句对话**画面冻结、音乐正常**、
+进程 187% CPU，stdout 以 55Hz 刷
+`(SEEN515)(Line 2163): Unknown Gameexe key 'WINDOW.032.ATTR_MOD'`。
+
+**根因**：异常来自 `TextWindow` 构造函数（`text_window.cc:119` 的 `window("ATTR_MOD")`）。
+汉化版 `GAMEEXE.INI` 只给"常规"窗口（000..010、012..014）写全属性；小游戏用的
+**020/021/031/032** 缺 `ATTR_MOD / ATTR / KEYCUR_MOD / MOJI_REP / MOJI_POS / POS`
+（032 连 `NAME_*` 整套都没有）。**原生 RealLive 对缺失键取默认值**（RLVM 自己的代码里
+`window_attr_mod_ == 0` 那一支就是"改用全局 `#WINDOW_ATTR`"），RLVM 的
+`GameexeInterpretObject` 却抛 `Unknown Gameexe key` → 窗口构造失败 → 永不进缓存 →
+每帧重试每帧抛 → 阻塞型 op（`Msg 17 = pause`）永远完不成。
+
+**修法**：把差异补在**数据**上，不动 `libreallive` 的解析语义。
+构造完 `Gameexe` 后（普通路径与 SAF 路径两处），对"数据里真实存在的窗口"补齐缺失键，
+值取**窗口 000 的同名值**，注入走 `Gameexe::parseLine`（与读文件同一条解析路径，
+多值 / 带引号都能正确落地）；**只补缺失的键**（`data_.insert` 不覆盖已有值）。
+
+补键范围 = `TextWindow` 构造函数里**没有默认值**的那些键：
+`ATTR_MOD / ATTR / KEYCUR_MOD / MOJI_CNT / MOJI_REP / MOJI_POS / POS` +
+名牌一族 `NAME_MOD / NAME_WAKU_SETNO / NAME_MOJI_REP / NAME_MOJI_POS / NAME_POS /
+NAME_MOJI_SIZE`。
+
+**教训**：第一版把"本来就有默认值的键"也照抄（`WAKU_SETNO / MOJI_SIZE / LUBY_SIZE /
+INDENT_USE / R_COMMAND_MOD / NAME_MOD`），等于改掉原有行为，把流程带偏、并暴露了
+§D-038 那条上游空指针。范围内只要"没有默认值"的键。
+
+## D-038 崩溃取证：不覆盖系统崩溃处理器（链回），并用 unwinder 输出模块内偏移
+
+**日期**：2026-10-06　**状态**：真机通过（凭它一次定位到 `GetNameboxWakuRect()`）
+
+**背景**：执行器在 Android 宿主上装了 SIGSEGV/SIGBUS 处理器，原来的做法是打印一行
+寄存器后直接 `_exit(132)`。结果：真机只留下 `Zygote: Process N exited cleanly (132)`，
+**tombstone（含 native 回溯）被一起吞掉**；而它打印的寄存器是**来宾**状态，宿主空指针
+崩溃时毫无用处。
+
+**修法**（两条一起做）：
+
+1. 处理器打印完后**链回被替换掉的原处理器**（bionic/ART 那个才会去叫 debuggerd），
+   保留 tombstone；只有在原处理器是 `SIG_DFL / SIG_IGN` 时才自己复位信号。
+2. 处理函数运行期间本信号**被自动屏蔽**，直接 `raise(sig)` 只会排队、然后落到兜底的
+   `_exit` —— 必须先 `sigprocmask(SIG_UNBLOCK)` 再 raise。
+3. 额外输出一份不依赖 debuggerd 的宿主回溯：API 31 **没有 `backtrace()`**（API 33 才引入），
+   改用 `_Unwind_Backtrace` 取返回地址，并用 `dladdr`（安装时算一次基址）换算成
+   **模块内偏移** 写进日志（`[pt00] HOST BT: ...`），本机用未 strip 的 `librlvm.so`
+   即可符号化。
+
+**判据速记**：真机日志里 `exited cleanly (132)` = 我们自己的兜底退出码，**不是**正常退出。

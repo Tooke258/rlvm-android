@@ -21,6 +21,7 @@ unsigned pt00_emu_heap_used(void);
 void pt00_emu_set_intd(const int* src, unsigned count);
 void pt00_emu_get_intd(int* dst, unsigned count);
 void pt00_emu_set_trace_ctx(int on, int max_lines);
+void pt00_emu_set_watch(unsigned eip, int max_lines);
 }
 
 namespace {
@@ -65,6 +66,10 @@ void Reset() {
 void SetTraceCtx(bool on) { pt00_emu_set_trace_ctx(on ? 1 : 0, 800); }
 
 void SetTick31(bool on) { g_tick31 = on; }
+
+void SetWatch(unsigned eip, int max_lines) {
+  pt00_emu_set_watch(eip, max_lines);
+}
 
 void SetVerbose(bool on) { g_verbose = on; }
 
