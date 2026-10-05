@@ -328,6 +328,17 @@ void GanGraphicsObjectData::ObjectInfo(std::ostream& tree) {
 }
 
 void GanGraphicsObjectData::PlaySet(int set) {
+  // 诊断：谁启动了 Gan 动画、集合是否越界（越界会在 CurrentSurface/SrcRect 里抛
+  // std::out_of_range，把整帧渲染带走 —— 表现就是"画面冻住不动"）。
+  {
+    static int logged = 0;
+    if (logged < 60) {
+      ++logged;
+      std::cerr << "[gan] PlaySet file=" << gan_filename_ << " set=" << set
+                << " sets=" << animation_sets.size() << " prev_cur="
+                << current_set_ << "/" << current_frame_ << std::endl;
+    }
+  }
   set_is_currently_playing(true);
   current_set_ = set;
   current_frame_ = 0;
