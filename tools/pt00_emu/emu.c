@@ -407,7 +407,7 @@ static int step(void) {
   if (op >= 0xb0 && op <= 0xb7) { *reg8(op - 0xb0) = imm8(); return 0; }
   if (op >= 0x91 && op <= 0x97) { uint32_t *r = reg32(op - 0x90); uint32_t t = cpu.eax; cpu.eax = *r; *r = t; return 0; }
   /* AL/EAX, imm 族： (op&7)==4 是 AL+imm8，==5 是 EAX+imm32；高位选操作 */
-  if ((op & 7) == 4 || (op & 7) == 5) {
+  if (op <= 0x3d && ((op & 7) == 4 || (op & 7) == 5)) {
     int sub = (op >> 3) & 7;
     int is8 = (op & 7) == 4;
     uint32_t im = is8 ? (uint32_t)(int32_t)(int8_t)imm8() : imm32();
