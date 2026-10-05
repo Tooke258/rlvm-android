@@ -9,10 +9,13 @@
  * 这两件事都已实测验证（见 docs/LB-MINIGAME-RETRO.md §4）。
  *
  * 用法：
- *   oracle.exe <PT00.dll 路径> <调用脚本.txt> [intd 快照输出.bin]
+ *   oracle.exe <PT00.dll 路径> <调用脚本.txt> [快照输出.bin] [--seed 种子快照.bin]
  *
  * 调用脚本每行一次调用：  func a1 a2 a3 a4        （十进制或 0x 十六进制，后四个可省）
  * 以 '#' 开头或空行忽略。
+ *
+ * `--seed` 用来从二进制快照恢复初始状态（格式与输出一致：intD[2000] + intF[2000]，
+ * 全是 32 位小端）。对照必须从「同一起点」开始，否则两边的差异都是噪声。
  *
  * 每次调用后打印一行：调用序号、func、参数、返回值、以及 intD 里发生变化的槽位。
  */
@@ -50,8 +53,19 @@ static int parse_int(const char *s) {
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "usage: oracle <PT00.dll> <calls.txt> [intd_out.bin]\n");
+    fprintf(stderr,
+            "usage: oracle <PT00.dll> <calls.txt> [out.bin] [--seed seed.bin]\n");
     return 2;
+  }
+
+  const char *seed_path = NULL;
+  const char *out_path = NULL;
+  for (int i = 3; i < argc; ++i) {
+    if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+      seed_path = argv[++i];
+    } else if (!out_path) {
+      out_path = argv[i];
+    }
   }
 
   HMODULE mod = LoadLibraryA(argv[1]);
@@ -74,6 +88,22 @@ int main(int argc, char **argv) {
   memset(g_intd, 0, sizeof(g_intd));
   memset(g_intf, 0, sizeof(g_intf));
   *(void **)((char *)&g_ctx + 0x14) = g_intd; /* 引擎上下文里的 intD 基址 */
+
+  if (seed_path) {
+    FILE *s = fopen(seed_path, "rb");
+    if (!s) {
+      fprintf(stderr, "cannot open seed file: %s\n", seed_path);
+      return 1;
+    }
+    size_t n1 = fread(g_intd, sizeof(int), INTD_COUNT, s);
+    size_t n2 = fread(g_intf, sizeof(int), INTF_COUNT, s);
+    fclose(s);
+    printf("# seed %s: intd read=%u intf read=%u\n", seed_path,
+           (unsigned)n1, (unsigned)n2);
+    printf("# seed check: intD[70..76]=");
+    for (int i = 70; i <= 76; ++i) printf("%s%d", i == 70 ? "" : ",", g_intd[i]);
+    printf("  intD[73](mode)=%d\n", g_intd[73]);
+  }
 
   int ret_load = p_load(&g_ctx, 0);
   printf("# func_load -> %d   (intd=%p)\n", ret_load, (void *)g_intd);
@@ -115,13 +145,13 @@ int main(int argc, char **argv) {
   }
   fclose(f);
 
-  if (argc > 3) {
-    FILE *o = fopen(argv[3], "wb");
+  if (out_path) {
+    FILE *o = fopen(out_path, "wb");
     if (o) {
       fwrite(g_intd, sizeof(int), INTD_COUNT, o);
       fwrite(g_intf, sizeof(int), INTF_COUNT, o);
       fclose(o);
-      printf("# intd+intf snapshot -> %s\n", argv[3]);
+      printf("# intd+intf snapshot -> %s\n", out_path);
     }
   }
 
