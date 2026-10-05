@@ -1261,6 +1261,19 @@ int main(int argc, char **argv) {
     printf("# TLS idx=%08x slot=%d ptd=%08x holdrand=%d\n", idx, slot, ptd,
            ptd ? (int)rd32(ptd + 0x14) : -1);
   }
+  { /* 实体对象非零字段快照（挑实体 0/3/5；与 oracle 的同类打印对齐，
+     * 用来判断 71(3)/71(5) 的分歧是不是"原生对象里有残留数据、我们是全 0"） */
+    for (int i = 0; i < 22; ++i) {
+      if (i != 0 && i != 3 && i != 5) continue;
+      uint32_t p = rd32(IMAGE_BASE + 0x237C4 + 4 * i);
+      printf("# ent[%d] @%08x:", i, p);
+      for (int off = 0; off < 0x100; off += 4) {
+        uint32_t v = rd32(p + off);
+        if (v) printf(" +%02x=%08x", off, v);
+      }
+      printf("\n");
+    }
+  }
 
   printf("# 跑 func_init\n");
   RUN_EXPORT(IMAGE_BASE + 0x1670, 0);

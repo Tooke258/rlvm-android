@@ -58,6 +58,27 @@ static int parse_int(const char *s) {
  * （实体类型行为）里用 `rand()`。oracle 拿真实时间、emu 的 GetSystemTime 桩返回全 0，
  * 两边随机序列从第一次 rand 起就分叉 —— 对照里表现为「只有 func 71 不一致」。
  * 这里把 IAT 里的时间类导入改写成确定性桩，两边才可比。 */
+/* 让 oracle 的堆分配"清零"：
+ * DLL 的实体对象有一部分字段构造函数**不写**，原生进程里它们带着残留数据 ——
+ * 实测就是本进程的环境变量字符串（"PROFILE=..."、"C:\\Users\\..." 等，
+ * 因为这块堆之前被 CRT 拷环境块用过）。而执行器的 guest 堆是 calloc 全 0。
+ * 为了让对照"同一起点"，这里把 HeapAlloc/VirtualAlloc 拿到的块清零。
+ * 这是对照装置的一部分，不改 DLL 一行逻辑。 */
+static LPVOID(WINAPI *g_real_HeapAlloc)(HANDLE, DWORD, SIZE_T);
+static LPVOID(WINAPI *g_real_VirtualAlloc)(LPVOID, SIZE_T, DWORD, DWORD);
+
+static LPVOID WINAPI StubZeroHeapAlloc(HANDLE h, DWORD flags, SIZE_T n) {
+  LPVOID p = g_real_HeapAlloc(h, flags, n);
+  if (p) memset(p, 0, n);
+  return p;
+}
+
+static LPVOID WINAPI StubZeroVirtualAlloc(LPVOID a, SIZE_T n, DWORD t, DWORD pr) {
+  LPVOID p = g_real_VirtualAlloc(a, n, t, pr);
+  if (p) memset(p, 0, n);
+  return p;
+}
+
 static uint32_t __stdcall StubReturnsZeroPtr(void *p) {
   if (p) memset(p, 0, 16); /* SYSTEMTIME 正好 16 字节；别越界写坏调用者的栈 */
   return 0;
@@ -132,6 +153,16 @@ int main(int argc, char **argv) {
   patch_iat(mod, "GetLocalTime", (void *)StubReturnsZeroPtr);
   patch_iat(mod, "GetTimeZoneInformation", (void *)StubReturnsZeroPtr);
 
+  /* 堆清零钩子：让 DLL 拿到的内存与执行器（calloc 全 0）同起点 */
+  {
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    g_real_HeapAlloc = (LPVOID(WINAPI *)(HANDLE, DWORD, SIZE_T))GetProcAddress(k32, "HeapAlloc");
+    g_real_VirtualAlloc =
+        (LPVOID(WINAPI *)(LPVOID, SIZE_T, DWORD, DWORD))GetProcAddress(k32, "VirtualAlloc");
+    if (g_real_HeapAlloc) patch_iat(mod, "HeapAlloc", (void *)StubZeroHeapAlloc);
+    if (g_real_VirtualAlloc) patch_iat(mod, "VirtualAlloc", (void *)StubZeroVirtualAlloc);
+  }
+
   memset(&g_ctx, 0, sizeof(g_ctx));
   memset(g_intd, 0, sizeof(g_intd));
   memset(g_intf, 0, sizeof(g_intf));
@@ -161,6 +192,19 @@ int main(int argc, char **argv) {
     if (ptd) *(int *)((char *)ptd + 0x14) = 1; /* 与 emu 对齐：钉死 rand 起点 */
     printf("# TLS idx=%08x ptd=%p holdrand=%d\n", idx, ptd,
            ptd ? *(int *)((char *)ptd + 0x14) : -1);
+  }
+  { /* 实体对象非零字段快照（与 emu 的同类打印对齐） */
+    uint32_t *tab = (uint32_t *)((char *)mod + 0x237C4);
+    for (int i = 0; i < 22; ++i) {
+      if (i != 0 && i != 3 && i != 5) continue;
+      unsigned char *p = (unsigned char *)(uintptr_t)tab[i];
+      printf("# ent[%d] @%08x:", i, (unsigned)(uintptr_t)p);
+      for (int off = 0; off < 0x100; off += 4) {
+        uint32_t v = *(uint32_t *)(p + off);
+        if (v) printf(" +%02x=%08x", off, v);
+      }
+      printf("\n");
+    }
   }
   if (p_init) printf("# func_init -> %d\n", p_init());
 
