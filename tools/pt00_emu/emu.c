@@ -1102,23 +1102,35 @@ static int step(void) {
 }
 
 /* ------------------------------------------------------- PE 装载（最小） */
+static int load_pe_bytes(const uint8_t *buf, long sz);
+
+/* CLI 包装：读文件 → 内存装载 → 释放 */
 static int load_pe(const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) { fprintf(stderr, "打不开 %s\n", path); return -1; }
   fseek(f, 0, SEEK_END);
   long sz = ftell(f);
   fseek(f, 0, SEEK_SET);
+  if (sz <= 0) { fclose(f); return -1; }
   uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-  if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); return -1; }
+  if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(buf); return -1; }
   fclose(f);
+  int rc = load_pe_bytes(buf, sz);
+  free(buf);
+  return rc;
+}
 
+/* 从内存里的 PE 映像装载（Android 侧不方便给路径；CLI 用下面的 load_pe 包一层）。
+ * 注意：opt/sec 都指向 buf，所以 buf 必须活到函数结束（原来 free 早了，属侥幸能跑）。 */
+static int load_pe_bytes(const uint8_t *buf, long sz) {
+  (void)sz;
   uint32_t pe = *(uint32_t *)(buf + 0x3c);
   if (memcmp(buf + pe, "PE\0\0", 4) != 0) { fprintf(stderr, "不是 PE\n"); return -1; }
   uint16_t nsec = *(uint16_t *)(buf + pe + 6);
   uint16_t optsz = *(uint16_t *)(buf + pe + 20);
-  uint8_t *opt = buf + pe + 24;
+  const uint8_t *opt = buf + pe + 24;
   uint32_t entry = *(uint32_t *)(opt + 16);
-  uint8_t *sec = opt + optsz;
+  const uint8_t *sec = opt + optsz;
   for (int i = 0; i < nsec; ++i, sec += 40) {
     uint32_t vsize = *(uint32_t *)(sec + 8), vaddr = *(uint32_t *)(sec + 12);
     uint32_t rawsz = *(uint32_t *)(sec + 16), rawptr = *(uint32_t *)(sec + 20);
@@ -1127,8 +1139,7 @@ static int load_pe(const char *path) {
     memcpy(gp(va), buf + rawptr, rawsz);
     memset(gp(va) + rawsz, 0, (vsize > rawsz ? vsize - rawsz : 0));
   }
-  free(buf);
-
+  /* buf 由调用者负责释放：CLI 的 load_pe 会在返回后 free，库模式是调用者的缓冲区 */
   /* 解析导入目录：给每个导入函数分配桩地址，写进 IAT */
   uint32_t dd_import = *(uint32_t *)(opt + 96 + 1 * 8);
   if (dd_import && g_stub_count == 0) {
@@ -1161,6 +1172,80 @@ static int load_pe(const char *path) {
 }
 
 /* ------------------------------------------------------------------ main */
+#ifdef PT00_EMU_LIBRARY
+/* ======================= 库模式（Android app 用） =======================
+ * 与 CLI 共用同一个解释器，只把「装载 / 调用 / 取结果」暴露成函数。
+ * 接口约定：intD 是唯一的共享内存，调用前后由平台层搬运：
+ *   pt00_emu_load_image(bytes, size);       // PE 装载 + func_load + func_init
+ *   pt00_emu_set_intd(engine_intd, 2000);   // 调用前：引擎 → 执行器
+ *   pt00_emu_call(func, a1, a2, a3, a4);
+ *   pt00_emu_get_intd(engine_intd, 2000);   // 调用后：执行器 → 引擎
+ * 原版 PT00.dll 由用户游戏数据在运行时提供，不进 APK。 */
+static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
+  for (int i = argc_ - 1; i >= 0; --i) push32(args[i]);
+  push32(SENTINEL);
+  emu_call_push(entry_, SENTINEL, cpu.esp);
+  cpu.eip = entry_;
+  int rc = -1;
+  for (;;) {
+    if (step() != 0) break;
+    if (cpu.eip == SENTINEL) { rc = 0; break; }
+    if (!(cpu.eip >= IMAGE_BASE && cpu.eip < IMAGE_BASE + 0x30000u) &&
+        !(cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE))
+      break;
+  }
+  if (rc == 0) cpu.esp += (uint32_t)argc_ * 4u;
+  return rc;
+}
+
+int pt00_emu_load_image(const void *data, unsigned size) {
+  if (!g_mem) {
+    g_mem = (uint8_t *)calloc(1, GUEST_SIZE);
+    if (!g_mem) return -1;
+  }
+  memset(g_mem, 0, GUEST_SIZE);
+  memset(&cpu, 0, sizeof(cpu));
+  memset(g_tls_val, 0, sizeof(g_tls_val));
+  memset(g_tls_used, 0, sizeof(g_tls_used));
+  memset(g_stub_hits, 0, sizeof(g_stub_hits));
+  g_stub_count = 0;
+  g_heap_ptr = 0x11400000u;
+  g_frame_n = 0;
+  g_steps = 0;
+  g_last_rc = -1;
+  int entry = load_pe_bytes((const uint8_t *)data, (long)size);
+  if (entry < 0) return -2;
+  cpu.esp = 0x10200000u;
+  cpu.ebp = cpu.esp;
+  wr32(TIB_BASE + 0x18, TIB_BASE);
+  wr32(TIB_BASE + 0x00, 0xffffffffu);
+  wr32(CTX_BASE + 0x14, INTD_BASE);
+  uint32_t args[5] = {CTX_BASE, 0, 0, 0, 0};
+  if (emu_run(IMAGE_BASE + 0x11B0u, 2, args) != 0) return -3; /* func_load */
+  { /* 与 oracle 对齐：钉死 CRT 的 rand 起点（对照装置语义，见 HANDOFF §7.2） */
+    uint32_t idx = rd32(IMAGE_BASE + 0x20AA0);
+    uint32_t ptd = g_tls_val[tls_slot(idx)];
+    if (ptd) wr32(ptd + 0x14, 1);
+  }
+  emu_run(IMAGE_BASE + 0x1670u, 0, args); /* func_init */
+  return 0;
+}
+
+int pt00_emu_call(int func, int a1, int a2, int a3, int a4) {
+  uint32_t args[5] = {(uint32_t)func, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
+                      (uint32_t)a4};
+  if (emu_run(IMAGE_BASE + 0x1680u, 5, args) != 0) return 1; /* 契约：恒返回 1 */
+  return (int)cpu.eax;
+}
+
+void pt00_emu_set_intd(const int *src, unsigned count) {
+  for (unsigned i = 0; i < count; ++i) wr32(INTD_BASE + i * 4u, (uint32_t)src[i]);
+}
+
+void pt00_emu_get_intd(int *dst, unsigned count) {
+  for (unsigned i = 0; i < count; ++i) dst[i] = (int)rd32(INTD_BASE + i * 4u);
+}
+#else
 int main(int argc, char **argv) {
   if (argc < 2) {
     fprintf(stderr, "usage: emu <PT00.dll> [calls.txt] [--seed seed.bin]\n");
@@ -1351,3 +1436,4 @@ int main(int argc, char **argv) {
   printf("# 结束于 eip=%08x（步数 %d）\n", cpu.eip, g_steps);
   return 0;
 }
+#endif /* PT00_EMU_LIBRARY */

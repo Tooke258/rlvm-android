@@ -414,6 +414,17 @@ endforeach()
 # ===========================================================================
 # 目标
 # ===========================================================================
+# ===========================================================================
+# PT00 兼容层：自研 x86-32 执行器（直接跑**原版** PT00.dll）
+# 与 tools/pt00_emu/emu.c 是同一份源码：CLI 走 main()，库模式走 PT00_EMU_LIBRARY。
+# 原版 DLL 由用户游戏数据在运行时提供，绝不进仓库/APK。
+# 对照验证见 docs/PT00-EMU-HANDOFF.md（calls_long 280/280 逐位一致）。
+# ===========================================================================
+add_library(pt00_emu STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../tools/pt00_emu/emu.c"
+)
+target_compile_definitions(pt00_emu PRIVATE PT00_EMU_LIBRARY)
+
 add_library(rlvm SHARED
     native-bridge.cpp
     # Android 平台后端（替代上游的 SDLSystem）
@@ -470,6 +481,7 @@ find_library(aaudio_lib aaudio)
 target_link_libraries(rlvm
     vorbis                      # 语音解码（OVK/KOE Ogg Vorbis）；ogg 由其 PUBLIC 传递
     freetype                    # 文字渲染
+    pt00_emu                    # PT00 小游戏：原版 DLL 执行器（见上）
     ${log_lib}
     ${android_lib}
     mediandk                    # v0.2.3 影片解码探针用的 AMediaCodec
