@@ -272,9 +272,10 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
   if (glyph == nullptr) return Size(0, 0);
 
   // 目标表面尺寸：行高夹紧要按它算（见下面 baseline 的说明）。
-  int target_size_h = -1;
+  int target_size_w = -1, target_size_h = -1;
   if (const AndroidSurface* probe_target =
           dynamic_cast<const AndroidSurface*>(destination.get())) {
+    target_size_w = probe_target->GetSize().width();
     target_size_h = probe_target->GetSize().height();
   }
   static int rendered = 0;
@@ -340,6 +341,17 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
   }
   target->BlendCoverage(glyph->coverage.data(), glyph->width, glyph->height,
                         origin_x, origin_y, font_colour);
+  // 字体探针（font_probe=1）：每次渲染一行，含目标盒子与最终 origin。
+  // 查「选项图标不见了 / 文字被裁」时，看这里有没有 origin 被夹到盒子外或高度超盒。
+  if (rlvm_android::FontProbeEnabled()) {
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-font",
+                        "font-probe: cp=U+%04X size=%d ins=(%d,%d) box=%dx%d "
+                        "glyph=%dx%d adv=%d origin=(%d,%d) clamp_asc=%d",
+                        codepoint, font_size, insertion_point_x,
+                        insertion_point_y, target_size_w, target_size_h,
+                        glyph->width, glyph->height, glyph->advance, origin_x,
+                        origin_y, (glyph->ascent != line_ascent) ? 1 : 0);
+  }
 
   // 返回「推进量 × 行高」：调用方用宽度推进插入点、用高度换行。
   // 返回位图尺寸会让每个字的推进量各不相同（字距忽宽忽窄）。

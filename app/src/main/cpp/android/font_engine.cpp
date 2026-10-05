@@ -3,6 +3,7 @@
 #include <android/log.h>
 
 #include <cstring>
+#include <atomic>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -12,6 +13,13 @@
 #include FT_TRUETYPE_IDS_H
 
 namespace rlvm_android {
+
+namespace {
+std::atomic<bool> g_font_probe{false};
+}  // namespace
+
+void SetFontProbeEnabled(bool on) { g_font_probe.store(on); }
+bool FontProbeEnabled() { return g_font_probe.load(); }
 namespace {
 
 constexpr char kLogTag[] = "rlvm-font";

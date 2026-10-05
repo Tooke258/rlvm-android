@@ -277,6 +277,7 @@ struct DiagOptions {
   bool enc_selftest = false;
   // v0.2.4 自检：字体布局宽度 vs 渲染宽度（英文左右分布不齐）。
   bool font_selftest = false;
+  bool font_probe = false;  // 每次字形渲染一行日志（查图标/裁切问题）
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -342,6 +343,8 @@ DiagOptions LoadDiagOptions() {
       options.mov_test_loop = (number != 0);
     } else if (key == "font_selftest") {
       options.font_selftest = (number != 0);
+    } else if (key == "font_probe") {
+      options.font_probe = (number != 0);
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -802,6 +805,7 @@ void RunEngineOn(System& system,
     report += selftest;
     rlvm_android::AppendAppLogLine(selftest);
   }
+  rlvm_android::SetFontProbeEnabled(diag.font_probe);
   if (diag.max_instructions > 0) max_instructions = diag.max_instructions;
   if (diag.trace) machine.set_tracing_on();
 

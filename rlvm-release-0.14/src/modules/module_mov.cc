@@ -34,6 +34,7 @@
 // 是 rlvm-android 新加的，见 docs/DECISIONS.md D-027 与 dev-log/MOV-VIDEO-M3A.jsonl。
 // 只做平台调用，不改动脚本语义。
 #include "android/mov_player.h"
+#include "android/app_log.h"
 #include "machine/general_operations.h"
 #include "machine/long_operation.h"
 #include "machine/rlmachine.h"
@@ -54,7 +55,12 @@ typedef RLOp_Void_5<StrConstant_T, IntConstant_T, IntConstant_T, IntConstant_T,
 struct MovPlayEx : public MovPlaySignature {
   void operator()(RLMachine& machine, std::string name, int x, int y, int w,
                   int h) {
-    rlvm_android::MovPlayer::Instance().Play(MovieFileId(name), x, y, w, h);
+    const bool ok = rlvm_android::MovPlayer::Instance().Play(MovieFileId(name),
+                                                             x, y, w, h);
+    // 指令级 trace（v0.2.4 查「影片播放时游戏没被中断」）：看脚本到底调了哪条、
+    // 有没有真的起播。结果同时进应用日志（面板「日志」里能看）。
+    rlvm_android::AppendAppLogLine(
+        "mov-op: movPlayEx(" + name + ") 起播" + (ok ? "成功" : "失败"));
   }
 };
 
@@ -63,14 +69,20 @@ struct MovPlayEx : public MovPlaySignature {
 struct MovPlay : public MovPlaySignature {
   void operator()(RLMachine& machine, std::string name, int x, int y, int w,
                   int h) {
-    rlvm_android::MovPlayer::Instance().Play(MovieFileId(name), x, y, w, h);
+    const bool ok = rlvm_android::MovPlayer::Instance().Play(MovieFileId(name),
+                                                             x, y, w, h);
+    rlvm_android::AppendAppLogLine(
+        "mov-op: movPlay(" + name + ") 起播" + (ok ? "成功" : "失败"));
   }
 };
 
 // movStop(5)：停播。
 struct MovStop : public RLOp_Void_Void {
   void operator()(RLMachine& machine) {
+    const bool was = rlvm_android::MovPlayer::Instance().playing();
     rlvm_android::MovPlayer::Instance().Stop();
+    rlvm_android::AppendAppLogLine(std::string("mov-op: movStop（之前") +
+                                   (was ? "在播" : "没在播") + "）");
   }
 };
 
@@ -90,12 +102,26 @@ class MovWaitLongOperation : public LongOperation {
   }
 
   bool operator()(RLMachine& machine) override {
-    if (!rlvm_android::MovPlayer::Instance().playing()) return true;
+    if (!rlvm_android::MovPlayer::Instance().playing()) {
+      if (!logged_done_) {
+        logged_done_ = true;
+        rlvm_android::AppendAppLogLine("mov-op: 等待结束（影片已停止）——脚本继续");
+      }
+      return true;
+    }
     if (timeout_ms_ > 0) {
       const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now().time_since_epoch())
                                 .count();
-      if (now >= deadline_ms_) return true;  // 到点：不再等，脚本继续
+      if (now >= deadline_ms_) {
+        if (!logged_done_) {
+          logged_done_ = true;
+          rlvm_android::AppendAppLogLine("mov-op: 等待结束（超时 " +
+                                         std::to_string(timeout_ms_) +
+                                         "ms）——脚本继续");
+        }
+        return true;  // 到点：不再等，脚本继续
+      }
     }
     return false;
   }
@@ -103,12 +129,19 @@ class MovWaitLongOperation : public LongOperation {
  private:
   int timeout_ms_ = 0;
   long long deadline_ms_ = 0;
+  bool logged_done_ = false;
 };
 
 // 参数是可选的等待上限（毫秒）；0/缺省 = 一直等到放完。
 struct MovWait : public RLOp_Void_1<DefaultIntValue_T<0>> {
   void operator()(RLMachine& machine, int timeout_ms) {
-    if (!rlvm_android::MovPlayer::Instance().playing()) return;
+    if (!rlvm_android::MovPlayer::Instance().playing()) {
+      rlvm_android::AppendAppLogLine(
+          "mov-op: movWait(" + std::to_string(timeout_ms) + ") 没在播，直接返回");
+      return;
+    }
+    rlvm_android::AppendAppLogLine(
+        "mov-op: movWait(" + std::to_string(timeout_ms) + ") 压入等待");
     machine.PushLongOperation(new MovWaitLongOperation(timeout_ms));
   }
 };
@@ -127,9 +160,14 @@ struct MovPlayExC : public MovPlaySignature {
   void operator()(RLMachine& machine, std::string name, int x, int y, int w,
                   int h) {
     rlvm_android::MovPlayer& player = rlvm_android::MovPlayer::Instance();
-    player.Play(MovieFileId(name), x, y, w, h);
-    if (player.playing()) {
+    const bool ok = player.Play(MovieFileId(name), x, y, w, h);
+    if (ok && player.playing()) {
+      rlvm_android::AppendAppLogLine(
+          "mov-op: movPlayExC(" + name + ") 起播并压入等待（脚本应停在这里）");
       machine.PushLongOperation(new MovWaitLongOperation(/*timeout_ms=*/0));
+    } else {
+      rlvm_android::AppendAppLogLine(
+          "mov-op: movPlayExC(" + name + ") 未起播，不等待（检查文件/解码器）");
     }
   }
 };
@@ -148,8 +186,10 @@ struct MovPlaying : public RLOp_Void_1<IntReference_T> {
 struct MovLoop : public MovPlaySignature {
   void operator()(RLMachine& machine, std::string name, int x, int y, int w,
                   int h) {
-    rlvm_android::MovPlayer::Instance().Play(MovieFileId(name), x, y, w, h, 0,
-                                             /*loop=*/true);
+    const bool ok = rlvm_android::MovPlayer::Instance().Play(
+        MovieFileId(name), x, y, w, h, 0, /*loop=*/true);
+    rlvm_android::AppendAppLogLine(
+        "mov-op: movLoop(" + name + ") 起播" + (ok ? "成功（循环）" : "失败"));
   }
 };
 

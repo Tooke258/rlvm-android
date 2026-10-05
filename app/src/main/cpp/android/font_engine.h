@@ -81,6 +81,11 @@ class FontEngine {
 // bearing/行高，方便和维护锚点时的数字对照。由 diag 开关 font_selftest=1 触发。
 std::string RunFontSelfTest();
 
+// 字体探针（v0.2.4，诊断用）：打开后每一次字形渲染都写一行日志（目标盒子、实际
+// origin、是否被行盒夹紧）——查「选项图标不显示」这类定位问题时用。
+void SetFontProbeEnabled(bool on);
+bool FontProbeEnabled();
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_FONT_ENGINE_H_
