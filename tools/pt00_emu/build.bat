@@ -10,4 +10,6 @@ if not exist "%VCVARS%" (
   exit /b 1
 )
 call "%VCVARS%" x64 >nul
-cl /nologo /W3 /O2 /Fe:emu.exe emu.c
+rem /utf-8 必须加：源文件是 UTF-8，而 MSVC 默认按本地代码页读，中文注释会被错解、
+rem 把后面的代码吞进注释里（表现为莫名其妙的"语法错误"，见 L10N 排查记录）。
+cl /nologo /W3 /O2 /utf-8 /Fe:emu.exe emu.c

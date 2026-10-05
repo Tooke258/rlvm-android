@@ -11,4 +11,5 @@ if not exist "%VCVARS%" (
   exit /b 1
 )
 call "%VCVARS%" x86 >nul
-cl /nologo /W3 /O2 /Fe:oracle.exe oracle.c
+rem /utf-8：源文件是 UTF-8，MSVC 默认按本地代码页读（否则中文注释会被错解）。
+cl /nologo /W3 /O2 /utf-8 /Fe:oracle.exe oracle.c

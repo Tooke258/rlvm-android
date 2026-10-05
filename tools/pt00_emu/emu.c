@@ -154,6 +154,21 @@ static int g_steps = 0;
 static int g_max_steps = 20000000;
 static int g_verbose = 0;
 
+/* 最近执行过的指令地址（环形），失败时打出来用于回溯 */
+#define EMU_HIST 32
+static uint32_t g_hist[EMU_HIST];
+static int g_hist_n = 0;
+static void hist_add(uint32_t eip) { g_hist[g_hist_n++ % EMU_HIST] = eip; }
+static void hist_dump(void) {
+  int cnt = g_hist_n < EMU_HIST ? g_hist_n : EMU_HIST;
+  fprintf(stderr, "[emu] 最近 %d 条指令地址：", cnt);
+  for (int i = 0; i < cnt; ++i) {
+    int k = (g_hist_n - cnt + i + EMU_HIST * 2) % EMU_HIST;
+    fprintf(stderr, " %08x", g_hist[k]);
+  }
+  fprintf(stderr, "\n");
+}
+
 #define UNIMPL(op)                                                       \
   do {                                                                   \
     fprintf(stderr, "[emu] 未实现指令 %s @ eip=%08x\n", op, cpu.eip - 1); \
@@ -218,7 +233,9 @@ static int step(void) {
     return -1;
   }
   uint32_t start = cpu.eip;
+  hist_add(start);
   uint8_t op = imm8();
+  int seg_fs = 0;
 
   /* 段前缀 26/2e/36/3e/64/65、操作数/地址前缀 66/67：忽略（这个 DLL 不用） */
   while (op == 0x26 || op == 0x2e || op == 0x36 || op == 0x3e || op == 0x64 ||
@@ -228,6 +245,7 @@ static int step(void) {
       if (n == 0xab) { while (cpu.ecx--) { wr32(cpu.edi, cpu.eax); cpu.edi += 4; } return 0; }
       UNIMPL("rep ...");
     }
+    if (op == 0x64) seg_fs = 1;   /* fs: —— CRT 用它做 SEH/TLS，给假值即可 */
     op = imm8();
   }
   (void)start;
@@ -250,6 +268,11 @@ static int step(void) {
     case 0x90: return 0;                    /* nop */
     case 0x98: /* cwtl */ cpu.eax = (uint32_t)(int32_t)(int16_t)cpu.eax; return 0;
     case 0x99: /* cltd */ cpu.edx = (cpu.eax & 0x80000000u) ? 0xffffffffu : 0; return 0;
+    /* mov al/eax <-> moffs（CRT 的 `mov eax, fs:[0]` 走这里；fs 一律按 0 处理） */
+    case 0xa0: { uint32_t a = imm32(); *reg8(0) = seg_fs ? 0 : rd8(a); return 0; }
+    case 0xa1: { uint32_t a = imm32(); cpu.eax = seg_fs ? 0 : rd32(a); return 0; }
+    case 0xa2: { uint32_t a = imm32(); if (!seg_fs) wr8(a, *reg8(0)); return 0; }
+    case 0xa3: { uint32_t a = imm32(); if (!seg_fs) wr32(a, cpu.eax); return 0; }
     case 0x9c: push32(cpu.eflags); return 0;
     case 0x9d: cpu.eflags = pop32(); return 0;
     case 0x89: { ModRM m = modrm(); rm_write32(m, *reg32(m.reg)); return 0; }
@@ -409,6 +432,12 @@ int main(int argc, char **argv) {
   printf("# 从 %08x 开始执行（先跑 func_load）\n", cpu.eip);
   for (;;) {
     if (step() != 0) break;
+    /* 跳到镜像外（多半是 call 落到没接的导入 thunk 上）就停下并回溯 */
+    if (cpu.eip < IMAGE_BASE || cpu.eip >= IMAGE_BASE + 0x30000u) {
+      fprintf(stderr, "[emu] eip=%08x 跑出镜像范围，停止\n", cpu.eip);
+      hist_dump();
+      break;
+    }
   }
   printf("# 停止于 eip=%08x（步数 %d）\n", cpu.eip, g_steps);
   return 0;
