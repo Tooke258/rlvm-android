@@ -20,6 +20,9 @@ bool Available();
 // 取证：记录执行器对 ctx 块与低地址的读写（小游戏卡住时看 DLL 在找哪个引擎数组）。
 void SetTraceCtx(bool on);
 
+// 试验开关：每帧首（脚本调 72(0) 时）替脚本补调一次 CallDLL(0,31)「每帧主推进」。
+void SetTick31(bool on);
+
 // 卸载状态（换游戏目录时用）。
 void Reset();
 

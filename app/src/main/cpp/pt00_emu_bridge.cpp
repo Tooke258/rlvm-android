@@ -27,6 +27,7 @@ constexpr int kIntDCount = 2000;
 
 bool g_tried = false;
 bool g_ready = false;
+bool g_tick31 = false;  // 试验开关：帧首替脚本补调 CallDLL(0,31)
 std::vector<int> g_intd(kIntDCount);
 
 int GetD(RLMachine& machine, int index) {
@@ -52,6 +53,8 @@ void Reset() {
 
 void SetTraceCtx(bool on) { pt00_emu_set_trace_ctx(on ? 1 : 0, 800); }
 
+void SetTick31(bool on) { g_tick31 = on; }
+
 bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   if (!g_tried) {
     g_tried = true;
@@ -66,6 +69,16 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       return false;
     }
     g_ready = true;
+    // 试验（可证伪）：原引擎在小游戏期间会把 intG[1900]/[1901] 置 1 ——
+    // 脚本 SEEN7110:0087/0154 就是靠这两个标志决定要不要进入「可操作阶段」，
+    // 而 RLVM 的 LB_SkipBaseball hack 把整段小游戏（连同这点引擎侧胶水）绕过去了。
+    // 这里先手工置位，验证「缺的就是这块」这个假设。
+    machine.SetIntValue(
+        libreallive::IntMemRef(libreallive::INTG_LOCATION, 1900), 1);
+    machine.SetIntValue(
+        libreallive::IntMemRef(libreallive::INTG_LOCATION, 1901), 1);
+    std::cerr << "[pt00] 试验：把 intG[1900]/[1901] 置 1（原引擎的小游戏胶水）"
+              << std::endl;
     std::cerr << "[pt00] 兼容层就绪：执行器直接跑原版 PT00.dll（" << bytes.size()
               << " 字节）" << std::endl;
   }
@@ -121,6 +134,16 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
   pt00_emu_set_intd(g_intd.data(), kIntDCount);
+  // 试验（可用 pt00_tick31=1 开关 A/B）：原引擎每帧替脚本驱动 DLL 一次
+  // 「每帧主推进」。脚本这段循环里从不调 31，但 PC 上抓到的真实帧形态里
+  // 71×22 之后就是 31 —— 判定帧首用 `72(0)`（每帧第一个 AI 调用）标记。
+  if (g_tick31 && func == 72 && a1 == 0) {
+    pt00_emu_call(31, 0, 0, 0, 0);
+    static int tick_logged = 0;
+    if (tick_logged++ < 5) {
+      std::cerr << "[pt00] 试验：帧首替脚本补调 CallDLL(0,31)" << std::endl;
+    }
+  }
   pt00_emu_call(func, a1, a2, a3, a4);
   pt00_emu_get_intd(g_intd.data(), kIntDCount);
   for (int i = 0; i < kIntDCount; ++i) {

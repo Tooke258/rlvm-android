@@ -36,6 +36,7 @@
 #include "libreallive/archive.h"
 #include "libreallive/bytecode.h"
 #include "libreallive/gameexe.h"
+#include "libreallive/intmemref.h"
 #include "long_operations/button_object_select_long_operation.h"
 #include "android/android_system.h"
 #include "android/android_graphics.h"
@@ -271,6 +272,8 @@ struct DiagOptions {
   // 取证：pt00_trace_ctx=1 → 记录 PT00 执行器对 ctx 块/低地址的读写，
   // 看 DLL 是不是在找别的引擎数组（intG 那条通道）。
   bool pt00_trace_ctx = false;
+  // 试验：pt00_tick31=1 → 每帧首替脚本补调一次 CallDLL(0,31)（原引擎的小游戏驱动）
+  bool pt00_tick31 = false;
   bool dump_graphics = false;
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
@@ -360,6 +363,8 @@ DiagOptions LoadDiagOptions() {
       options.dump_scenes = value;
     } else if (key == "pt00_trace_ctx") {
       options.pt00_trace_ctx = (number != 0);
+    } else if (key == "pt00_tick31") {
+      options.pt00_tick31 = (number != 0);
     } else if (key == "mov_probe_path") {
       options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
     } else if (key == "mov_codec") {
@@ -1041,6 +1046,7 @@ void RunEngineOn(System& system,
   // 不需要真的走到那一幕）。用来读「小游戏那几段循环到底在等什么」。
   // 取证开关：让执行器记录对 ctx 块 / 低地址的读写（看 DLL 在找哪个引擎数组）
   pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
+  pt00emu::SetTick31(diag.pt00_tick31);
   if (!diag.dump_scenes.empty()) {
     std::istringstream scs(diag.dump_scenes);
     std::string tok;
@@ -1066,6 +1072,18 @@ void RunEngineOn(System& system,
   AddAllModules(machine);
   // 上游没有的模块族 2:87（LB 小游戏的「设子对象状态」），由平台层补上。
   machine.AttachModule(new LbObjExtModule());
+  // 试验：小游戏相位标志。脚本 `SEEN7110:0087/0154` 读 `intG[1900]/[1901]` 决定
+  // 要不要进入「可操作阶段」，而全库没人写它们（整段 trace 零次写入、DLL 也只碰
+  // ctx+0x14）——推断这是**原引擎在小游戏周围做的胶水**，RLVM 的 LB_SkipBaseball
+  // hack 把它整段绕过了。脚本在第 87 行就检查，所以必须**引擎启动时**置位。
+  if (diag.lb_minigame) {
+    machine.SetIntValue(
+        libreallive::IntMemRef(libreallive::INTG_LOCATION, 1900), 1);
+    machine.SetIntValue(
+        libreallive::IntMemRef(libreallive::INTG_LOCATION, 1901), 1);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "lb_minigame: intG[1900]/[1901] 试验置 1（原引擎小游戏胶水）");
+  }
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddGameHacks");
   // lb_minigame=1 且本作是 LB/LBEX 时，不注册那个「直接 ReturnFromFarcall
   // 跳过棒球小游戏」的 line action（上游 game_hacks.cc:65），让小游戏真跑。
