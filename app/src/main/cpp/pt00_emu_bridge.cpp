@@ -215,15 +215,14 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       std::cerr << "[pt00] 试验：帧首替脚本补调 CallDLL(0,31)" << std::endl;
     }
   }
+  // 「DLL 内部死循环」取证：**调用前**记环（这样最后一条就是卡住的那一次调用）。
+  struct Rec { int f, a1, a2, a3, a4; };
+  static Rec ring[16];
+  static int ring_n = 0;
+  ring[ring_n++ % 16] = Rec{func, a1, a2, a3, a4};
   pt00_emu_call(func, a1, a2, a3, a4);
-  // 「DLL 内部死循环」取证：执行器撞到步数上限时，把**最近 16 次 CallDLL** 打出来
-  // （平时零开销、不打日志）。这样能看出是哪个 func 把 DLL 的内部状态搞坏的。
   {
-    struct Rec { int f, a1, a2, a3, a4; };
-    static Rec ring[16];
-    static int ring_n = 0;
     static int reported = 0;
-    ring[ring_n++ % 16] = Rec{func, a1, a2, a3, a4};
     if (pt00_emu_last_hit_step_limit() && reported < 3) {
       ++reported;
       std::cerr << "[pt00] 步数上限：最近 " << (ring_n < 16 ? ring_n : 16)
