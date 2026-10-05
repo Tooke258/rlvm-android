@@ -26,6 +26,7 @@
 // -----------------------------------------------------------------------
 
 #include "systems/base/graphics_system.h"
+#include "systems/base/renderable.h"
 
 #include <boost/algorithm/string.hpp>
 #include <boost/archive/text_iarchive.hpp>
@@ -518,6 +519,17 @@ void GraphicsSystem::DrawFrame(std::ostream* tree) {
   // Render text
   if (!is_interface_hidden())
     system().text().Render(tree);
+
+  // 最后绘制「最终渲染器」——通过 AddRenderable() 注册的对象（最典型的就是
+  // 选择肢 / 按钮选择窗口，见 long_operations/select_long_operation.cc 的
+  // AddRenderable(this)）。上游 DrawFrame 少了这一遍：final_renderers_ 只有
+  // 插入和删除、从没被绘制过，于是选项窗口的像素永远不出现，而它的布局矩形
+  // 仍然参与命中判定——真机表现就是「选项看不见、但点击照旧命中」（v0.2.4）。
+  for (Renderable* renderable : final_renderers_) {
+    if (renderable != nullptr) {
+      renderable->Render(tree);
+    }
+  }
 }
 
 // -----------------------------------------------------------------------

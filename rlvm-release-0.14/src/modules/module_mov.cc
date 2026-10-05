@@ -56,6 +56,11 @@ std::string MovieFileId(const std::string& name) { return "MOV/" + name + ".mpg"
 void ResetTimeSaversBeforeMovie(RLMachine& machine) {
   machine.system().text().SetSkipMode(0);
   machine.system().clear_force_fast_forward();
+  // 再补一刀：光清标志还不够——引擎跑字节码是「按时间片成批执行」的（一个片最多
+  // 10ms，skip 状态下能冲过一整段剧情，真机表现是"影片开始了剧情还往后走了一截，
+  // 停在一章开头"）。这里打一个帧边界（脚本 refresh() 用的是同一机制），
+  // 让当前这批指令到此为止，剧本就停在影片调用的这一条上。
+  machine.system().set_force_wait(true);
 }
 
 // movPlayEx(name, x, y, w, h)：异步起播，脚本继续往下走（实测脚本后面接 wait()）。

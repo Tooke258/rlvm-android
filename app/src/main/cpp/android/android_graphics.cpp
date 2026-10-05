@@ -12,6 +12,7 @@
 #include "android/game_file_system.h"
 #include "android/mov_player.h"
 #include "android/app_log.h"
+#include "android/font_engine.h"
 #include "systems/base/colour.h"
 #include "systems/base/system.h"
 #include "systems/base/system_error.h"
@@ -570,7 +571,9 @@ void AndroidSurface::RenderToScreen(const Rect& src, const Rect& dst,
         src.width() == dst.width() && src.height() == dst.height() &&
         src.width() == size_.width() && src.height() == size_.height();
     static int probe = 0;
-    if (!full_screen_present && ++probe <= 60) {
+    // 只在显式打开 font_probe=1（渲染探针）时输出，平时不占日志。
+    if (rlvm_android::FontProbeEnabled() && !full_screen_present &&
+        ++probe <= 60) {
       char buf[320];
       std::snprintf(buf, sizeof(buf),
                     "rts-probe: src=(%d,%d,%dx%d) dst=(%d,%d,%dx%d) alpha=%d "

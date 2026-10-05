@@ -1,0 +1,5 @@
+{"type":"root_cause","content":"**选项图标不显示（但点击命中）**的根因：`long_operations/select_long_operation.cc:249` 把选项窗口注册成 final renderer（`graphics->AddRenderable(this)`），而 `GraphicsSystem::DrawFrame()` **从未遍历 `final_renderers_`**——该容器在上游只有插入/删除，没有绘制。于是选项窗口的像素永远不出现，而它的布局矩形仍参与命中判定。","status":"pass"}
+{"type":"fix","content":"在 `DrawFrame()` 末尾（对象 + 文本之后）补上 final renderers 遍历：`for (Renderable* r : final_renderers_) r->Render(tree);`——放最后=选项画在最上层；顺便让按需导出的渲染树能列出这些渲染器（之前只有 `UNDER CONSTRUCTION` 占位）。头文件补 `systems/base/renderable.h`。","status":"pass"}
+{"type":"device_verify","command":"装机后读档回到选项场景。","result":"**通过**：选项正常显示（用户确认「可见了」）。","status":"pass"}
+{"type":"fix","content":"影片起播的「复位」再加一刀：只清 skip/快进标志还不够——引擎按时间片成批执行字节码（一片最多 10ms，skip 状态下能冲过一整段），真机表现是「影片开始了剧情还往后走一截、停在一章开头」。现在 `ResetTimeSaversBeforeMovie()` 末尾再 `system().set_force_wait(true)`（脚本 refresh() 用的同一机制）打一个帧边界，剧本停在影片调用那一条上。","status":"pass"}
+{"type":"note","content":"临时探针回收：`rts-probe`（RenderToScreen 前 30 次）改为只在 `font_probe=1` 时输出；`font_selftest`/`enc_selftest`/`mov_test`/按需渲染树导出等留作长期工具。","status":"info"}
