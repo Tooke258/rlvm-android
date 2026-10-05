@@ -1312,6 +1312,18 @@ int main(int argc, char **argv) {
     }
     fclose(f);
   }
+  /* --dump <file>：跑完后把 intD[2000]+intF[2000] 整片写成二进制（与 oracle 的 out.bin 同格式），
+   * 用来做「整片状态」对照——逐调用的差异行看不出没被写的槽位。 */
+  for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+      FILE *o = fopen(argv[i + 1], "wb");
+      if (!o) { fprintf(stderr, "打不开 %s\n", argv[i + 1]); return 1; }
+      for (int k = 0; k < INTD_COUNT; ++k) { int v = (int)rd32(INTD_BASE + k * 4); fwrite(&v, sizeof(int), 1, o); }
+      for (int k = 0; k < INTF_COUNT; ++k) { int v = (int)rd32(INTF_BASE + k * 4); fwrite(&v, sizeof(int), 1, o); }
+      fclose(o);
+      printf("# intD+intF 快照 -> %s\n", argv[i + 1]);
+    }
+  }
   printf("# 结束于 eip=%08x（步数 %d）\n", cpu.eip, g_steps);
   return 0;
 }
