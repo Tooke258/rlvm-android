@@ -967,6 +967,30 @@ class AndroidRLMachine : public RLMachine {
                         new LbIgnoreRawArgs(4, 151, "Sys151"));
       module->AddOpcode(152, 0, "lb_ignore_152",
                         new LbIgnoreRawArgs(4, 152, "Sys152"));
+      // LBEX 小游戏/演出还用了一批 RLVM 没登记的 Sys 号（真机日志实测）：
+      // 150/210/211/215/216 出现在 SEEN7110/515，436/441/446/451/456 出现在 SEEN7010。
+      // 一律容错占位（不解析参数 + 自己推进 IP），先让脚本不被它们挡住；
+      // 其中 456 在脚本里是 overload 1（其余是 0）。
+      module->AddOpcode(150, 0, "lb_ignore_150",
+                        new LbIgnoreRawArgs(4, 150, "Sys150"));
+      module->AddOpcode(210, 0, "lb_ignore_210",
+                        new LbIgnoreRawArgs(4, 210, "Sys210"));
+      module->AddOpcode(211, 0, "lb_ignore_211",
+                        new LbIgnoreRawArgs(4, 211, "Sys211"));
+      module->AddOpcode(215, 0, "lb_ignore_215",
+                        new LbIgnoreRawArgs(4, 215, "Sys215"));
+      module->AddOpcode(216, 0, "lb_ignore_216",
+                        new LbIgnoreRawArgs(4, 216, "Sys216"));
+      module->AddOpcode(436, 0, "lb_ignore_436",
+                        new LbIgnoreRawArgs(4, 436, "Sys436"));
+      module->AddOpcode(441, 0, "lb_ignore_441",
+                        new LbIgnoreRawArgs(4, 441, "Sys441"));
+      module->AddOpcode(446, 0, "lb_ignore_446",
+                        new LbIgnoreRawArgs(4, 446, "Sys446"));
+      module->AddOpcode(451, 0, "lb_ignore_451",
+                        new LbIgnoreRawArgs(4, 451, "Sys451"));
+      module->AddOpcode(456, 1, "lb_ignore_456",
+                        new LbIgnoreRawArgs(4, 456, "Sys456"));
     } else if (module != nullptr && module->module_type() == 1 &&
                module->module_number() == 21) {
       // Pcm：小游戏按名预载音效（WAV/PT_*.ogg），见 LbWavLoadByName 注释。
