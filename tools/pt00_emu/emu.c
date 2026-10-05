@@ -332,7 +332,9 @@ static ModRM modrm(void) {
 /* ------------------------------------------------------------- 指令实现 */
 static int g_steps = 0;
 static int g_last_rc = -1;
-static int g_max_steps = 20000000;
+/* 单次 CallDLL 的步数上限。**注意**：20M 曾把「合法的 10MB 级拷贝」误判成死循环，
+ * 排查时提到 200M（≈25M 次 4 字节拷贝）。真要防死循环，靠下面的 eip 环判断更可靠。 */
+static int g_max_steps = 200000000;
 static int g_verbose = 0;
 
 /* 最近执行过的指令地址（环形），失败时打出来用于回溯 */
@@ -1441,6 +1443,9 @@ int pt00_emu_call(int func, int a1, int a2, int a3, int a4) {
 
 /* 上一次调用是不是撞了步数上限（DLL 死循环）。见 g_last_hit_step_limit 注释。 */
 int pt00_emu_last_hit_step_limit(void) { return g_last_hit_step_limit; }
+
+/* 假堆已用字节数（诊断：排查「DLL 内部数据结构被踩」时看堆增长是否异常）。 */
+unsigned pt00_emu_heap_used(void) { return (unsigned)(g_heap_ptr - 0x11400000u); }
 
 void pt00_emu_set_intd(const int *src, unsigned count) {
   for (unsigned i = 0; i < count; ++i) wr32(INTD_BASE + i * 4u, (uint32_t)src[i]);

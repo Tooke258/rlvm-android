@@ -17,6 +17,7 @@ extern "C" {
 int pt00_emu_load_image(const void* data, unsigned size);
 int pt00_emu_call(int func, int a1, int a2, int a3, int a4);
 int pt00_emu_last_hit_step_limit(void);
+unsigned pt00_emu_heap_used(void);
 void pt00_emu_set_intd(const int* src, unsigned count);
 void pt00_emu_get_intd(int* dst, unsigned count);
 void pt00_emu_set_trace_ctx(int on, int max_lines);
@@ -226,7 +227,8 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
     if (pt00_emu_last_hit_step_limit() && reported < 3) {
       ++reported;
       std::cerr << "[pt00] 步数上限：最近 " << (ring_n < 16 ? ring_n : 16)
-                << " 次 CallDLL（旧->新）：";
+                << " 次 CallDLL（旧->新），heap_used=" << pt00_emu_heap_used()
+                << "B：";
       int total = ring_n < 16 ? ring_n : 16;
       for (int i = 0; i < total; ++i) {
         const Rec& r = ring[(ring_n - total + i) % 16];
