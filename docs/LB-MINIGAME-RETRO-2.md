@@ -77,3 +77,34 @@ lbex_sc.dll 里的字符串：; SEEN%04d / seen_sc.bin / seen_sc\*.txt / seen_sc
 
 **兼容层这一层是成功的（真机在跑原版 DLL，且与原生逐位等价）；小游戏卡在「原引擎侧的小游戏胶水」上，
 而我们一直缺的那份「基准事实」应该去 PC 端取，而不是继续在 Android 侧猜。**
+
+## 6. 补充：把「基准事实」从原生引擎里挖出来了（同日稍晚，纯静态，不需要 PC 调试）
+
+`REALLIVE.EXE`（2489344 字节，2.4MB 原生引擎）里带着四个导出名与 Gameexe 键：
+
+```
+@00632094 'reallive_dll_func_load'   @006320ac 'reallive_dll_func_init'
+@006320c4 'reallive_dll_func_free'   @006320dc 'reallive_dll_func_call'
+@00632014 '@^#DLL.%03d="%s"'（提示：DLL 必须和 RealLive.exe 同目录）
+```
+
+用 IDA 批处理（`tools/ida_find_dll_glue.py`、`tools/ida_xrefs_of.py`，复用 `.idb` 秒级出结果）顺着引用扒出调用链：
+
+| 地址 | 作用 |
+| --- | --- |
+| `sub_42D6F0` | 读 Gameexe `#DLL.%03d` → `LoadLibrary` 的**加载器**；调用 `sub_42D840`（取 `func_load` 导出） |
+| `sub_42D840/42D890/42D8E0` | `func_load` / `func_init` / `func_free` 的包装 |
+| `sub_42D930(slot, func, a1..a4)` | **引擎自己的 CallDLL**：`GetProcAddress(hModule[slot], "reallive_dll_func_call")` 后转调 |
+| `sub_4F01B0` | `sub_42D930` 的**唯一**调用者：取「DLL 名 → 槽位」（`sub_4A5BF0`）后带 func/4 参数调用 |
+| `sub_4A6D50` | `sub_4F01B0` 的**唯一**调用者 → 即**脚本 CallDLL 指令的实现** |
+| `sub_4A5BF0` | 「DLL 名 → 槽位」解析器，被 `sub_4A6980/4A6D50/4A9980/4AA870/4AB090`（各类 CallDLL 形态的指令）调用 |
+
+**结论（推翻本文 §3 的两个假设）**：原引擎调用小游戏 DLL 的**唯一来源就是脚本的 CallDLL 指令**，
+**不存在**「引擎每帧自动替脚本驱动 DLL」的机制 → 假设 B（补调 `CallDLL(0,31)`）在真值上不成立。
+因此 `intG[1900]/[1901]` 的写入者**只能在脚本里**；而原始 `SEEN.TXT` 里它只读不写 →
+**极可能我们跑的脚本（原始日文 `SEEN.TXT`）与你实际在玩的脚本（汉化补丁 `seen_sc.bin` + `seen_sc\*.txt`）不一致**，
+补丁很可能在小游戏那几幕补了原版缺的相位逻辑。
+
+**下一步**：解析 `seen_sc.bin`（或 `汉化补丁/` 下的 `seen_sc\*.txt` 覆盖），把 `7110/7450/7470/7500`
+与 `SEEN.TXT` 的同名幕逐条对比，重点看 `intG[1900]/[1901]` 与 `intD[700..771]` 附近；若确认补丁脚本多了相位逻辑，
+就把它作为 RLVM 的脚本覆盖（RLVM 本来就有 `SEEN####.TXT` 覆盖机制）喂进去再测。
