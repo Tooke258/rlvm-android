@@ -45,9 +45,14 @@
 #include "android/font_engine.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
+#include "machine/long_operation.h"
 #include "machine/rlmachine.h"
+#include "machine/rlmodule.h"
+#include "machine/rloperation.h"
 #include "machine/serialization.h"
 #include "modules/modules.h"
+#include "systems/base/event_system.h"
+#include "systems/base/graphics_system.h"
 #include "systems/base/little_busters_pt00dll.h"
 #include "utilities/file.h"
 #include "utilities/string_utilities.h"
@@ -695,6 +700,62 @@ void ExportSceneText(libreallive::Archive& archive,
             " failed=" + std::to_string(failed.size()) + " -> " + path + "\n";
 }
 
+namespace {
+
+// RealLive 的 Refresh 模块（module 1:31）有两个重载：
+//   0 = refresh —— 强制出一帧（上游 RLVM 已实现）
+//   1 =         —— 等到下一帧（**上游没实现**）
+// LB / LBEX 的小游戏主循环 SEEN7100 第 33/37 行两个都在用；缺了重载 1，脚本会
+// 在那条指令上死循环重试（logcat 里刷 `Undefined: opcode<1:31:1, 0>`），
+// 表现就是画面停住、只剩 TIME 之类的静态元素。
+//
+// 上游 `modules/` 目录受保护，而且 RLMachine::modules_ 是 private、没有访问器，
+// 所以这里在**平台层**补：继承 RLMachine 并重写 virtual 的 AttachModule，
+// 在 Refresh 模块被挂上去之前给它加一条指令。
+//
+// 「等一帧」用 LongOperation 实现：返回 false 时机器停在这条指令上，
+// 而平台外层循环每轮都会合帧再回来，所以等价于「等到至少 kRefreshWaitFrameMs 过去」。
+const unsigned int kRefreshWaitFrameMs = 16;  // ~60fps
+
+class RefreshWaitLongOp : public LongOperation {
+ public:
+  explicit RefreshWaitLongOp(unsigned int until) : until_(until) {}
+
+  bool operator()(RLMachine& machine) override {
+    const unsigned int now = machine.system().event().GetTicks();
+    if (now < until_) return false;
+    machine.system().graphics().ForceRefresh();
+    return true;
+  }
+
+ private:
+  unsigned int until_;
+};
+
+struct RefreshWaitOp : public RLOp_Void_Void {
+  void operator()(RLMachine& machine) override {
+    const unsigned int now = machine.system().event().GetTicks();
+    machine.PushLongOperation(new RefreshWaitLongOp(now + kRefreshWaitFrameMs));
+    machine.AdvanceInstructionPointer();
+  }
+};
+
+// 平台层扩展：给 (1,31) 补上 refresh 的重载 1，其余模块原样交给上游。
+class AndroidRLMachine : public RLMachine {
+ public:
+  using RLMachine::RLMachine;
+
+  void AttachModule(RLModule* module) override {
+    if (module != nullptr && module->module_type() == 1 &&
+        module->module_number() == 31) {
+      module->AddOpcode(1, 0, "refresh_wait_frame", new RefreshWaitOp());
+    }
+    RLMachine::AttachModule(module);
+  }
+};
+
+}  // namespace
+
 void RunEngineOn(System& system,
                  Gameexe& gameexe,
                  libreallive::Archive& archive,
@@ -711,7 +772,8 @@ void RunEngineOn(System& system,
   // 触摸输入（T2.3）：把当前系统暴露给 UI 线程，离开 RunEngineOn 时自动断开。
   CurrentSystemGuard current_system(dynamic_cast<AndroidSystem*>(&system));
 
-  RLMachine machine(system, archive);
+  // 平台层扩展过的机器：它会补上 Refresh 模块缺的重载 1（见上面的 AndroidRLMachine）。
+  AndroidRLMachine machine(system, archive);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddAllModules");
   AddAllModules(machine);
   __android_log_print(ANDROID_LOG_INFO, kLogTag, "step: AddGameHacks");
