@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #define GUEST_SIZE (64u * 1024u * 1024u) /* 平坦 32 位空间的一部分，够这个 DLL 用 */
 #define IMAGE_BASE 0x10000000u
@@ -30,6 +31,22 @@
  * 0x10000000，所以必须做一层基址翻译，不能直接从 0 起算。 */
 #define GUEST_BASE 0x10000000u
 static uint8_t *g_mem;
+
+/* 导入桩：给每个 KERNEL32 导入函数分一个 guest 地址，写进 IAT。
+ * 执行器在 step() 里拦截落在桩区间的 eip，改调宿主实现，然后按 cdecl ret。 */
+#define STUB_BASE 0x20000000u
+#define STUB_STRIDE 16u
+#define STUB_MAX 256
+static char g_stub_name[STUB_MAX][64];
+static int g_stub_count = 0;
+static int g_stub_hits[STUB_MAX];
+
+static uint32_t g_heap_ptr = 0x11400000u; /* CRT 堆的假实现：bump allocator */
+static uint32_t guest_alloc(uint32_t n) {
+  uint32_t p = g_heap_ptr;
+  g_heap_ptr += (n + 15u) & ~15u;
+  return p;
+}
 
 static inline int in_guest(uint32_t a, uint32_t n) {
   if (a < GUEST_BASE) return 0;
@@ -97,6 +114,13 @@ static uint8_t *reg8(int i) { /* 0..3 = al..bl, 4..7 = ah..bh */
   if (i < 4) return r;
   (void)dummy;
   return r + 1;
+}
+
+static inline uint16_t rd16(uint32_t a) {
+  return in_guest(a, 2) ? *(uint16_t *)gp(a) : 0;
+}
+static inline void wr16(uint32_t a, uint16_t v) {
+  if (in_guest(a, 2)) *(uint16_t *)gp(a) = v;
 }
 
 /* ------------------------------------------------------------- 解码工具 */
@@ -227,15 +251,105 @@ static int cond(int cc) {
 
 static int step(void);
 
+/* ---------------------------------------------------------- 导入桩分发 */
+static uint32_t arg_at(int i) { return rd32(cpu.esp + 4 + 4 * i); }
+static int stub_is(int idx, const char *name) {
+  return strcmp(g_stub_name[idx], name) == 0;
+}
+
+/* 返回 0 表示"已处理、按 cdecl 返回"，返回 1 表示是 ExitProcess 之类要停机 */
+static int stub_call(int idx) {
+  ++g_stub_hits[idx];
+  if (g_stub_hits[idx] == 1)
+    fprintf(stderr, "[emu] 桩命中 %s\n", g_stub_name[idx]);
+
+  if (stub_is(idx, "GetSystemTime") || stub_is(idx, "GetLocalTime")) {
+    uint32_t p = arg_at(0); /* SYSTEMTIME*，全 0 即可 */
+    for (int i = 0; i < 16; i += 4) wr32(p + i, 0);
+    cpu.eax = 0;
+  } else if (stub_is(idx, "GetVersion") || stub_is(idx, "GetLastError") ||
+             stub_is(idx, "SetLastError") || stub_is(idx, "SetUnhandledExceptionFilter") ||
+             stub_is(idx, "GetTimeZoneInformation") || stub_is(idx, "RtlUnwind") ||
+             stub_is(idx, "GetEnvironmentVariableA") || stub_is(idx, "GetProcAddress") ||
+             stub_is(idx, "LoadLibraryA") || stub_is(idx, "DeleteCriticalSection") ||
+             stub_is(idx, "EnterCriticalSection") || stub_is(idx, "LeaveCriticalSection") ||
+             stub_is(idx, "InitializeCriticalSection")) {
+    cpu.eax = 0;
+  } else if (stub_is(idx, "GetModuleHandleA")) {
+    cpu.eax = IMAGE_BASE;
+  } else if (stub_is(idx, "GetCurrentProcess") || stub_is(idx, "GetCurrentThreadId")) {
+    cpu.eax = 1;
+  } else if (stub_is(idx, "GetCommandLineA")) {
+    static uint32_t s = 0;
+    if (!s) { s = guest_alloc(4); g_mem[s - GUEST_BASE] = 0; }
+    cpu.eax = s;
+  } else if (stub_is(idx, "HeapCreate") || stub_is(idx, "GetProcessHeap")) {
+    cpu.eax = 0x00d00000u;
+  } else if (stub_is(idx, "HeapAlloc") || stub_is(idx, "HeapReAlloc") ||
+             stub_is(idx, "VirtualAlloc") || stub_is(idx, "HeapReAlloc")) {
+    cpu.eax = guest_alloc(arg_at(2) ? arg_at(2) : 64);
+  } else if (stub_is(idx, "HeapFree") || stub_is(idx, "VirtualFree") ||
+             stub_is(idx, "HeapDestroy") || stub_is(idx, "IsBadReadPtr") ||
+             stub_is(idx, "IsBadWritePtr")) {
+    cpu.eax = stub_is(idx, "HeapFree") || stub_is(idx, "VirtualFree") ? 1 : 0;
+  } else if (stub_is(idx, "HeapSize")) {
+    cpu.eax = 64;
+  } else if (stub_is(idx, "TlsAlloc")) {
+    static int n = 0;
+    cpu.eax = (uint32_t)(100 + n++);
+  } else if (stub_is(idx, "TlsGetValue")) {
+    cpu.eax = 0;
+  } else if (stub_is(idx, "TlsSetValue") || stub_is(idx, "TlsFree")) {
+    cpu.eax = 1;
+  } else if (stub_is(idx, "InterlockedIncrement")) {
+    uint32_t p = arg_at(0);
+    uint32_t v = rd32(p) + 1;
+    wr32(p, v);
+    cpu.eax = v;
+  } else if (stub_is(idx, "InterlockedDecrement")) {
+    uint32_t p = arg_at(0);
+    uint32_t v = rd32(p) - 1;
+    wr32(p, v);
+    cpu.eax = v;
+  } else if (stub_is(idx, "GetTickCount") || stub_is(idx, "time")) {
+    cpu.eax = (uint32_t)time(NULL);
+  } else if (stub_is(idx, "GetStdHandle")) {
+    cpu.eax = 0xfffffff4u; /* 假的 STD_OUTPUT_HANDLE 值 */
+  } else if (stub_is(idx, "GetFileType")) {
+    cpu.eax = 2; /* FILE_TYPE_CHAR，让 CRT 认为有控制台 */
+  } else if (stub_is(idx, "WriteFile")) {
+    uint32_t written = arg_at(3);
+    if (written) wr32(written, 0);
+    cpu.eax = 1;
+  } else if (stub_is(idx, "ExitProcess") || stub_is(idx, "TerminateProcess")) {
+    fprintf(stderr, "[emu] 调用了 %s，停机\n", g_stub_name[idx]);
+    return 1;
+  } else {
+    static int warned = 0;
+    if (warned++ < 20)
+      fprintf(stderr, "[emu] 桩未实现细节：%s -> 返回 0\n", g_stub_name[idx]);
+    cpu.eax = 0;
+  }
+  return 0;
+}
+
 static int step(void) {
   if (++g_steps > g_max_steps) {
     fprintf(stderr, "[emu] 步数上限 %d 用尽\n", g_max_steps);
     return -1;
   }
+  /* 落在导入桩区间：改调宿主实现，然后按 cdecl 返回 */
+  if (cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE) {
+    int idx = (int)((cpu.eip - STUB_BASE) / STUB_STRIDE);
+    if (stub_call(idx) != 0) return -1;
+    cpu.eip = pop32();
+    return 0;
+  }
   uint32_t start = cpu.eip;
   hist_add(start);
   uint8_t op = imm8();
   int seg_fs = 0;
+  int opsize16 = 0;
 
   /* 段前缀 26/2e/36/3e/64/65、操作数/地址前缀 66/67：忽略（这个 DLL 不用） */
   while (op == 0x26 || op == 0x2e || op == 0x36 || op == 0x3e || op == 0x64 ||
@@ -246,6 +360,7 @@ static int step(void) {
       UNIMPL("rep ...");
     }
     if (op == 0x64) seg_fs = 1;   /* fs: —— CRT 用它做 SEH/TLS，给假值即可 */
+    if (op == 0x66) opsize16 = 1; /* 操作数 16 位（SYSTEMTIME 那套用 16 位字段） */
     op = imm8();
   }
   (void)start;
@@ -275,8 +390,39 @@ static int step(void) {
     case 0xa3: { uint32_t a = imm32(); if (!seg_fs) wr32(a, cpu.eax); return 0; }
     case 0x9c: push32(cpu.eflags); return 0;
     case 0x9d: cpu.eflags = pop32(); return 0;
-    case 0x89: { ModRM m = modrm(); rm_write32(m, *reg32(m.reg)); return 0; }
-    case 0x8b: { ModRM m = modrm(); *reg32(m.reg) = rm_read32(m); return 0; }
+    case 0x89: {
+      ModRM m = modrm();
+      if (opsize16) {
+        uint16_t v = (uint16_t)(*reg32(m.reg) & 0xffffu);
+        if (m.is_reg) *reg32(m.addr) = (*reg32(m.addr) & 0xffff0000u) | v;
+        else wr16(m.addr, v);
+      } else rm_write32(m, *reg32(m.reg));
+      return 0;
+    }
+    case 0x8b: {
+      ModRM m = modrm();
+      if (opsize16) {
+        uint16_t v = m.is_reg ? (uint16_t)(*reg32(m.addr) & 0xffffu) : rd16(m.addr);
+        *reg32(m.reg) = v;
+      } else *reg32(m.reg) = rm_read32(m);
+      return 0;
+    }
+    case 0x3b: { /* cmp r32, r/m32 */
+      ModRM m = modrm();
+      uint32_t b = m.is_reg ? (*reg32(m.addr) & 0xffffu) : (opsize16 ? rd16(m.addr) : rd32(m.addr));
+      uint32_t a = *reg32(m.reg);
+      if (opsize16) {
+        uint32_t r = (a & 0xffffu) - b;
+        cpu.eflags &= ~(CF | OF);
+        if ((a & 0xffffu) < b) cpu.eflags |= CF;
+        cpu.eflags &= ~(ZF | SF);
+        if ((r & 0xffffu) == 0) cpu.eflags |= ZF;
+        if (r & 0x8000u) cpu.eflags |= SF;
+      } else {
+        alu_cmp(a, b);
+      }
+      return 0;
+    }
     case 0x88: { ModRM m = modrm(); rm_write8(m, *reg8(m.reg)); return 0; }
     case 0x8a: { ModRM m = modrm(); *reg8(m.reg) = rm_read8(m); return 0; }
     case 0x8d: { ModRM m = modrm(); *reg32(m.reg) = m.addr; return 0; }   /* lea */
@@ -316,7 +462,10 @@ static int step(void) {
       uint32_t a = rm_read32(m);
       switch (m.reg) {
         case 0: alu_add(a, im); rm_write32(m, a + im); break;
+        case 1: rm_write32(m, a | im); set_szp32(a | im); break;
+        case 4: rm_write32(m, a & im); set_szp32(a & im); break;
         case 5: alu_sub(a, im); rm_write32(m, a - im); break;
+        case 6: rm_write32(m, a ^ im); set_szp32(a ^ im); break;
         case 7: alu_cmp(a, im); break;
         default: UNIMPL("83 /x");
       }
@@ -408,6 +557,35 @@ static int load_pe(const char *path) {
     memset(gp(va) + rawsz, 0, (vsize > rawsz ? vsize - rawsz : 0));
   }
   free(buf);
+
+  /* 解析导入目录：给每个导入函数分配桩地址，写进 IAT */
+  uint32_t dd_import = *(uint32_t *)(opt + 96 + 1 * 8);
+  if (dd_import && g_stub_count == 0) {
+    uint8_t *d = gp(IMAGE_BASE + dd_import);
+    for (int k = 0; k < 32; ++k) {
+      uint32_t oft = *(uint32_t *)(d + k * 20 + 0);
+      uint32_t namerva = *(uint32_t *)(d + k * 20 + 12);
+      uint32_t firstthunk = *(uint32_t *)(d + k * 20 + 16);
+      if (!namerva && !firstthunk) break;
+      uint32_t ilt = oft ? oft : firstthunk;
+      for (int j = 0; j < 512; ++j) {
+        uint32_t ent = *(uint32_t *)(gp(IMAGE_BASE + ilt) + j * 4);
+        if (!ent) break;
+        uint32_t iat = IMAGE_BASE + firstthunk + j * 4;
+        if ((ent & 0x80000000u) == 0) {
+          const char *fn = (const char *)gp(IMAGE_BASE + ent + 2);
+          snprintf(g_stub_name[g_stub_count], sizeof(g_stub_name[0]), "%s", fn);
+        } else {
+          snprintf(g_stub_name[g_stub_count], sizeof(g_stub_name[0]), "ord#%u",
+                   ent & 0xffffu);
+        }
+        wr32(iat, STUB_BASE + (uint32_t)g_stub_count * STUB_STRIDE);
+        printf("# import[%d] %s -> IAT %08x\n", g_stub_count,
+               g_stub_name[g_stub_count], iat);
+        if (++g_stub_count >= STUB_MAX) break;
+      }
+    }
+  }
   return (int)entry;
 }
 
@@ -432,8 +610,12 @@ int main(int argc, char **argv) {
   printf("# 从 %08x 开始执行（先跑 func_load）\n", cpu.eip);
   for (;;) {
     if (step() != 0) break;
-    /* 跳到镜像外（多半是 call 落到没接的导入 thunk 上）就停下并回溯 */
-    if (cpu.eip < IMAGE_BASE || cpu.eip >= IMAGE_BASE + 0x30000u) {
+    /* 跳到镜像外（且不是导入桩区间）就停下并回溯 */
+    const int in_image =
+        cpu.eip >= IMAGE_BASE && cpu.eip < IMAGE_BASE + 0x30000u;
+    const int in_stub =
+        cpu.eip >= STUB_BASE && cpu.eip < STUB_BASE + STUB_MAX * STUB_STRIDE;
+    if (!in_image && !in_stub) {
       fprintf(stderr, "[emu] eip=%08x 跑出镜像范围，停止\n", cpu.eip);
       hist_dump();
       break;
