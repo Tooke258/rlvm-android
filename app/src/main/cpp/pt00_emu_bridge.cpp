@@ -16,6 +16,7 @@
 extern "C" {
 int pt00_emu_load_image(const void* data, unsigned size);
 int pt00_emu_call(int func, int a1, int a2, int a3, int a4);
+int pt00_emu_last_hit_step_limit(void);
 void pt00_emu_set_intd(const int* src, unsigned count);
 void pt00_emu_get_intd(int* dst, unsigned count);
 void pt00_emu_set_trace_ctx(int on, int max_lines);
@@ -215,6 +216,27 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
     }
   }
   pt00_emu_call(func, a1, a2, a3, a4);
+  // 「DLL 内部死循环」取证：执行器撞到步数上限时，把**最近 16 次 CallDLL** 打出来
+  // （平时零开销、不打日志）。这样能看出是哪个 func 把 DLL 的内部状态搞坏的。
+  {
+    struct Rec { int f, a1, a2, a3, a4; };
+    static Rec ring[16];
+    static int ring_n = 0;
+    static int reported = 0;
+    ring[ring_n++ % 16] = Rec{func, a1, a2, a3, a4};
+    if (pt00_emu_last_hit_step_limit() && reported < 3) {
+      ++reported;
+      std::cerr << "[pt00] 步数上限：最近 " << (ring_n < 16 ? ring_n : 16)
+                << " 次 CallDLL（旧->新）：";
+      int total = ring_n < 16 ? ring_n : 16;
+      for (int i = 0; i < total; ++i) {
+        const Rec& r = ring[(ring_n - total + i) % 16];
+        std::cerr << " f=" << r.f << "(" << r.a1 << "," << r.a2 << "," << r.a3
+                  << "," << r.a4 << ")";
+      }
+      std::cerr << std::endl;
+    }
+  }
   pt00_emu_get_intd(g_intd.data(), kIntDCount);
   // 相机回写取证：脚本的 intD[1900..1904] 全靠 CallDLL(func=12) 写；
   // 这里分别报告「执行器里变了没有」与「写回脚本数组了没有」，把两种失败分开：

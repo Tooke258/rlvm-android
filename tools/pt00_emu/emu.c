@@ -124,6 +124,9 @@ static inline uint8_t *gp(uint32_t a) { return g_mem + (a - GUEST_BASE); }
  * 访问哪个地址」。
  */
 static int g_fault_count = 0;
+/* 上一次 pt00_emu_call 是否撞到步数上限（= DLL 在内层死循环）。桥那边用它来触发
+ * 「最近 N 次 CallDLL」的转储，从而知道是哪个 func 把 DLL 内部状态搞坏的。 */
+static int g_last_hit_step_limit = 0;
 static uint32_t rd32(uint32_t a);   /* 下面定义；guest_fault 里要 dump ctx */
 
 #if !defined(_WIN32)
@@ -865,6 +868,7 @@ static int step(void) {
   g_eip_ring[g_eip_ring_pos] = cpu.eip;
   g_eip_ring_pos = (g_eip_ring_pos + 1) % EIP_RING;
   if (++g_steps > g_max_steps) {
+    g_last_hit_step_limit = 1;
     fprintf(stderr, "[emu] 步数上限 %d 用尽\n", g_max_steps);
     /* 关键现场：DLL 卡在死循环时的寄存器（指针/长度都在这里） */
     fprintf(stderr,
@@ -1377,6 +1381,7 @@ static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
    * 自己 SIGSEGV（真机运镜时就是这么崩的）。 */
   g_frame_n = 0;
   g_steps = 0;
+  g_last_hit_step_limit = 0;
   for (int i = argc_ - 1; i >= 0; --i) push32(args[i]);
   push32(SENTINEL);
   emu_call_push(entry_, SENTINEL, cpu.esp);
@@ -1433,6 +1438,9 @@ int pt00_emu_call(int func, int a1, int a2, int a3, int a4) {
   if (emu_run(IMAGE_BASE + 0x1680u, 5, args) != 0) return 1; /* 契约：恒返回 1 */
   return (int)cpu.eax;
 }
+
+/* 上一次调用是不是撞了步数上限（DLL 死循环）。见 g_last_hit_step_limit 注释。 */
+int pt00_emu_last_hit_step_limit(void) { return g_last_hit_step_limit; }
 
 void pt00_emu_set_intd(const int *src, unsigned count) {
   for (unsigned i = 0; i < count; ++i) wr32(INTD_BASE + i * 4u, (uint32_t)src[i]);
