@@ -30,6 +30,36 @@
 4. **返回值语义**：脚本按返回值分支吗？（62 个调用点里有多少是判定式的？）
 5. **时序**：DLL 是否要求"每帧调用一次"（引擎主循环钩子）？如果是，我们得在引擎循环里留一个 tick 点。
 
+## 2.5 静态分析结论（2026-10-05，`llvm-readobj` 读导入/导出表）
+
+真机与 PC 文件一致，直接读 PC 端（`G:\Little Busters! EX\Little Busters! EX`）：
+
+| DLL | 大小 | 导入 | 导出 | 结论 |
+| --- | --- | --- | --- | --- |
+| `PT00.dll` | 159,744 B | **仅 KERNEL32**（全是 MSVC 运行时启动符号） | `reallive_dll_func_load`（RVA 0x11B0） | **纯状态机/数据 DLL**：不读输入、不画屏幕 |
+| `EF00.dll` | 57,344 B | 仅 KERNEL32 | `reallive_dll_func_load`（RVA 0x10E0） | 同一类（RLVM 已有实现 = `rlbabel_dll.cc`） |
+| `lbex_sc.dll`（汉化补丁自带） | 35,328 B | KERNEL32 + **USER32 + GDI32** + MSVCRT | — | 补丁的钩子，碰输入/绘制；与小游戏无关，本项目不用它 |
+
+**这条结论把预案砍掉一大块**：PT00 不自己读输入、也不自己画屏幕 → 第 2 节问题 2/3 的答案是
+「都不需要」：输入由**脚本**读引擎的鼠标状态再当参数传进来，画面由**脚本**用 GRP/obj 指令画。
+也就是：
+
+- 不需要新增「输入模拟层」（脚本侧的鼠标/按键服务我们已经提供）；
+- 不需要新增「绘制接口」；
+- 工作量收敛成**「按 `func` 重写状态机与数值」**，即路线 A 的 M1/M2 为主。
+
+**工具（本机已就绪）**：NDK 自带 `llvm-readobj` / `llvm-objdump` / `llvm-strings`；
+IDA Pro 8.3（`E:\BaiduNetdiskDownload\IDA\IDA_Pro_v8.3_Portable`，用 `idat.exe` 跑批处理）
++ x64dbg（`E:\DBG\snapshot_2026-05-27_12-11\release\x64`，32 位 DLL 用同级 `\x32`）。
+仓库里备好了脚本 `tools/dump_dll.py`：
+
+```
+idat.exe -A -Lida.log -S"<repo>\tools\dump_dll.py PT00.dump.txt" PT00.dll
+```
+
+（先把 DLL 复制到临时目录再跑，免得 IDA 往游戏目录写 `.id0/.idb`；反编译需要 Hex-Rays，
+不可用时脚本自动退化为只导函数清单。）
+
 ## 3. 三条路线
 
 | | A. 行为级重写（推荐起步） | B. 逆向原 DLL | C. 维持跳过 |
