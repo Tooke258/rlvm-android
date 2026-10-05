@@ -1,0 +1,6 @@
+# 全幕反汇编写文件（找 intG[1900]/[1901] 的写入者）
+#
+# 输出：/sdcard/Android/data/org.rlvm.android/files/rlvm-scenes.txt
+#   （351 幕约 35MB，所以走文件不走 logcat，避免环形缓冲被挤爆）
+lb_minigame=1
+dump_scenes=all

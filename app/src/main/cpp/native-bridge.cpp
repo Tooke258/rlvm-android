@@ -1048,10 +1048,36 @@ void RunEngineOn(System& system,
   pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
   pt00emu::SetTick31(diag.pt00_tick31);
   if (!diag.dump_scenes.empty()) {
-    std::istringstream scs(diag.dump_scenes);
-    std::string tok;
-    while (std::getline(scs, tok, ',')) {
-      const int id = std::atoi(tok.c_str());
+    // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
+    // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。
+    const bool dump_all = (diag.dump_scenes == "all");
+    std::ofstream scene_file;
+    std::streambuf* old_cout_buf = nullptr;
+    if (dump_all) {
+      const char* home = getenv("HOME");
+      const std::string dir =
+          home ? std::string(home) : std::string("/sdcard/Android/data/org.rlvm.android/files");
+      const std::string path = dir + "/rlvm-scenes.txt";
+      scene_file.open(path.c_str(), std::ios::out | std::ios::trunc);
+      if (scene_file) {
+        old_cout_buf = std::cout.rdbuf(scene_file.rdbuf());
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "dump_scenes=all -> %s",
+                            path.c_str());
+        std::cerr << "[scenes] 全幕反汇编 -> " << path << std::endl;
+      } else {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag,
+                            "dump_scenes=all: 打不开输出文件，退回逐幕打印");
+      }
+    }
+    std::vector<int> ids;
+    if (dump_all) {
+      for (int i = 0; i < 10000; ++i) ids.push_back(i);
+    } else {
+      std::istringstream scs(diag.dump_scenes);
+      std::string tok;
+      while (std::getline(scs, tok, ',')) ids.push_back(std::atoi(tok.c_str()));
+    }
+    for (int id : ids) {
       std::cout << "===== SEEN" << id << " =====" << std::endl;
       std::cout << std::flush;
       try {
@@ -1059,10 +1085,11 @@ void RunEngineOn(System& system,
         if (scene) {
           DumpScenario(scene);
         } else {
-        // 之前这里只打「没有这一幕」，把「TOC 里明明有、却取不到」的 bug 掩盖了。
-        // 现在把失败原因也打出来（构造 Scenario 时的异常也一并捕获）。
-        std::cout << "(GetScenario(" << id << ") 返回空：TOC 里没有该条目，或构造失败)"
-                  << std::endl;
+          if (!dump_all) {
+            // 单幕模式才打这句；全幕模式里空条目是常态，不刷屏。
+            std::cout << "(GetScenario(" << id << ") 返回空：TOC 里没有该条目，或构造失败)"
+                      << std::endl;
+          }
         }
         std::cout << std::flush;
       } catch (const std::exception& e) {
@@ -1074,7 +1101,13 @@ void RunEngineOn(System& system,
         std::cout << "(取/转储 SEEN" << id << " 时抛未知异常，跳过这一幕)"
                   << std::endl;
       }
-      std::cout << "===== SEEN" << id << " 结束 =====" << std::endl;
+      if (!dump_all) {
+        std::cout << "===== SEEN" << id << " 结束 =====" << std::endl;
+      }
+    }
+    if (old_cout_buf) {
+      std::cout.rdbuf(old_cout_buf);
+      std::cerr << "[scenes] 全幕反汇编完成" << std::endl;
     }
   }
 
