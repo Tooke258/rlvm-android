@@ -42,6 +42,7 @@
 #include "android/mov_player.h"
 #include "android/app_log.h"
 #include "android/text_encoding.h"
+#include "android/font_engine.h"
 #include "android/saf_file_system.h"
 #include "machine/game_hacks.h"
 #include "machine/rlmachine.h"
@@ -274,6 +275,8 @@ struct DiagOptions {
   bool mov_test_loop = false;  // 自测也用循环播放（验 movLoop 的通路）
   // D-033 自检：跑一次「GBK→CP932」编码链的逐步诊断（进 report 与应用日志）。
   bool enc_selftest = false;
+  // v0.2.4 自检：字体布局宽度 vs 渲染宽度（英文左右分布不齐）。
+  bool font_selftest = false;
   // 汉化用：把 SEEN.TXT 每个场景的文本串按顺序导出（见 docs/LOCALIZATION.md）。
   bool export_jp_text = false;
   // 一次触摸等价于哪个鼠标键（位掩码：1=左键 2=右键 3=两者）。
@@ -337,6 +340,8 @@ DiagOptions LoadDiagOptions() {
       options.enc_selftest = (number != 0);
     } else if (key == "mov_test_loop") {
       options.mov_test_loop = (number != 0);
+    } else if (key == "font_selftest") {
+      options.font_selftest = (number != 0);
     } else if (key == "export_jp_text") {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
@@ -789,6 +794,11 @@ void RunEngineOn(System& system,
   // D-033 自检：编码链逐步诊断（enc_selftest=1）。一次运行就能定位是哪一步断了。
   if (diag.enc_selftest) {
     const std::string selftest = rlvm_android::RunEncodingSelfTest();
+    report += selftest;
+    rlvm_android::AppendAppLogLine(selftest);
+  }
+  if (diag.font_selftest) {
+    const std::string selftest = rlvm_android::RunFontSelfTest();
     report += selftest;
     rlvm_android::AppendAppLogLine(selftest);
   }

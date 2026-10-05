@@ -148,6 +148,9 @@ bool FontEngine::SetPixelSize(int pixel_size) {
 int FontEngine::Advance(uint32_t codepoint, int pixel_size) {
   if (!EnsureLoaded() || !SetPixelSize(pixel_size)) return 0;
   FT_Set_Transform(face_, nullptr, nullptr);
+  // ASCII 按**半角定宽格**（原版 MS Gothic 的做法）：拉丁比例宽度和日文全角格混排
+  // 会显得左右分布不齐（v0.2.4 真机反馈，数见 font_selftest）。
+  if (codepoint < 0x80) return std::max(1, pixel_size / 2);
   if (FT_Load_Char(face_, codepoint, FT_LOAD_DEFAULT) != 0) return pixel_size / 2;
   return static_cast<int>(face_->glyph->advance.x >> 6);
 }
@@ -183,7 +186,10 @@ const GlyphBitmap* FontEngine::Rasterize(uint32_t codepoint,
   GlyphBitmap glyph;
   glyph.width = static_cast<int>(bitmap.width);
   glyph.height = static_cast<int>(bitmap.rows);
-  glyph.advance = static_cast<int>(face_->glyph->advance.x >> 6);
+  // 同 Advance()：ASCII 用半角定宽格，保证布局宽度与渲染宽度一致。
+  glyph.advance = codepoint < 0x80
+                      ? std::max(1, pixel_size / 2)
+                      : static_cast<int>(face_->glyph->advance.x >> 6);
   glyph.bearing_x = face_->glyph->bitmap_left;
   glyph.bearing_y = face_->glyph->bitmap_top;
   glyph.ascent = static_cast<int>(face_->size->metrics.ascender >> 6);
@@ -206,6 +212,36 @@ const GlyphBitmap* FontEngine::Rasterize(uint32_t codepoint,
   std::map<uint64_t, GlyphBitmap>::iterator inserted =
       cache_.emplace(key, std::move(glyph)).first;
   return &inserted->second;
+}
+
+std::string RunFontSelfTest() {
+  FontEngine& f = FontEngine::Instance();
+  std::string out;
+  if (!f.EnsureLoaded()) {
+    return "font-selftest: 字体加载失败：" + f.last_error() + "\n";
+  }
+  out += "font-selftest: " + f.description() + "\n";
+  const uint32_t samples[] = {'A', 'B',  'W',  'a',  'b',  'i',  'l',  'm',
+                              '.', '1',  '0',  ' ',  0x3042 /*あ*/,
+                              0x30A2 /*ア*/, 0x65E5 /*日*/, 0x6708 /*月*/};
+  const int sizes[] = {12, 18, 24};
+  char line[256];
+  for (int size : sizes) {
+    out += "font-selftest: size=" + std::to_string(size) + "\n";
+    for (uint32_t cp : samples) {
+      const GlyphBitmap* g = f.Rasterize(cp, size, false, false);
+      const int layout_adv = f.Advance(cp, size);
+      std::snprintf(
+          line, sizeof(line),
+          "  U+%04X layout_adv=%d raster_adv=%d w=%d bx=%d by=%d asc=%d desc=%d%s\n",
+          cp, layout_adv, g ? g->advance : -1, g ? g->width : -1,
+          g ? g->bearing_x : -1, g ? g->bearing_y : -1, g ? g->ascent : -1,
+          g ? g->descent : -1,
+          (g != nullptr && layout_adv != g->advance) ? "   <-- 布局/渲染宽度不一致" : "");
+      out += line;
+    }
+  }
+  return out;
 }
 
 }  // namespace rlvm_android

@@ -1,0 +1,5 @@
+{"type":"tool","content":"加了 `font_selftest=1` 自检（`RunFontSelfTest()`）：对 A/B/W/a/b/i/l/m/./1/0/空格/あ/ア/日/月，在 12/18/24 三个字号下并排打出「布局宽度 `Advance()`」与「渲染宽度 `Rasterize()->advance`」以及 width/bearing_x/bearing_y/asc/desc。","status":"pass"}
+{"type":"observation","content":"size=18 实测：**layout_adv 与 raster_adv 全部一致**（所以不是布局/渲染打架）；拉丁是**比例宽度**（A=11 B=12 W=16 a=10 i=5 l=5 m=17 .=5 1=10 0=10 空格=4），而日文一律 **18**（= 字号，全角格）。","status":"pass"}
+{"type":"root_cause","content":"原版字体（MS Gothic）的 **ASCII 是半角定宽格**（每个字符占半个全角格），日文是全角格；我们直接用 Noto Sans CJK 的**比例**拉丁宽度，和日文全角格混排就出现「左右分布不齐」（真机反馈）。","status":"pass"}
+{"type":"fix","content":"ASCII（< 0x80）统一按 `max(1, pixel_size/2)` 的半角定宽格：`FontEngine::Advance()` 与 `Rasterize()` 里的 `advance` 同步改（保证两处一致），渲染时字墨在格内**居中**（窄字形如 i/l/. 不会贴左）；非 ASCII 仍按 bearing 摆放、全角格不变。","status":"pass"}
+{"type":"device_verify","command":"装机后进 LOAD 界面截图（看日期行的 ASCII 数字/符号）。","result":"日期行 `9/20(01:28)`、`10/04(21:49)` 各字符一格、间距均匀；日文标题不受影响。同屏还看到玩家新存的槽 06 显示正确中文「７月１９日(星期四)」——说明 D-033 的编码修复在真实游玩里同样成立。","status":"pass"}

@@ -76,6 +76,11 @@ class FontEngine {
   std::map<uint64_t, GlyphBitmap> cache_;
 };
 
+// 字体自检（v0.2.4 / 英文左右分布不齐）：把「布局用的宽度 Advance()」和「渲染用的
+// Rasterize()->advance」并排打出来，看是不是两者不一致导致字距忽宽忽窄；顺带打出
+// bearing/行高，方便和维护锚点时的数字对照。由 diag 开关 font_selftest=1 触发。
+std::string RunFontSelfTest();
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_FONT_ENGINE_H_

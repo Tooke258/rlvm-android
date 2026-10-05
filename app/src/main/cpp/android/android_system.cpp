@@ -315,7 +315,12 @@ Size AndroidTextSystem::RenderGlyphOnto(const std::string& current,
     line_descent = target_size_h - line_ascent;
   }
   const int baseline = insertion_point_y + line_ascent;
-  const int origin_x = insertion_point_x + glyph->bearing_x;
+  // ASCII 现在是「半角定宽格」（见 FontEngine::Advance），字墨要在格内**居中**，
+  // 否则窄字形（i/l/.）会贴着格子左边、看起来疏密不均；非 ASCII 仍按 bearing 摆。
+  const int origin_x =
+      codepoint < 0x80
+          ? insertion_point_x + std::max(0, (glyph->advance - glyph->width) / 2)
+          : insertion_point_x + glyph->bearing_x;
   int origin_y = baseline - glyph->bearing_y;
   // 再把位图夹回盒子内：夹紧行高后，个别字形会稍微跑到盒子上沿外（真机反馈：
   // 「顶上被截断了一点」）——这行把它压回盒子里，保持"行顶对齐"的观感。
