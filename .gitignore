@@ -40,6 +40,10 @@ tools/pt00_oracle/*.exe
 tools/pt00_oracle/*.obj
 tools/pt00_probe.exe
 tools/pt00_probe.obj
+tools/g00_decode_probe.exe
+tools/g00_decode_probe.obj
+tools/file.obj
+tools/endian.obj
 
 # ---- 第三方依赖（体积大，由 tools/setup_third_party.ps1 获取）----
 third_party/

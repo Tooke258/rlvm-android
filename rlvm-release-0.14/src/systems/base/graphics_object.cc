@@ -865,11 +865,27 @@ void GraphicsObject::DeleteObjectMutators() {
 void GraphicsObject::Render(int objNum,
                             const GraphicsObject* parent,
                             std::ostream* tree) {
-  if (object_data_ && visible()) {
-    if (tree) {
-      *tree << "Object #" << objNum << ":" << std::endl;
+  // 诊断（只在 tree != NULL 时开）：把**所有已分配**对象都列一行，包括不可见的。
+  // 这一步很关键：原实现只列「有 data 且 visible()」的对象，于是
+  //   「对象根本没被创建」和「创建了但 visible=0（或被裁剪掉）」
+  // 在日志里长得一模一样 —— 小游戏「选手不上屏」的调查就卡在这上面过。
+  if (tree) {
+    *tree << "Object #" << objNum << ": vis=" << (visible() ? 1 : 0)
+          << " data=" << (object_data_ ? 1 : 0)
+          << " patt=" << GetPattNo()
+          << " z=" << z_order() << "/" << z_layer() << "/" << z_depth()
+          << " xy=" << x() << "," << y()
+          << " parent=" << (parent ? "yes" : "no");
+    if (object_data_) {
+      if (object_data_->IsParentLayer())
+        *tree << " LAYER";
+      else
+        object_data_->ObjectInfoForTree(*tree);
     }
+    *tree << std::endl;
+  }
 
+  if (object_data_ && visible()) {
     object_data_->Render(*this, parent, tree);
   }
 }

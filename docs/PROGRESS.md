@@ -30,8 +30,14 @@
 * `tools/pt00_probe.exe`（**本轮新增**）：**只读**扫原生 `REALLIVE.EXE` 的内存，按签名窗口
   `intD[70..76] = 20,19,15,10,0,-1,1` 反推 `intD` 基址，再把 A2 要的那一族下标整段打出来；
   `--selftest` 已 PASS（找到 + 基址正确），进程名解析与负路径也都测过。构建：`tools\build_pt00_probe.bat`。
+  **续（2026-10-06）**：补了 `--scan-all`（不知道进程名也能找）、`--list`、`--find-str <文本>`、
+  `--full`（整片 `intD[0..1999]`），运行期消息全 ASCII（cmd 用 CP936 解码 UTF-8 中文会乱码）。
+  **已在 PC 实测**：汉化版真引擎进程是 **`lbex_sc.exe`**（不是 `REALLIVE.EXE`），A2 全量已取到（见
+  `docs/LB-MINIGAME-NATIVE-ANCHORS.md` §5）。
 * `dump_scenes=all`（351 幕反汇编写文件，本地 `build/rlvm-scenes.txt`）、`tools/ida_find_dll_glue.py` +
   `tools/ida_xrefs_of.py`（对 `REALLIVE.EXE` 做调用链取证）、`pt00_trace_ctx`、objbtn 诊断、图形栈转储。
+* `tools/g00_decode_probe.exe`（本轮新增，PC 侧）：编译 **APK 同款** vendored 解码器，回答
+  「这张图到底解出来是什么」——已用它排除「选手贴图解码成空图」这条。
 
 进度（PC 侧，不需要真机）：
 

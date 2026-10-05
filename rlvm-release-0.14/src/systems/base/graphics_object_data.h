@@ -67,6 +67,10 @@ class GraphicsObjectData {
                       const GraphicsObject* parent,
                       std::ostream* tree);
 
+  // 诊断用转发：ObjectInfo() 在本类里是 protected，但「完整对象清单」需要在
+  // GraphicsObject::Render() 里把**不可见**对象的名字也打出来（见那边注释）。
+  void ObjectInfoForTree(std::ostream& tree) { ObjectInfo(tree); }
+
   virtual int PixelWidth(const GraphicsObject& rendering_properties) = 0;
   virtual int PixelHeight(const GraphicsObject& rendering_properties) = 0;
 
