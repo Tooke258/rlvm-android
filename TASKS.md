@@ -311,3 +311,42 @@ RLVM 目前用 `LB_SkipBaseball` 直接跳过（`machine/game_hacks.cc`），
 
 > 按键映射（同日已修）：输入栏的浮动方向键原来只微推虚拟光标、不发方向键。现在按下会发
 > `RLKEY_UP/DOWN/RIGHT/LEFT`（运动命令）并保留光标微推，按住 60ms 重复、抬手补 key up。
+
+## 计划：小游戏收尾（2026-10-06 夜定；来源 `docs/ENGINE-INTEGRATION-LESSONS.md` §6）
+
+> 口径：**先取证再改**；一次只动一件事；每步都要有"能证伪"的判据。
+
+### P1 方向键 / 运动输入
+
+- [x] 静态摸排完成 —— 结论与证据见 `docs/INPUT-KEY-RECON.md`
+      （平台链路是通的；`DispatchEvent` 只交给 listener 与栈顶 long op，
+      脚本执行期间按键被丢弃；脚本从不轮询方向键；`Sys151/152` 是"键码表轮询"，
+      我们只做了鼠标版；`intD[109]` 是死通道）
+- [x] 平台层底座：按键按住状态 `IsKeyHeld()` / `IsMouseButtonHeld()`；
+      按键诊断日志 `rlvm-input: key code=… pressed=… longop=…`（实验 B 一行可判）
+- [x] PC 侧标定工具：`python tools/input_calib.py --session --watch-slots 101,109`
+- [ ] **实验 A/B/C**（真机或 PC 任一侧，见 `INPUT-KEY-RECON.md` §2）→ 定分支
+- [ ] **PC 标定键码表** → 得到 (输入, 槽位, 值) 真值
+- [ ] **按真值实现 `Sys151` 键码表**（硬约束：保留鼠标语义，
+      `SEEN7420` 的 `intD[101] == 1` 挥棒判定不得回归）
+- [ ] `Sys152` 键码表实现（低优先级，当前无消费者）
+- [ ] 仅当实验 C 证明 pad 的 `nudgeCursor()` 无效时，才做"引擎侧方向键 → 光标移动"
+- [ ] 验收：`calls_long` 仍 280/280；VN 里 UP/DOWN 能翻页；小游戏里按住的键能被轮询反映
+
+### P2 小游戏渲染三项
+
+- [ ] **丢背景**：`dump_graphics` 看该层在不在、src/dst 是否 0×0；
+      再与 PC 同点截屏对照图层顺序（区分"没画"与"画了被盖"）
+- [ ] **实体缺失**：按 A1 对象表逐项比对（含 children 与图层顺序，
+      不要只看"这张图在不在"）
+- [ ] **卡顿**：先拆分三段 —— 执行器（每帧 CallDLL 次数 × 单次耗时）/ 渲染 / 合帧，
+      再决定补指令、减调用还是动合帧策略
+
+### P3 收尾项
+
+- [ ] 结算段未实现 opcode：`op<1:4:461, 1>`、`op<1:12:1103, 1>(10,100,10,100,5,5,1,1,1,1,0)`
+- [ ] `lb_child_obj_1058` 四条空实现（`SEEN7340` line 110/111/145/146）
+- [ ] 存档标题乱码（测试用，暂缓）、影片音画不同步（见 `dev-log/OPEN-ISSUES.jsonl`）
+
+> 维护：本清单与 `docs/ENGINE-INTEGRATION-LESSONS.md` §6、`dev-log/OPEN-ISSUES.jsonl`
+> 三处同步；每完成一项在这里打勾并在 `任务日志.md` 记一行。
