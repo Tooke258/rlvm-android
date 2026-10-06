@@ -27,6 +27,9 @@
 
 #include "modules/module_obj.h"
 
+#include <sstream>
+
+#include "android/app_log.h"
 #include "machine/properties.h"
 #include "machine/rlmachine.h"
 #include "systems/base/graphics_object.h"
@@ -273,6 +276,18 @@ Obj_SetOneIntOnObj::~Obj_SetOneIntOnObj() {}
 void Obj_SetOneIntOnObj::operator()(RLMachine& machine, int buf, int incoming) {
   GraphicsObject& obj = GetGraphicsObject(machine, this, buf);
   ((obj).*(setter))(incoming);
+
+  // 取证（diag: patno_trace=1，默认关）：图案号写没写、写成多少、写完立刻读回多少。
+  if (rlvm_android::LbPatNoTraceWanted() &&
+      setter == &GraphicsObject::SetPattNo) {
+    int parent = -1;
+    this->GetProperty(P_PARENTOBJ, parent);
+    std::ostringstream oss;
+    oss << "[patno] SEEN" << machine.SceneNumber() << " L"
+        << machine.line_number() << " parent=" << parent << " child=" << buf
+        << " set=" << incoming << " now=" << obj.GetPattNo();
+    rlvm_android::AppendAppLogLine(oss.str());
+  }
 
   machine.system().graphics().mark_object_state_as_dirty();
 }

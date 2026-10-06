@@ -1,0 +1,12 @@
+# 目的：暂停菜单图标仍是「六个 0 号脸」——确认 `objPattNo` 这一步到底发生了什么。
+#
+# 已知：脚本 `SEEN7800` index3 对 221 号的子对象按 `角色号 × 5` 写图案
+# （0/5/10/15/…/70；两个 PT_RMENU_BTN00 是 5 和 10），但真机渲染树里 221 的所有
+# 子对象 `patt=` 全是 0 → 写没发生、写错对象、或被立刻覆盖。
+#
+# 两个开关都会**对所有场景**打印（小游戏里每帧上千行），看完菜单就尽快退出：
+#   case_trace=1  → `[case] SEENxxxx Lnnn value=? n=? [0](<00>…) -> raw_hit=6/hit=6/default=13/none`
+#   patno_trace=1 → `[patno] SEENxxxx Lnnn parent=221 child=8 set=30 now=30`
+lb_minigame=1
+case_trace=1
+patno_trace=1

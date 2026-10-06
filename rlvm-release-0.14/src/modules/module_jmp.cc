@@ -56,6 +56,26 @@ using libreallive::ExpressionPiecesVector;
 
 namespace {
 
+// case 串可能是「原始 32 位字面量」（带内嵌 NUL），直接进日志会被 C 字符串截断，
+// 这里把不可打印字节转义成 <xx>，保证 trace 行完整可读。
+std::string SanitizeCaseForLog(const std::string& in) {
+  std::string out;
+  out.reserve(in.size());
+  for (char raw : in) {
+    const unsigned char c = static_cast<unsigned char>(raw);
+    if (c >= 0x20 && c < 0x7f) {
+      out.push_back(static_cast<char>(c));
+    } else {
+      static const char* kHex = "0123456789abcdef";
+      out.push_back('<');
+      out.push_back(kHex[c >> 4]);
+      out.push_back(kHex[c & 0x0f]);
+      out.push_back('>');
+    }
+  }
+  return out;
+}
+
 // Finds which case should be used in the *_case functions.
 int EvaluateCase(RLMachine& machine, const CommandElement& goto_element) {
   const ExpressionPiecesVector& conditions = goto_element.GetParsedParameters();
@@ -76,7 +96,7 @@ int EvaluateCase(RLMachine& machine, const CommandElement& goto_element) {
   for (int i = 0; i < cases; ++i) {
     std::string caseUnparsed = goto_element.GetCase(i);
     if (case_trace) {
-      case_trace_text << " [" << i << "]" << caseUnparsed;
+      case_trace_text << " [" << i << "]" << SanitizeCaseForLog(caseUnparsed);
     }
 
     // Check for bytecode wellformedness. All cases should be

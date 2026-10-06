@@ -347,6 +347,9 @@ struct DiagOptions {
   // `[case] SEENxxxx Lnnn value=? n=? [i](case)… -> hit/default/none`
   // 用途：暂停菜单里 `goto_case(intA[i])` 选图案号，确认为什么全部落在 0 号脸。
   bool case_trace = false;
+  // patno_trace=1：`objPattNo` 写入取证（`[patno] SEENxxxx Lnnn parent=? child=?
+  // set=? now=?`），用于定位「暂停菜单图标全是 0 号脸」。
+  bool patno_trace = false;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
@@ -430,6 +433,8 @@ DiagOptions LoadDiagOptions() {
       options.op_trace = value;
     } else if (key == "case_trace") {
       options.case_trace = (number != 0);
+    } else if (key == "patno_trace") {
+      options.patno_trace = (number != 0);
     } else if (key == "input_trace") {
       options.input_trace = (number != 0);
     } else if (key == "intd_poke") {
@@ -1551,6 +1556,7 @@ void RunEngineOn(System& system,
   rlvm_android::SetLbWipeLog(diag.wipe_log);
   rlvm_android::SetLbOpTraceFilter(diag.op_trace);
   rlvm_android::SetLbCaseTrace(diag.case_trace);
+  rlvm_android::SetLbPatNoTrace(diag.patno_trace);
   if (!diag.op_trace.empty()) machine.set_tracing_on();
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);

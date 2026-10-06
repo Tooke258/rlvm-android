@@ -37,6 +37,12 @@ bool LbOpTraceWanted(const std::string& op_name);
 void SetLbCaseTrace(bool on);
 bool LbCaseTraceWanted();
 
+// 图案号写入取证（diag: patno_trace=1，默认关）：每次 `objPattNo`（`2:81:1039` 等）
+// 打一行 `[patno] SEENxxxx Lnnn parent=? child=? set=? now=?`。
+// 用途：暂停菜单图标全是 0 号脸时，确认「写入有没有发生 / 值对不对 / 写完立刻读回多少」。
+void SetLbPatNoTrace(bool on);
+bool LbPatNoTraceWanted();
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_
