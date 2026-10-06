@@ -23,6 +23,7 @@ void pt00_emu_get_intd(int* dst, unsigned count);
 void pt00_emu_set_trace_ctx(int on, int max_lines);
 void pt00_emu_set_watch(unsigned eip, int max_lines);
 void pt00_emu_set_fp_trace(unsigned lo, unsigned hi, int cap);
+void pt00_emu_set_insn_trace(unsigned lo, unsigned hi, int cap);
 }
 
 namespace {
@@ -85,6 +86,11 @@ void SetWatch(unsigned eip, int max_lines) {
 // 只打印 EIP 落在区间内的 x87 操作及其栈顶，用来定位「整段浮点算偏了」的问题。
 void SetFpTrace(unsigned lo, unsigned hi, int cap) {
   pt00_emu_set_fp_trace(lo, hi, cap);
+}
+
+// 全指令追踪（含整数/分支）：见 emu.c 里 pt00_emu_set_insn_trace 的说明。
+void SetInsnTrace(unsigned lo, unsigned hi, int cap) {
+  pt00_emu_set_insn_trace(lo, hi, cap);
 }
 
 void SetVerbose(bool on) { g_verbose = on; }

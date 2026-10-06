@@ -1,0 +1,25 @@
+# 击球支的「全指令 + x87」双追踪，窗口只取决定方向的那一段
+#
+# 窗口 0x10003F00..0x10004040 覆盖：
+#   - 触球几何：Δz/Δx 斜率 → fpatan（0x10003f40..0x10003f4e）
+#   - 挥棒角 fild / fchs / fcos / fsin（0x10003f5a..0x10003f68）
+#   - 总角组装 + 归一化校验（0x100040da..0x1000410c）
+#   - **决定方向的那个 jz**：0x10003ff1 fld[0]; fcomp st(1); fnstsw; test ah,41h; jz 0x1000401B
+#     （不跳 ⇒ 后面两次 +1.5708 ⇒ 总角多 π ⇒ 球朝身后）
+#
+# 输出两种行（都走 stderr / logcat 的 rlvm-stderr）：
+#   [insn] <eip> op=.. <3 字节> eax=.. ecx=.. edx=.. esi=.. edi=.. ebp=.. esp=.. efl=..
+#   [x87]  <eip> op=.. modrm=.. rc=.. st[前] -> [后]
+# 两条流都有各自 6000 行的额度，够覆盖几十次调用。
+#
+# 请在第一球就挥棒（打中最好）。关掉：删掉 pt00_* 这四行。
+frame_hz=0
+logic_hz=37
+pt00_fp_lo=10003F00
+pt00_fp_hi=10004040
+pt00_insn_lo=10003F00
+pt00_insn_hi=10004040
+
+# 常规小游戏通路（保持不动）
+lb_minigame=1
+sys1005_trace=0

@@ -119,6 +119,8 @@ int g_logic_hz = 0;
 // 定点 x87 追踪的地址区间（十六进制，diag pt00_fp_lo / pt00_fp_hi）。
 // 例：盯 func 50 的角度解算 → pt00_fp_lo=10003BB0 pt00_fp_hi=10004380
 unsigned g_pt00_fp_lo = 0, g_pt00_fp_hi = 0;
+// 全指令追踪的地址区间（diag pt00_insn_lo / pt00_insn_hi，十六进制）。
+unsigned g_pt00_insn_lo = 0, g_pt00_insn_hi = 0;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -602,6 +604,10 @@ DiagOptions LoadDiagOptions() {
       g_pt00_fp_lo = (unsigned)strtoul(value.c_str(), nullptr, 16);
     } else if (key == "pt00_fp_hi") {
       g_pt00_fp_hi = (unsigned)strtoul(value.c_str(), nullptr, 16);
+    } else if (key == "pt00_insn_lo") {
+      g_pt00_insn_lo = (unsigned)strtoul(value.c_str(), nullptr, 16);
+    } else if (key == "pt00_insn_hi") {
+      g_pt00_insn_hi = (unsigned)strtoul(value.c_str(), nullptr, 16);
     } else if (key == "max_instructions") {
       if (number > 0) options.max_instructions = number;
     } else if (key == "frame_log_every") {
@@ -1523,6 +1529,8 @@ void RunEngineOn(System& system,
   // （第一轮设成 600，结果只装下一次「没击中」的调用，击中支被截断了。）
   if (g_pt00_fp_lo != 0 && g_pt00_fp_hi > g_pt00_fp_lo)
     pt00emu::SetFpTrace(g_pt00_fp_lo, g_pt00_fp_hi, 6000);
+  if (g_pt00_insn_lo != 0 && g_pt00_insn_hi > g_pt00_insn_lo)
+    pt00emu::SetInsnTrace(g_pt00_insn_lo, g_pt00_insn_hi, 6000);
   if (!diag.dump_scenes.empty()) {
     // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
     // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。

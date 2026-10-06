@@ -30,6 +30,7 @@ void SetIntgHack(bool on);
 // 用途见 native-bridge.cpp 的 pt00_watch 注释（拿回死循环入口的 begin/end）。
 void SetWatch(unsigned eip, int max_lines);
 void SetFpTrace(unsigned lo, unsigned hi, int cap);
+void SetInsnTrace(unsigned lo, unsigned hi, int cap);
 
 // 逐调用诊断日志开关（默认关；logcat 是同步 I/O，开着会把小游戏越跑越慢）。
 void SetVerbose(bool on);

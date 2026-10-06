@@ -154,6 +154,18 @@ void pt00_emu_set_fp_trace(uint32_t lo, uint32_t hi, int cap) {
   g_fp_trace_cap = cap;
 }
 
+/* 全指令追踪（含整数/分支，不只是 x87）：EIP 落在 [lo,hi) 内就把每条指令的
+   原始字节 + 寄存器/标志打一行。用途：x87 链已经逐条验过是对的，剩下要排的是
+   分支依据（test/jcc）与整数搬运。 */
+static uint32_t g_insn_trace_lo = 0, g_insn_trace_hi = 0;
+static int g_insn_trace_cap = 0;
+
+void pt00_emu_set_insn_trace(uint32_t lo, uint32_t hi, int cap) {
+  g_insn_trace_lo = lo;
+  g_insn_trace_hi = hi;
+  g_insn_trace_cap = cap;
+}
+
 void pt00_emu_set_watch(uint32_t eip, int max_lines) {
   g_watch_eip = eip;
   /* max_lines < 0：只进环形缓冲、不逐条打印（默认用法，日志只留步数上限时的转储）。 */
@@ -1197,6 +1209,15 @@ static int step(void) {
     }
   }
   uint8_t op = imm8();
+  g_cur_eip = start;
+  if (g_insn_trace_cap > 0 && start >= g_insn_trace_lo && start < g_insn_trace_hi) {
+    --g_insn_trace_cap;
+    fprintf(stderr,
+            "[insn] %08x op=%02x %02x%02x%02x eax=%08x ecx=%08x edx=%08x "
+            "esi=%08x edi=%08x ebp=%08x esp=%08x efl=%08x\n",
+            start, op, rd8(start + 1), rd8(start + 2), rd8(start + 3), cpu.eax,
+            cpu.ecx, cpu.edx, cpu.esi, cpu.edi, cpu.ebp, cpu.esp, cpu.eflags);
+  }
   int seg_fs = 0;
   int opsize16 = 0;
   g_seg_fs = 0;
