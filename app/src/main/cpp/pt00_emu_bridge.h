@@ -23,6 +23,9 @@ void SetTraceCtx(bool on);
 // 试验开关：每帧首（脚本调 72(0) 时）替脚本补调一次 CallDLL(0,31)「每帧主推进」。
 void SetTick31(bool on);
 
+// pt00_intg_hack=0：不在首次调用 DLL 时预置 intG[1900]/[1901]（交给脚本置位）。
+void SetIntgHack(bool on);
+
 // 观察点：执行器每次 CallDLL 第一次命中 eip 时打印寄存器 + [edi-0x10] 结构体窗口。
 // 用途见 native-bridge.cpp 的 pt00_watch 注释（拿回死循环入口的 begin/end）。
 void SetWatch(unsigned eip, int max_lines);

@@ -284,6 +284,11 @@ struct DiagOptions {
   bool pt00_trace_ctx = false;
   // 试验：pt00_tick31=1 → 每帧首替脚本补调一次 CallDLL(0,31)（原引擎的小游戏驱动）
   bool pt00_tick31 = false;
+  // pt00_intg_hack=0：首次调用 PT00 时不预置 intG[1900]/[1901]（默认 1 = 保持原行为）。
+  // 脚本自己会在「小游戏返回后」(SEEN515) /「练习菜单」(SEEN517) 置这两位；我们抢先
+  // 置 1 会让游戏以为「已经玩过一轮」，从而走续玩分支、跳过首次建立球队
+  // （intF[1930]/[1940..]）→ 实体 1/3/5 不在场 → 投球永不触发。
+  bool pt00_intg_hack = true;
   // 小游戏逐调用日志（默认关；见 pt00_emu_bridge.h 的 SetVerbose 注释）。
   bool pt00_verbose = false;
   // 执行器观察点：pt00_watch=10004932（十六进制 eip）时，每次 CallDLL 首次命中该
@@ -522,6 +527,8 @@ DiagOptions LoadDiagOptions() {
       options.pt00_trace_ctx = (number != 0);
     } else if (key == "pt00_tick31") {
       options.pt00_tick31 = (number != 0);
+    } else if (key == "pt00_intg_hack") {
+      options.pt00_intg_hack = (number != 0);
     } else if (key == "pt00_verbose") {
       options.pt00_verbose = (number != 0);
     } else if (key == "pt00_watch") {
@@ -1460,6 +1467,7 @@ void RunEngineOn(System& system,
   // 取证开关：让执行器记录对 ctx 块 / 低地址的读写（看 DLL 在找哪个引擎数组）
   pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
   pt00emu::SetTick31(diag.pt00_tick31);
+  pt00emu::SetIntgHack(diag.pt00_intg_hack);
   pt00emu::SetVerbose(diag.pt00_verbose);
   SetLbVerbose(diag.pt00_verbose);
   /* max_lines = -1：只进环形缓冲，步数上限时才整环转储（避免每帧几十条刷屏）。 */

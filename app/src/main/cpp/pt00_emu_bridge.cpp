@@ -31,6 +31,8 @@ constexpr int kIntDCount = 2000;
 bool g_tried = false;
 bool g_ready = false;
 bool g_tick31 = false;  // 试验开关：帧首替脚本补调 CallDLL(0,31)
+// pt00_intg_hack=0 时不在首次调用时预置 intG[1900]/[1901]（交给脚本自己置位）。
+bool g_intg_hack = true;
 // 逐调用级别的诊断日志（相机回写、每 200 次调用的直方图等）。
 // **默认关**：logcat 是同步 I/O，小游戏每帧几十次调用时这种日志会把游戏本身拖成
 // 「越跑越慢」（实测），排查时再用 rlvm-diag.txt 里的 pt00_verbose=1 打开。
@@ -72,6 +74,8 @@ void SetTraceCtx(bool on) { pt00_emu_set_trace_ctx(on ? 1 : 0, 800); }
 
 void SetTick31(bool on) { g_tick31 = on; }
 
+void SetIntgHack(bool on) { g_intg_hack = on; }
+
 void SetWatch(unsigned eip, int max_lines) {
   pt00_emu_set_watch(eip, max_lines);
 }
@@ -110,10 +114,15 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
     // 脚本 SEEN7110:0087/0154 就是靠这两个标志决定要不要进入「可操作阶段」，
     // 而 RLVM 的 LB_SkipBaseball hack 把整段小游戏（连同这点引擎侧胶水）绕过去了。
     // 这里先手工置位，验证「缺的就是这块」这个假设。
-    machine.SetIntValue(
-        libreallive::IntMemRef(libreallive::INTG_LOCATION, 1900), 1);
-    machine.SetIntValue(
-        libreallive::IntMemRef(libreallive::INTG_LOCATION, 1901), 1);
+    if (g_intg_hack) {
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTG_LOCATION, 1900), 1);
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTG_LOCATION, 1901), 1);
+    } else {
+      std::cerr << "[pt00] pt00_intg_hack=0: leave intG[1900]/[1901] to the script"
+                << std::endl;
+    }
     std::cerr << "[pt00] 试验：把 intG[1900]/[1901] 置 1（原引擎的小游戏胶水）"
               << std::endl;
     std::cerr << "[pt00] 兼容层就绪：执行器直接跑原版 PT00.dll（" << bytes.size()
