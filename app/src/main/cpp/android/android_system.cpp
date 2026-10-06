@@ -20,6 +20,7 @@
 #include "machine/rlmachine.h"
 #include "machine/long_operation.h"
 #include "systems/base/colour.h"
+#include "systems/base/selection_element.h"
 #include "systems/base/platform.h"
 #include "systems/base/voice_archive.h"
 
@@ -520,9 +521,78 @@ void AndroidTextWindow::RenderNameInBox(const std::string& utf8str) {
 
 void AndroidTextWindow::DisplayRubyText(const std::string& /*utf8str*/) {}
 
-// 选择肢的显示与点击命中属于触屏交互（T2.3 / T3.x）。
-void AndroidTextWindow::AddSelectionItem(const std::string& /*utf8str*/,
-                                         int /*selection_id*/) {}
+// 选择肢（剧情选择枝 / はい・いいえ）的文字渲染。
+//
+// 这里以前是空实现，后果是：选项长操作会正常停下来等点击，但**选项一个字都看不见**
+// ——真机上表现为「框在、点击位置也对，但没有任何选项文字」（老日志里的
+// "选项图标不见了但点击映射还在" 就是这个）。上游 SDL 后端会为每个选项
+// 渲染一张 Surface 再包成 SelectionElement 交给基类绘制/命中，这里照同一套做，
+// 只是光栅化走我们自己的 FontEngine（与 RenderNameInBox 同一条路径）。
+void AndroidTextWindow::AddSelectionItem(const std::string& utf8str,
+                                         int selection_id) {
+  rlvm_android::FontEngine& fonts = rlvm_android::FontEngine::Instance();
+  const int size = font_size_in_pixels();
+
+  struct Item {
+    const rlvm_android::GlyphBitmap* glyph;
+    int x;
+  };
+  std::vector<Item> items;
+  int pen_x = 0;
+  int line_height = size;
+  for (size_t i = 0; i < utf8str.size();) {
+    uint32_t codepoint = static_cast<unsigned char>(utf8str[i]);
+    size_t length = 1;
+    if (codepoint >= 0xF0) {
+      length = 4;
+      codepoint &= 0x07;
+    } else if (codepoint >= 0xE0) {
+      length = 3;
+      codepoint &= 0x0F;
+    } else if (codepoint >= 0xC0) {
+      length = 2;
+      codepoint &= 0x1F;
+    }
+    for (size_t k = 1; k < length && i + k < utf8str.size(); ++k) {
+      codepoint =
+          (codepoint << 6) | (static_cast<unsigned char>(utf8str[i + k]) & 0x3F);
+    }
+    i += length;
+
+    const rlvm_android::GlyphBitmap* glyph =
+        fonts.Rasterize(codepoint, size, false, false);
+    if (glyph == nullptr) continue;
+    if (glyph->ascent + glyph->descent > line_height) {
+      line_height = glyph->ascent + glyph->descent;
+    }
+    items.push_back(Item{glyph, pen_x});
+    pen_x += glyph->advance;
+  }
+
+  std::shared_ptr<Surface> normal = system().graphics().BuildSurface(
+      Size(std::max(1, pen_x), std::max(1, line_height)));
+  AndroidSurface* target = dynamic_cast<AndroidSurface*>(normal.get());
+  if (target == nullptr) return;
+  target->Fill(RGBAColour(0, 0, 0, 0));
+
+  const int baseline = items.empty() ? 0 : items.front().glyph->ascent;
+  for (const Item& item : items) {
+    target->BlendCoverage(item.glyph->coverage.data(), item.glyph->width,
+                          item.glyph->height, item.x + item.glyph->bearing_x,
+                          baseline - item.glyph->bearing_y, font_colour_);
+  }
+
+  // 位置取当前文字插入点（与 SDL 后端一致），并把插入点往下推一行，
+  // 多个选项才会一列排开而不是叠在一起。
+  const Point position = GetTextSurfaceRect().origin() +
+                         Size(text_insertion_point_x_, text_insertion_point_y_);
+
+  // 高亮图暂用同一张（选中时不至于画不出来）；后续要反色高亮在这里换即可。
+  std::unique_ptr<SelectionElement> element(new SelectionElement(
+      system(), normal, normal, selectionCallback(), selection_id, position));
+  text_insertion_point_y_ += (font_size_in_pixels_ + y_spacing_ + ruby_size_);
+  selections_.push_back(std::move(element));
+}
 
 void AndroidTextWindow::ClearWin() {
   // 必须调用基类：上游在这里做 font_colour_ = default_colour_（以及重置文字插入点）。

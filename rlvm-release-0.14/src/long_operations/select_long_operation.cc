@@ -28,9 +28,11 @@
 
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#include "android/app_log.h"
 #include "machine/long_operation.h"
 #include "machine/rlmachine.h"
 #include "systems/base/event_listener.h"
@@ -378,6 +380,27 @@ ButtonSelectLongOperation::ButtonSelectLongOperation(
       baseposx += reppos_x_;
       baseposy += reppos_y_;
     }
+  }
+
+  // 诊断：把"有几个选项、每个选项的按钮矩形、选项图尺寸"一次性打出来。
+  // 选择框上下排列 = 这里算出来的 bounding_rect；图是 RenderText 给的。
+  {
+    std::ostringstream oss;
+    oss << "[selbtn] options=" << buttons_.size() << " reppos=(" << reppos_x_
+        << "," << reppos_y_ << ")";
+    for (size_t i = 0; i < buttons_.size(); ++i) {
+      oss << " #" << i << " rect=(" << buttons_[i].bounding_rect.x() << ","
+          << buttons_[i].bounding_rect.y() << ","
+          << buttons_[i].bounding_rect.width() << "x"
+          << buttons_[i].bounding_rect.height() << ")";
+      if (buttons_[i].default_surface) {
+        oss << " img=" << buttons_[i].default_surface->GetSize().width() << "x"
+            << buttons_[i].default_surface->GetSize().height();
+      } else {
+        oss << " img=null";
+      }
+    }
+    rlvm_android::AppendAppLogLine(oss.str());
   }
 
   machine.system().graphics().MarkScreenAsDirty(GUT_TEXTSYS);

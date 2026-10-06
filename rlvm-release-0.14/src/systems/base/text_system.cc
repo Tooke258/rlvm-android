@@ -39,6 +39,7 @@
 #include "base/notification_details.h"
 #include "base/notification_service.h"
 #include "base/notification_source.h"
+#include "android/app_log.h"
 #include "libreallive/gameexe.h"
 #include "machine/memory.h"
 #include "machine/rlmachine.h"
@@ -762,6 +763,16 @@ std::shared_ptr<Surface> TextSystem::RenderText(const std::string& utf8str,
     it = cur_end;
   }
 
+  // 诊断：选择肢（ButtonSelectLongOperation）的每个选项都是通过这个接口拿到图的。
+  // 打一行出来就能区分"选项图是空的/尺寸不对"还是"画的地方不对"。
+  // 只对短串（选项文字）打印，避免刷日志。
+  if (utf8str.size() <= 40) {
+    std::ostringstream oss;
+    oss << "[rendertext] size=" << surface->GetSize().width() << "x"
+        << surface->GetSize().height() << " font=" << size << " text=\""
+        << utf8str << "\"";
+    rlvm_android::AppendAppLogLine(oss.str());
+  }
   return surface;
 }
 

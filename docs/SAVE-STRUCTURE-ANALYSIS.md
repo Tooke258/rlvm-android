@@ -461,3 +461,42 @@ loop_probe: 2s top=(SEEN2801)(Line 174)                   ← 进到回想正文
 
 屏幕上确实出现了回想正文（SEEN2801 的对话）。同类隐患：任何"等 BGM 停"
 （`bgmFadeOutEx` / `BgmStop` 后 BgmStatus）在缓冲排空时都可能踩同一个坑，现在一并修掉了。
+
+### 11.4 ✅ 「剧情选择枝被直接忽略」结案（2026-10-07，已真机验证）
+
+症状：**有些 scene 开头会出现一个选项，我们这里直接跳过**（像是被自动选掉了）。
+正常的显示方式是**屏幕上一列上下排列的选择框**。
+
+两处真实缺陷：
+
+1. **`Sel 13`（`op<0:2:13>`）在解析层就被拆坏了。**
+   `libreallive/bytecode.cc` 的 `BuildBytecodeElement()` 只把 `Sel 1/2/3/16`
+   当 `SelectElement` 解析，`Sel 13` 不在名单里 ⇒ 那段
+   `{ 条件, "はい"\n"いいえ"\n }` 的结构被当普通指令流拆散
+   （dump 里就表现为 `"{"` / `"はい"` / `"いいえ"` / `"}"` 各占一行），
+   后面那条 `Sel 13` 又因为模块里没注册而 `Undefined` 跳过 ⇒ 选项等于不存在。
+   日志实证：`(SEEN9517)(Line 371):  Undefined: opcode<0:2:13, 0>()`。
+
+   修复：
+   * `bytecode.cc` 把 `0x0002000D` 并进 SelectElement 那条 case；
+   * `module_sel.cc` 注册 `AddOpcode(13, 0, "select_13", new Sel_select_s)`
+     —— 用和 `Sel 3` 同一套 `ButtonSelectLongOperation`（#SELBTN 定位、
+     选项一列上下排列），而不是画在文本窗里的 `NormalSelectLongOperation`。
+
+2. **`AndroidTextWindow::AddSelectionItem()` 是空实现。**
+   该接口服务于"文本窗内选择"（`Sel 1` / `NormalSelectLongOperation`）：
+   选项文字既不显示、也不进 `selections_`。已按 SDL 后端同一套实现
+   （`FontEngine` 光栅化 → `SelectionElement` → 插入点下移一行）。
+
+补充事实：屏幕上一列上下排列的选择框由 `ButtonSelectLongOperation` 负责，
+每个选项的图来自 **`TextSystem::RenderText(...)`**（`#SELBTN` 的 MOJISIZE /
+BASEPOS / REPPOS / CENTERING 决定位置）。我们移植里 `RenderGlyphOnto` /
+`GetCharWidth` 一直是实现了的，所以这条路本来就能画——之前的"选项图标不见了、
+点击映射还在"正是"选项图有、但根本没进到这一步"的表象。
+
+诊断（长期保留，量很小）：
+
+```
+[rendertext] size=184x28 font=26 text="沙耶さんの勝ち"
+[selbtn] options=2 reppos=(24,56) #0 rect=(108,200,561x42) img=184x28 #1 rect=(132,256,561x42) img=106x28
+```

@@ -178,6 +178,13 @@ SelModule::SelModule() : RLModule("Sel", 0, 2) {
   AddOpcode(1, 0, "select", new Sel_select);
   AddOpcode(2, 0, "select_s2", new Sel_select_s);
   AddOpcode(3, 0, "select_s", new Sel_select_s);
+  // Sel 13：本作汉化脚本里的"文本窗选择枝"（はい/いいえ 之类）。
+  // 语义与 Sel 1 同类（选项画在当前文本窗里、等玩家点），所以复用 Sel_select。
+  // 注意：光注册还不够，bytecode.cc 里必须也把它当 SelectElement 解析，
+  // 否则参数结构是坏的（见那边的注释）。
+  // 用和 Sel 3 同一套（ButtonSelectLongOperation）：本作的选择框是屏幕上一列
+  // 上下排列的按钮，由 #SELBTN 配置定位，而不是画在文本窗里。
+  AddOpcode(13, 0, "select_13", new Sel_select_s);
   AddOpcode(4, 0, "select_objbtn", new Sel_select_objbtn);
   AddOpcode(14, 0, "select_objbtn_cancel", new Sel_select_objbtn_cancel_0);
   AddOpcode(14, 1, "select_objbtn_cancel", new Sel_select_objbtn_cancel_1);

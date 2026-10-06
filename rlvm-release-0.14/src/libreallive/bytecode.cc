@@ -100,6 +100,13 @@ inline BytecodeElement* ReadFunction(const char* stream,
     case 0x00020002:
     case 0x00020003:
     case 0x00020010:
+    // 0x0002000D = Sel 13：本作（LBEX 汉化脚本）用它在**文本窗里**出选择枝
+    // （例如相册 Scene 回想的「{条件, "はい"/"いいえ"}」确认）。
+    // 上游没有把它归到 SelectElement，于是 `{...}` 那段被当成普通指令流拆散
+    // （dump 里表现为 "{" / "はい" / "いいえ" / "}" 各占一行），
+    // 后面那条 "Sel 13" 又因为模块里没注册而判 Undefined 直接跳过 ⇒ 选项被"忽略"。
+    // 补上这一条，它就和 Sel 1/2/3 一样按 SelectElement 解析（标签+候选串完整）。
+    case 0x0002000D:
       return new SelectElement(stream);
   }
 

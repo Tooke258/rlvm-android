@@ -473,6 +473,10 @@ SEEN9517 入口第 284 行 = op<1:020:00106,1> = bgmFadeOutEx()
 
 ### D. 仍挂着（下次可挑）
 
+0. ✅ 追加（同轮）：**剧情选择枝**修好了——`Sel 13` 解析/注册补齐 + 文本窗内选项
+   （`AndroidTextWindow::AddSelectionItem`）实现；选项框恢复成屏幕上一列上下排列。
+   见 §11.4 与 `dev-log/CHOICE-BOX.jsonl`。
+
 1. `Sys 457 / 2402 / 2502 / 1520 / 1521 / 366 / 801` 仍未实现（本次卡死与它们无关）。
    语义要反 `REALLIVE.EXE`（IDA 根目录 `E:\BaiduNetdiskDownload\IDA\IDA_Pro_v8.3_Portable`，
    游戏目录里已有 `REALLIVE.EXE.i64`）。已探明：裸字节 xref 追不动
