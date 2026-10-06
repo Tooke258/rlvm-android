@@ -232,6 +232,33 @@ static void DumpEntities(HANDLE h, uint64_t base) {
     ReadInt(h, base + (uint64_t)i * 4, &v);
     printf(" %d", v);
   }
+  /* 飞行参数族（方向/速度）。手机侧打印同样的槽，用来定位「球飞反了」：
+     [234]=z 方向系数、[235]=速度系数、[236..242]=定点中间量、
+     [239]/[241]=累加器、[243..246]=落点/回弹。 */
+  printf("\n  ballp intD[233..246]:");
+  for (int i = 233; i <= 246; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  /* 出手参数是从这几处推出来的：intD[76]=模式（func 900/901 的分支）、
+     intD[312]/[500]=投球种类、intD[904]=连投修正、[610..613]=打者目标点。 */
+  printf("\n  parm intD[76],[312],[500],[904],[610..613]:");
+  {
+    const int idx[] = {76, 312, 500, 904, 610, 611, 612, 613};
+    for (int k = 0; k < (int)(sizeof(idx) / sizeof(idx[0])); ++k) {
+      v = -999;
+      ReadInt(h, base + (uint64_t)idx[k] * 4, &v);
+      printf(" %d", v);
+    }
+  }
+  /* 投手（实体 0）的 record[10..12]＝出手点，launch_ball 直接抄它。 */
+  printf("\n  ent0 rec[10..12] = intD[1010..1012]:");
+  for (int i = 1010; i <= 1012; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
   printf("\n");
 }
 

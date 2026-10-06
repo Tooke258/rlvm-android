@@ -216,10 +216,35 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
            << GetD(machine, 1000 + i * 36 + 2) << " ";
       }
       // 棒球小游戏真正的球状态：脚本 objShow(203,0,intD[220]) / objShow(205,0,intD[250])
-      os << " | ball1 intD[210..232]=";
+      // **拆成多行**：logcat 单行有长度上限，之前 ball1/ball2 被截断过。
+      os << "[pt00] ball1 intD[210..232]=";
       for (int i = 210; i <= 232; ++i) os << GetD(machine, i) << ",";
-      os << " | ball2 intD[250..262]=";
+      std::cerr << os.str() << std::endl;
+      os.str("");
+
+      os << "[pt00] ball2 intD[250..262]=";
       for (int i = 250; i <= 262; ++i) os << GetD(machine, i) << ",";
+      std::cerr << os.str() << std::endl;
+      os.str("");
+
+      // 飞行参数族（方向/速度）：[234]=z 方向系数、[235]=速度系数、
+      // [236..242]=定点中间量、[239]/[241]=累加器、[243..246]=落点/回弹。
+      // 真机报「球飞反了」要看的就是这一组；PC 对照用
+      // `tools/pt00_probe.exe <pid> --entities`（已同步打印同样的槽）。
+      os << "[pt00] ballp intD[233..246]=";
+      for (int i = 233; i <= 246; ++i) os << GetD(machine, i) << ",";
+      std::cerr << os.str() << std::endl;
+      os.str("");
+
+      // 出手参数是从这几处推出来的：intD[76]=模式（决定 func 900/901 的分支）、
+      // intD[312]/[500]=投球种类、intD[904]=连投修正、[610..613]=打者目标点。
+      os << "[pt00] parm intD[76]=" << GetD(machine, 76)
+         << " [312]=" << GetD(machine, 312) << " [500]=" << GetD(machine, 500)
+         << " [904]=" << GetD(machine, 904) << " [610..613]=";
+      for (int i = 610; i <= 613; ++i) os << GetD(machine, i) << ",";
+      // 投手（实体 0）的 record[10..12]＝出手点，launch_ball 直接抄它。
+      os << " ent0=(" << GetD(machine, 1010) << "," << GetD(machine, 1011) << ","
+         << GetD(machine, 1012) << ")";
       std::cerr << os.str() << std::endl;
       DumpFuncHistogram();
     }
