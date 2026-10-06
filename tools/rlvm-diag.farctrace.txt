@@ -1,0 +1,18 @@
+# 目的：钉死「小游戏一场打完之后，SEEN515 到底有没有执行 farcall(7111, 10)（结算菜单）」
+#
+# 静态结论（docs/MINIGAME-STATIC-RECON.md §10）：
+#   SEEN515 打完一场之后是
+#     if (intF[156] == 1) { farcall_with(7030, 0, …, 0); farcall(7111, 10); }   ← 结算菜单 PT_PR_*
+#     else                { farcall_with(7030, 1, …, 0); farcall(7111, 4); }
+#   而 intF[156] 来自 `intF[1350] = farcall_with(9051, 0, 1)`（EF_ISEL 选择菜单）的结果。
+#
+# 已有证据（build/full30.log，17:43:55）：真机确实进了 intF[156]==1 那支——
+#   (SEEN0515)(Line 2404): goto_unless(intF[156] == 1)
+#   (SEEN0515)(Line 2405): farcall_with(7030, 0, 0:{intF[1371]}, 0:{intF[1981]}, 0:{0})
+# 但所有日志里 PT_PR_* 从未被加载 → 需要看 7111 id10 这条 farcall 有没有发生、
+# 有没有 rtl 回来（如果 farcall 发生了却一直没有 rtl，就是那一场没结束）。
+#
+# op_trace=farcall,rtl：只打「名字含 farcall / rtl 子串」的指令（带 SEEN 与行号），
+# 日志很小；不设这项就是全量 trace（46MB 级）。
+lb_minigame=1
+op_trace=farcall,rtl
