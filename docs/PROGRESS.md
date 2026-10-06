@@ -414,3 +414,72 @@ SAF 目录授权需要人工在系统选择器里点一次（SAF 的固有环节
 2. 真机回归：四方向 / 挥棒 / 菜单导航 / Ctrl 快进。
 3. 卡顿：SAF 目录清单 + 句柄缓存 + 预取（`dev-log/PERF-STUTTER.jsonl`）。
 4. 长尾：`intD[103]` 跑步映射、`Sys 460/461`、`GanFg 101/102`、`ChildObjFg 1058`。
+
+---
+
+## 2026-10-07 凌晨（通宵）· 完美收集档 + 相册 Scene 回想修复（本轮交付）
+
+提交：`227a22f`（本地，未推送）。细节见 `docs/SAVE-STRUCTURE-ANALYSIS.md` §11 与
+`dev-log/SCENE-REPLAY-HANG.jsonl`。
+
+### A. 相册三栏"全解锁"找到了真源（并做成可复用的 diag）
+
+| 栏 | 真源 | 判定 |
+| --- | --- | --- |
+| Gallery(CG) | `CGMTable::cgm_data_`（`dat/mode.cgm` 的 文件名→flag） | `SEEN9515` 用 `Sys 1504`(cgStatus) 逐条问 |
+| Scene | intZ **位** `390*32 + 0..15` | `SEEN9517` 里 14 条硬编码条目逐条判 `==1` |
+| Music | intZ **位** `391*32 + 0..55` | `SEEN9516` 里 56 条逐条读 |
+
+* 新增 diag（`rlvm-diag.txt`，默认关）：`cgm_unlock_all` / `collection_unlock_all` /
+  `kidoku_unlock_all` / `cgm_dump`（+`CGMTable::MarkAllViewed()`）。
+  一次启动的顺序固定为 **kidoku → cgm → collection**。
+* ★顺序坑：`CGMTable::SetViewed` 是按"**字**"写 `intZ[flag]=1`（flag=0..409），
+  而 Scene/Music 用的是"**位**"。先跑 collection 再跑 cgm 会把音乐位抹掉（当时表现为"音乐只有一半"）。
+* 手改 boost 文本归档不可靠（前几轮就是这么干的）；正确姿势是让**引擎自己写**再 `saveGlobalMemory`。
+* 产物：`build/global-perfect-engine.sav.gz`（37224 token：cgm_data_ 410 + Scene 位全亮 +
+  Music 位全亮 + 满 kidoku），设备上留了 `.perfect / .preflagtest / .kidokutest / .cgmtest / .beforeperfect` 多份备份。
+
+### B. ✅ 相册 Scene 回想"点进去必卡死"结案 —— 根因在我们自己的音频层
+
+```
+SEEN9517 入口第 284 行 = op<1:020:00106,1> = bgmFadeOutEx()
+  → RLVM 的 "Ex" 版推 WaitLongOperation，判据 sound().BgmStatus() == 0（等 BGM 真停）
+  → 我们的 AndroidSoundSystem::BgmFadeOut 只做【音量】淡到 0，通道一直算 playing
+  → BgmStatus() 恒为 1 ⇒ 长操作永不返回 ⇒ 引擎不再派发指令（不是死循环）
+```
+
+放大器：音频回调里"淡出完成→playing=false"写在读环形缓冲**之后**，`got==0` 直接
+`continue` ⇒ 缓冲一空就永远不会处理停通道请求。
+
+修复（只动 Android 音频层）：新增 `AudioEngine::FadeOutAndStop(ch, ms)`（音量线性淡出 +
+到点**真正停通道**，对齐 SDL `Mix_FadeOutMusic`），`BgmFadeOut` 改调它；回调把"到点停"
+挪到读缓冲之前，并在 `got==0` 且已请求停播时立即停。真机验证：修前
+`longop push: 17WaitLongOperation @(SEEN9517)(Line 284)` 之后再无日志；修后紧跟
+`longop pop`，随后 `loop_probe` 转到 `SEEN9030/SEEN2801`，屏幕出现回想正文。
+
+### C. 本轮新增的可复用探针（重要，别再走弯路）
+
+* `loop_detect=1`：每 2 秒往**应用日志**写一行"当前最热的两条 (场景,行号)"。
+  **不再新增行 = 引擎停摆（阻塞），不是空转**。
+* `longop_log=1`：长操作 push/pop 各一行并带 C++ 类型名。**最后只有 push 没有 pop =
+  卡在"等输入/等某动作"**，类型名直接告诉是哪一种。本次就是靠它一行定位。
+* 教训：逐指令 trace(`op_trace=*`) 与引擎报错走的是 **logcat**（tag `rlvm-stderr`/
+  `rlvm-stdout`），**不进** `rlvm-log.txt`，且 logcat 是环形缓冲（约 6 万行）——
+  之前"日志里 grep 不到 Undefined"就是这个误判；另外 `op_trace` 有打印预算，
+  预算被相册刷帧循环吃光后尾部会截断，别把"最后一行"当结论。
+* entrypoint 两套编号的坑：dump 的 `#entrypoint N` 是 **kidoku 表下标**，
+  `farcall(scene, X)` 的 X 是真实 id = `kidoku_table[N]-1000000`
+  （核对工具 `tools/seen_entrypoints.py`）。
+
+### D. 仍挂着（下次可挑）
+
+1. `Sys 457 / 2402 / 2502 / 1520 / 1521 / 366 / 801` 仍未实现（本次卡死与它们无关）。
+   语义要反 `REALLIVE.EXE`（IDA 根目录 `E:\BaiduNetdiskDownload\IDA\IDA_Pro_v8.3_Portable`，
+   游戏目录里已有 `REALLIVE.EXE.i64`）。已探明：裸字节 xref 追不动
+   （`CGTABLE_FILENAME` 在 VA 0x631c3d 但 .text 里零引用），要上 IDA；
+   另注意 **PC 汉化版读的是 `seen_sc.bin`，与我们的 `SEEN.TXT` 不是同一份脚本**。
+2. 小游戏那条线（练习选择菜单不渲染 `PT_PR_*`、实体渲染、按键固化后真机回归）。
+3. 卡顿：SAF 目录清单 + 句柄缓存 + 预取（`dev-log/PERF-STUTTER.jsonl`）。
+4. 收尾推包：完美档 + 回想修复 + 新 diag 要不要合成一版推上去（本次只做了本地提交）。
+5. 设备侧 `rlvm-diag.txt` 现在是 **loop_detect=1 + longop_log=1** 的取证配置，
+   推包/发版前要换回常规或删掉。
