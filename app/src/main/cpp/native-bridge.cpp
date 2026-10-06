@@ -1691,6 +1691,29 @@ void RunEngineOn(System& system,
     report += std::string("global memory not loaded (first run?): ") + e.what() + "\n";
   }
 
+  // diag kidoku_unlock_all：**放在 try 之外**，保证一定执行（上一版放在 try 里，
+  // 一旦 loadGlobalMemory 抛异常就被 catch 跳过，日志里连一行都没有）。
+  // 同时用 AppendAppLogLine 留证据（写进 rlvm-log.txt，能被 grep 到）。
+  if (diag.kidoku_unlock_all) {
+    std::string msg;
+    try {
+      int marked = 0;
+      for (int scn = 0; scn < 10000; ++scn) {
+        for (int k = 0; k < 64; ++k) {
+          machine.memory().RecordKidoku(scn, k);
+          ++marked;
+        }
+      }
+      Serialization::saveGlobalMemory(machine);
+      msg = "kidoku_unlock_all: marked " + std::to_string(marked) +
+            " bits and flushed global";
+    } catch (const std::exception& e) {
+      msg = std::string("kidoku_unlock_all failed: ") + e.what();
+    }
+    report += msg + "\n";
+    rlvm_android::AppendAppLogLine(msg);
+  }
+
   g_frame_log_every = diag.frame_log_every;
   g_blit_cost_log = diag.blit_cost;
   rlvm_android::SetLbWipeLog(diag.wipe_log);
