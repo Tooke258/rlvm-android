@@ -1,0 +1,19 @@
+# 让引擎自己把"全场景已读"写进 global（kidoku_unlock_all=1）
+#
+# 背景（读源码得到，见 docs/MINIGAME-HIT-DIRECTION.md 同批结论）：
+#   RLVM 的"看过/解锁"真源 = GlobalMemory::kidoku_data（machine/memory.h:71），
+#   即 map<场景号, dynamic_bitset>；判定在 memory.cc:199-213：
+#     条目不存在 或 bitset 位数 <= kidoku 号 ⇒ 一律 false
+#   写入入口是 Memory::RecordKidoku(scenario, kidoku)。
+#   ⇒ 手写它的 boost 序列化极易错（我误把 intZ 当既读表填 -1，导致进度清零），
+#     所以改成"调引擎的接口 + 让引擎自己落盘"，格式由引擎保证。
+#
+# 位号空间很小：kidoku id = kidoku_table[i] - 1000000（即 entrypoint 序号），
+# 所以每场景 64 位足够；场景号 0..9999 覆盖全库 SEEN 编号。
+#
+# 启动时会打印一行 `kidoku_unlock_all: marked N bits and flushed global`。
+# 关掉：删掉这一行或置 0。
+kidoku_unlock_all=1
+
+lb_minigame=1
+sys1005_trace=0

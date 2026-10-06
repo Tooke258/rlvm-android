@@ -58,6 +58,7 @@
 #include "machine/rlmachine.h"
 #include "machine/rlmodule.h"
 #include "machine/rloperation.h"
+#include "machine/memory.h"
 #include "machine/serialization.h"
 #include "modules/modules.h"
 #include "systems/base/event_system.h"
@@ -337,6 +338,13 @@ struct DiagOptions {
   // wipe_log=1：打印对象「晋升/擦除」明细 + 195..255 号对象的活体时间线。
   // 用于定位「小游戏地图（objFg #201）在运镜结束后消失」。默认关。
   bool wipe_log = false;
+  // kidoku_unlock_all=1：把"所有场景 × kidoku 位"都标记成已读，然后**让引擎自己**
+  // 把 global 写出去。理由：RLVM 的"看过/解锁"真源是 GlobalMemory::kidoku_data
+  // （map<场景号, dynamic_bitset>，见 machine/memory.cc:199-213），
+  // 判定有两道保险 —— map 里必须有该场景条目、且 bitset 位数 ≥ 该 kidoku 号。
+  // 手写它的 boost 序列化格式容易错（我就错把 intZ 当既读表填 -1，导致清零），
+  // 而走 Memory::RecordKidoku 则由引擎保证格式合法。
+  bool kidoku_unlock_all = false;
   // input_trace=1：每帧（变化才打）记录「pad 按住了什么 / 引擎光标在哪 /
   // intD[95..115] 的值」。用来回答「按键到底有没有走到引擎侧、以及引擎会不会
   // 把输入写进 intD」——小游戏方向键不通的第一步排查。默认关。
@@ -492,6 +500,8 @@ DiagOptions LoadDiagOptions() {
       options.blit_cost = (number != 0);
     } else if (key == "wipe_log") {
       options.wipe_log = (number != 0);
+    } else if (key == "kidoku_unlock_all") {
+      options.kidoku_unlock_all = (number != 0);
     } else if (key == "op_trace") {
       options.op_trace = value;
     } else if (key == "case_trace") {
@@ -1657,6 +1667,25 @@ void RunEngineOn(System& system,
   try {
     Serialization::loadGlobalMemory(machine);
     report += "global memory loaded\n";
+    // diag kidoku_unlock_all：把全部 (场景 × kidoku) 位标记为已读，并立刻落盘。
+    // 位号空间很小（kidoku id 来自 kidoku_table[i]-1000000，即 entrypoint 序号），
+    // 所以 64 位足够覆盖；场景号取 0..9999 覆盖全库 SEEN 编号。
+    if (diag.kidoku_unlock_all) {
+      int marked = 0;
+      try {
+        for (int scn = 0; scn < 10000; ++scn) {
+          for (int k = 0; k < 64; ++k) {
+            machine.memory().RecordKidoku(scn, k);
+            ++marked;
+          }
+        }
+        Serialization::saveGlobalMemory(machine);
+        report += "kidoku_unlock_all: marked " + std::to_string(marked) +
+                  " bits and flushed global\n";
+      } catch (const std::exception& e) {
+        report += std::string("kidoku_unlock_all failed: ") + e.what() + "\n";
+      }
+    }
   } catch (const std::exception& e) {
     // 首次运行没有 global.sav.gz，属于正常情况。
     report += std::string("global memory not loaded (first run?): ") + e.what() + "\n";
