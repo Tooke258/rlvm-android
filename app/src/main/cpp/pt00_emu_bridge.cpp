@@ -215,6 +215,11 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
            << GetD(machine, 1000 + i * 36 + 1) << "/"
            << GetD(machine, 1000 + i * 36 + 2) << " ";
       }
+      // 棒球小游戏真正的球状态：脚本 objShow(203,0,intD[220]) / objShow(205,0,intD[250])
+      os << " | ball1 intD[210..232]=";
+      for (int i = 210; i <= 232; ++i) os << GetD(machine, i) << ",";
+      os << " | ball2 intD[250..262]=";
+      for (int i = 250; i <= 262; ++i) os << GetD(machine, i) << ",";
       std::cerr << os.str() << std::endl;
       DumpFuncHistogram();
     }

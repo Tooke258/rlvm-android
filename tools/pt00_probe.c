@@ -219,6 +219,19 @@ static void DumpEntities(HANDLE h, uint64_t base) {
     ReadInt(h, base + (uint64_t)i * 4, &v);
     printf(" %d", v);
   }
+  /* 棒球小游戏真正的球状态（脚本 objShow(203,0,intD[220]) / (205,0,intD[250]) 读的槽） */
+  printf("\n  stateA intD[210..232]:");
+  for (int i = 210; i <= 232; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  printf("\n  stateB intD[250..262]:");
+  for (int i = 250; i <= 262; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
   printf("\n");
 }
 
