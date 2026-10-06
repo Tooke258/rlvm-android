@@ -90,6 +90,8 @@ unsigned int g_frame_serial = 0;
 // 逐帧日志的缺省值：**关闭**（0）。开着时每帧要扫 48 万像素统计非黑像素数，
 // 在真机上是最没意义的一笔开销；排查渲染问题时再用 frame_log_every=N 打开。
 int g_frame_log_every = 0;
+// 合成成本日志（diag 键 blit_cost=1 打开）。见 RunEngineOn 里 progress 行旁边的说明。
+bool g_blit_cost_log = false;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -286,6 +288,9 @@ struct DiagOptions {
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
   bool blit_stats = false;
+  // blit_cost=1：每 60 帧打一行合成成本（调用数 / 写入像素 / 总耗时 / 最慢一次及其矩形）。
+  // 用来回答「卡在哪一层」——探针计数一直在维护，但此前没有消费者，从没被量过。
+  bool blit_cost = false;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
@@ -361,6 +366,8 @@ DiagOptions LoadDiagOptions() {
       options.audio_selftest = (number != 0);
     } else if (key == "blit_stats") {
       options.blit_stats = (number != 0);
+    } else if (key == "blit_cost") {
+      options.blit_cost = (number != 0);
     } else if (key == "blit_fast") {
       options.blit_fast = (number != 0);
     } else if (key == "dirty_gate") {
@@ -1404,6 +1411,7 @@ void RunEngineOn(System& system,
   }
 
   g_frame_log_every = diag.frame_log_every;
+  g_blit_cost_log = diag.blit_cost;
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);
   SetBlitFastEnabled(diag.blit_fast);
@@ -1578,6 +1586,19 @@ void RunEngineOn(System& system,
                           "progress: frames=%d instructions=%d elapsed=%ums rss=%ldkB",
                           frames_presented, executed,
                           system.event().GetTicks() - started, CurrentRssKb());
+      // 合成成本（D-022 探针）：每 60 帧（≈1 秒）打一次 —— 回答「卡在哪一层」。
+      // 计数一直在维护（见 android_graphics.cpp 的 g_blit_*），但此前**没有任何消费者**，
+      // 所以从没被量过。用 diag 的 blit_cost=1 打开（默认关，避免刷日志）。
+      if (g_blit_cost_log) {
+        uint64_t bcalls = 0, bpixels = 0, btime_us = 0, bworst_us = 0;
+        TakeBlitCostSummary(bcalls, bpixels, btime_us);
+        const std::string worst = TakeBlitWorstSummary(bworst_us);
+        __android_log_print(
+            ANDROID_LOG_INFO, kLogTag,
+            "blit: calls=%llu pixels=%llu time=%.1fms worst=%.1fms %s",
+            (unsigned long long)bcalls, (unsigned long long)bpixels,
+            btime_us / 1000.0, bworst_us / 1000.0, worst.c_str());
+      }
       // 自我保护：真机上出现过内存暴涨把整机拖垮（系统连带杀掉别的应用）。
       // 宁可让引擎自己停下来，也不要让系统去杀。
       if (CurrentRssKb() > kMemoryGuardKb) {

@@ -481,6 +481,18 @@ target_compile_options(rlvm PRIVATE
     -Wno-narrowing
 )
 
+# 逐像素热路径在 debug 默认 -O0 下太慢：实测小游戏运镜/球飞时
+# `blit: calls=174 pixels=54240000 time=1086.0ms` —— 光合成就吃满整秒，
+# 而同一份代码在 -O2 下是数倍到十倍级差距（与 emu.c 同一条经验）。
+# 只给这几个热文件开 -O2，其余保持 -O0 的可调试性。
+if (NOT MSVC)
+  set_source_files_properties(
+      "${CMAKE_CURRENT_SOURCE_DIR}/android/android_graphics.cpp"  # CPU 合成/贴图
+      "${CMAKE_CURRENT_SOURCE_DIR}/android/android_system.cpp"    # 每帧刷新/事件循环
+      "${CMAKE_CURRENT_SOURCE_DIR}/android/font_engine.cpp"       # 字形光栅化
+      PROPERTIES COMPILE_OPTIONS "-O2")
+endif()
+
 find_library(log_lib log)
 find_library(android_lib android)
 find_library(z_lib z)

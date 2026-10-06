@@ -1,0 +1,13 @@
+# 本轮（小游戏卡顿定位：运镜 / 球飞 / 左视窗世界地图基线变动）用 diag
+#
+# lb_minigame=1     : 不跳过小游戏（必须）
+# blit_cost=1       : 每 60 帧（≈1 秒）打一行合成成本：
+#                       `blit: calls=… pixels=… time=…ms worst=…ms <最慢那次的 src->dst>`
+#                     其中 worst 后面那串矩形描述能直接指出「最贵的是哪个对象」。
+#                     （探针计数一直在维护，此前没有消费者，所以从没被量过。）
+# pt00_watch=<hex>  : 死循环观察点（被动）
+#
+# 不开 pt00_trace_ctx / pt00_verbose：避免给热路径加额外负载，保证这轮数字干净。
+lb_minigame=1
+blit_cost=1
+pt00_watch=10004932
