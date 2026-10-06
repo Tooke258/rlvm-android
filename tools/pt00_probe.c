@@ -252,17 +252,17 @@ static void DumpEntities(HANDLE h, uint64_t base) {
     ReadInt(h, base + (uint64_t)i * 4, &v);
     printf(" %d", v);
   }
-  /* 击球设定（CallDLL(func=50) → sub_10003BB0）的输入：620/622 击球区坐标、
-     624 角度(0.1 度)、626 玩家方向键选出的击球方向、904/912 参与命中范围判定。 */
-  printf("\n  swing intD[620..626],[904],[912],[914],[916],[924],[2480],[2488],[2496]:");
-  {
-    const int idx[] = {620, 621, 622, 623, 624, 625, 626, 904, 912,
-                       914, 916, 924, 2480, 2488, 2496};
-    for (int k = 0; k < (int)(sizeof(idx) / sizeof(idx[0])); ++k) {
-      v = -999;
-      ReadInt(h, base + (uint64_t)idx[k] * 4, &v);
-      printf(" %d", v);
-    }
+  /* 击球判定（CallDLL(func=50) → sub_10003BB0）的输入：620/622 = 击球区坐标，
+     624 = 角度(0.1 度)，626 = 玩家方向键选出的击球方向。
+     判定式 d = sqrt(([226]-[620])² + ([228]-[622])²)，50 ≤ d < 150 才算击中；
+     球坐标 [226]/[228] 见上面的 stateA 行。
+     注意：反编译里 `*(int*)(*this + 904)` 是**字节偏移** ⇒ intD[226]，
+     不要照抄成 intD[904]（手机侧踩过这个坑）。 */
+  printf("\n  swing intD[620..626]:");
+  for (int i = 620; i <= 626; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
   }
   printf("\n  parm intD[76],[312],[500],[904],[610..613]:");
   {
