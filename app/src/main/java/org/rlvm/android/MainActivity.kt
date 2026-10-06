@@ -365,6 +365,12 @@ class MainActivity : Activity() {
 
         val actionPad = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
+            // log（回想）：原生引擎里由鼠标滚轮触发（WHEELUP=BackPage / WHEELDOWN=ForwardPage），
+            // 而 Android 端此前没有滚轮通路 —— 这两个按钮补上。
+            addView(padButton("\u56de\u6eaf", { sendWheel(1) }, {}),
+                LinearLayout.LayoutParams(padSize, padSize))
+            addView(padButton("\u524d\u7ffb", { sendWheel(-1) }, {}),
+                LinearLayout.LayoutParams(padSize, padSize))
             addView(padButton("加速", { sendKey(RLKEY_LSHIFT, true) }, { sendKey(RLKEY_LSHIFT, false) }),
                 LinearLayout.LayoutParams(padSize, padSize))
             addView(padButton("击打", { sendMouseButton(1, true) }, { sendMouseButton(1, false) }),
@@ -612,6 +618,11 @@ class MainActivity : Activity() {
 
     private fun sendKey(rlKeyCode: Int, pressed: Boolean) {
         runCatching { NativeBridge.keyEvent(rlKeyCode, pressed) }
+    }
+
+    /** 滚轮：log（回想）在原生引擎里就是鼠标滚轮触发的，Android 端此前没有这条通路。 */
+    private fun sendWheel(delta: Int) {
+        runCatching { NativeBridge.wheelEvent(delta) }
     }
 
     //

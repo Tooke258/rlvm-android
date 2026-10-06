@@ -74,6 +74,16 @@ class AndroidEventSystem : public EventSystem {
    */
   void PostKeyEvent(int rl_key_code, bool pressed);
 
+  /**
+   * 由 UI 线程投递一个滚轮事件（LBEX 的 log/回想在原生引擎里就是**鼠标滚轮**触发的：
+   * `PauseLongOperation::MouseButtonStateChanged` 的 `MOUSE_WHEELUP -> BackPage()`、
+   * `MOUSE_WHEELDOWN -> ForwardPage()`）。
+   *
+   * 在此之前 Android 端**完全没有滚轮通路**（触摸只有 down/move/up + 左右键），
+   * 所以 log 打不开。delta > 0 = 上滚（往回翻），delta < 0 = 下滚（往前翻）。
+   */
+  void PostWheelEvent(int delta);
+
   // LBEX 小游戏的输入轮询（Sys151 / objbtn select）要用：
   // 「本帧是否有过一次按下」——快速点击的按下状态只存在几毫秒，按「当前电平」轮询
   // 很可能整帧都看不到（真机表现：intD[101] 恒为 2，脚本判定挥棒的 `== 1` 永不成立）。
@@ -107,9 +117,14 @@ class AndroidEventSystem : public EventSystem {
     bool pressed;
   };
 
+  struct PendingWheel {
+    int delta;  // >0 上滚（BackPage），<0 下滚（ForwardPage）
+  };
+
   std::mutex queue_mutex_;
   std::vector<PendingTouch> pending_;
   std::vector<PendingKey> pending_keys_;
+  std::vector<PendingWheel> pending_wheels_;
   Point mouse_pos_;
   bool click_seen_ = false;  // 本帧注入过按下（ExecuteEventSystem 开头清零）
   Point click_pos_;

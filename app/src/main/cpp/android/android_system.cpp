@@ -103,6 +103,16 @@ void AndroidEventSystem::PostKeyEvent(int rl_key_code, bool pressed) {
   pending_keys_.push_back(PendingKey{rl_key_code, pressed});
 }
 
+void AndroidEventSystem::PostWheelEvent(int delta) {
+  if (delta == 0) return;
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  constexpr size_t kMaxPendingWheels = 32;
+  if (pending_wheels_.size() >= kMaxPendingWheels) {
+    pending_wheels_.erase(pending_wheels_.begin());
+  }
+  pending_wheels_.push_back(PendingWheel{delta});
+}
+
 /** 按位掩码设置某个鼠标键的状态，并派发事件（语义与上游 SDL 后端一致）。 */
 void AndroidEventSystem::ApplyButtonState(RLMachine& machine,
                                           int button,
@@ -198,6 +208,22 @@ void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
                                      key.pressed));
     __android_log_print(ANDROID_LOG_INFO, "rlvm-input", "key code=%d pressed=%d",
                         key.code, key.pressed ? 1 : 0);
+  }
+
+  // 滚轮事件：与 SDL 后端同一条路 —— 也是按 MouseButtonStateChanged 派发，
+  // 只是键码用 MOUSE_WHEELUP / MOUSE_WHEELDOWN（log/回想的唯一触发器）。
+  std::vector<PendingWheel> wheels;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    wheels.swap(pending_wheels_);
+  }
+  for (const PendingWheel& w : wheels) {
+    const MouseButton button = w.delta > 0 ? MOUSE_WHEELUP : MOUSE_WHEELDOWN;
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-input",
+                        "wheel delta=%d -> %s", w.delta,
+                        w.delta > 0 ? "WHEELUP(back)" : "WHEELDOWN(forward)");
+    DispatchEvent(machine, std::bind(&EventListener::MouseButtonStateChanged,
+                                     std::placeholders::_1, button, true));
   }
 }
 

@@ -93,6 +93,13 @@ object NativeBridge {
     external fun keyEvent(rlKeyCode: Int, pressed: Boolean)
 
     /**
+     * 滚轮事件：`log`（回想）在原生引擎里就是鼠标滚轮触发的
+     * （`MOUSE_WHEELUP -> BackPage`、`MOUSE_WHEELDOWN -> ForwardPage`）。
+     * delta > 0 = 上滚（往回翻），< 0 = 下滚。
+     */
+    external fun wheelEvent(delta: Int)
+
+    /**
      * 经由 SAF 装配并运行引擎（Gameexe.ini 整体读入，SEEN.TXT 走 fd + mmap）。
      * 返回可读报告。属于重 I/O + 计算操作，必须在后台线程调用。
      */

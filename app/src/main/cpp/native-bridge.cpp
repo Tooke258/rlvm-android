@@ -2023,6 +2023,18 @@ void KeyEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint key_code, jboolean pressed
       .PostKeyEvent(static_cast<int>(key_code), pressed != JNI_FALSE);
 }
 
+/**
+ * 滚轮事件：log（回想）在原生引擎里就是鼠标滚轮触发的，而 Android 端此前没有任何
+ * 滚轮通路 —— 所以 log 打不开。delta > 0 = 上滚（BackPage / 往回翻），< 0 = 下滚。
+ * 与 TouchEvent/KeyEvent 一样只入队，注入发生在引擎线程。
+ */
+void WheelEvent(JNIEnv* /*env*/, jobject /*thiz*/, jint delta) {
+  AndroidSystem* system = g_current_system.load();
+  if (system == nullptr) return;
+  static_cast<AndroidEventSystem&>(system->event())
+      .PostWheelEvent(static_cast<int>(delta));
+}
+
 /** 当前呈现帧的尺寸：高 16 位为宽、低 16 位为高；暂无帧时返回 0。 */
 jint GetFrameSize(JNIEnv* /*env*/, jobject /*thiz*/) {
   std::lock_guard<std::mutex> lock(g_frame_mutex);
@@ -2086,6 +2098,7 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(SetTextContainerPath)},
     {"touchEvent", "(IFFI)V", reinterpret_cast<void*>(TouchEvent)},
     {"keyEvent", "(IZ)V", reinterpret_cast<void*>(KeyEvent)},
+    {"wheelEvent", "(I)V", reinterpret_cast<void*>(WheelEvent)},
     {"runScenarioSaf", "(I)Ljava/lang/String;",
      reinterpret_cast<void*>(RunScenarioSaf)},
     {"getFrameSize", "()I", reinterpret_cast<void*>(GetFrameSize)},
