@@ -85,15 +85,15 @@ static int ReadInt(HANDLE h, uint64_t a, int *out);
  * 这个签名在棒球小游戏内非常稳，不依赖那个会翻转的 intD[70..76]。 */
 #define ENT_CAT_TYPE 18
 #define ENT_STRIDE_INTS 36
-static int FindEntityBase(HANDLE h, uint64_t *out_base) {
+static int FindEntityBases(HANDLE h, uint64_t *out_bases, int max_bases) {
   const int kChunkSize = 1 << 20;
   unsigned char *buf = (unsigned char *)malloc(kChunkSize + 64);
   if (!buf) return 0;
   const uint64_t first_off = (uint64_t)(1000 + 13 * ENT_STRIDE_INTS + 2) * 4;
   const SIZE_T need = 4 * (1 + 2 * ENT_STRIDE_INTS);
   uint64_t addr = 0;
-  int found = 0;
-  while (!found && addr < 0x7fffffffffffULL) {
+  int nfound = 0;
+  while (nfound < max_bases && addr < 0x7fffffffffffULL) {
     MEMORY_BASIC_INFORMATION mbi;
     if (VirtualQueryEx(h, (LPCVOID)(uintptr_t)addr, &mbi, sizeof(mbi)) != sizeof(mbi))
       break;
@@ -105,7 +105,7 @@ static int FindEntityBase(HANDLE h, uint64_t *out_base) {
                                    PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
                                    PAGE_EXECUTE_WRITECOPY));
     if (readable) {
-      for (uint64_t off = 0; off + 4 <= sz && !found; off += kChunkSize) {
+      for (uint64_t off = 0; off + 4 <= sz && nfound < max_bases; off += kChunkSize) {
         SIZE_T want = (SIZE_T)((sz - off) > (uint64_t)kChunkSize ? (uint64_t)kChunkSize
                                                                  : (sz - off));
         SIZE_T got = 0;
@@ -133,11 +133,7 @@ static int FindEntityBase(HANDLE h, uint64_t *out_base) {
             else if (!((a0 == 0 || a0 == 1) && (a1 == 0 || a1 == 1)))
               ok = 0;
           }
-          if (ok) {
-            *out_base = base;
-            found = 1;
-            break;
-          }
+          if (ok) out_bases[nfound++] = base;
         }
       }
     }
@@ -146,7 +142,30 @@ static int FindEntityBase(HANDLE h, uint64_t *out_base) {
     addr = next;
   }
   free(buf);
-  return found;
+  return nfound;
+}
+
+/* 活 intD 判定：同一批槽位隔一小段时间采两次，数「变了几个」。
+ * 存档快照/影子副本是冻结的，游玩中的活副本一直在变（相机、动画帧、实体坐标）。 */
+static int CountChangedSlots(HANDLE h, uint64_t base, int *first_sample) {
+  enum { kN = 61 };
+  const int kFirst = 600;
+  int before[kN], after[kN];
+  int n = 0;
+  for (int i = 0; i < kN; ++i) {
+    before[i] = -12345;
+    ReadInt(h, base + (uint64_t)(kFirst + i) * 4, &before[i]);
+  }
+  Sleep(150);
+  for (int i = 0; i < kN; ++i) {
+    after[i] = -12345;
+    ReadInt(h, base + (uint64_t)(kFirst + i) * 4, &after[i]);
+    if (after[i] != before[i]) ++n;
+  }
+  if (first_sample) {
+    for (int i = 0; i < kN; ++i) first_sample[i] = after[i];
+  }
+  return n;
 }
 
 /* --entities: dump the 22 entity records + mode/ball/camera slots, so the PC side
@@ -676,11 +695,23 @@ int main(int argc, char **argv) {
   uint64_t best = 0;
   int rc = ScanAndDump(h, pid, have_anchor, anchor, maxc, &best, 0);
   if (g_entities) {
-    uint64_t ent_base = 0;
-    if (FindEntityBase(h, &ent_base)) {
-      printf("\n# entity-signature (three cats, type %d) found: intD base = 0x%llx\n",
-             ENT_CAT_TYPE, (unsigned long long)ent_base);
-      DumpEntities(h, ent_base);
+    uint64_t bases[16];
+    int nb = FindEntityBases(h, bases, 16);
+    if (nb > 0) {
+      printf("\n# entity-signature (three cats, type %d): %d match(es)\n", ENT_CAT_TYPE, nb);
+      int best_idx = 0, best_changed = -1;
+      for (int k = 0; k < nb; ++k) {
+        int changed = CountChangedSlots(h, bases[k], NULL);
+        printf("#   match #%d base=0x%llx changed_slots[600..660]=%d\n", k + 1,
+               (unsigned long long)bases[k], changed);
+        if (changed > best_changed) {
+          best_changed = changed;
+          best_idx = k;
+        }
+      }
+      printf("# using match #%d (live copy) base=0x%llx\n", best_idx + 1,
+             (unsigned long long)bases[best_idx]);
+      DumpEntities(h, bases[best_idx]);
     } else if (best) {
       printf("\n# entity-signature not found (no 'three cats' pattern); "
              "falling back to candidate base 0x%llx\n",
