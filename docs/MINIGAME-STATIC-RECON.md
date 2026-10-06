@@ -62,3 +62,41 @@
    帧等待；确定后按真值实现。
 
 > 维护：本文件随 P2 推进追加；新的成对记录写进 `dev-log/MINIGAME-STATIC-RECON.jsonl`。
+
+## 3. 真机核对（2026-10-06 夜，动态调试第一轮）
+
+装上新包后逐项核对 §0 的两处修复与滚轮通路：
+
+| 指标 | 结果 |
+| --- | --- |
+| `Tried to call empty RLOp_SpecialCase::Dispatch()` | **0 次**（Dispatch 修复生效，每帧异常消失） |
+| `[lb-ext] objbtn hit#` / `objbtn poll` | **0 次**（每帧 stdout 门控生效） |
+| `rlvm-input: wheel delta=…` | **48 次**；用户确认「滚轮映射正常」→ **log/回想在真机上第一次打得开** |
+| `未实现指令` / `步数上限` / `HOST FAULT` | 0 / 0 / 0 |
+| 引擎节奏（VN 段） | `progress: frames=3420…3720`，约 **45–50 fps**（小游戏段待下一轮单独测） |
+
+## 4. Sys opcode 覆盖度审计（新工具 `tools/sys_opcode_coverage.py`）
+
+用现成文件（`build/rlvm-scenes.txt` + 上游 `module_sys*.cc` + 平台层 `native-bridge.cpp`）
+回答「脚本实际用到的 Sys opcode 里，哪些两边都没实现」：
+
+```
+# 脚本用到 195 种 (opcode, overload) 组合，累计 101661 次
+# 上游 module_sys*.cc 注册 287 组；平台层补 21 组
+## 平台层补的桩（脚本在用）
+  Sys 211 ov=0  37131 次      Sys 216 ov=0  37131 次
+  Sys 210 ov=0   7875 次      Sys 215 ov=0   7875 次
+  Sys 150 ov=0     21 次
+## 两边都没有（引擎打 Undefined 后跳过）
+  Sys 366 ov=0  61 次   Sys 801 ov=0 57 次   Sys 457 ov=0 56 次
+  Sys 456 ov=0  50 次   Sys 106 ov=0 43 次   Sys 2502/2402 ov=0 各 39 次
+```
+
+**结论**：
+
+1. 除了 `210/211/215/216` 这一族（合计约 **9 万次**，疑似等待/同步类，语义待 D-040 标定），
+   其余缺口都是**低频**（≤61 次），影响面小。
+2. `Sys 456` 是明确的**注册遗漏**：我们只注册了 overload 1，脚本用的是 overload 0 →
+   下个包顺手补齐；`366 / 801 / 457 / 106 / 2502 / 2402` 一并按现有做法挂 ignore 桩
+   （效果与现在的 Undefined 跳过相同，至少不再刷日志）。
+3. 审计口径写进工具里，之后每加/改一个 Sys op 都可以重跑一次看覆盖度。
