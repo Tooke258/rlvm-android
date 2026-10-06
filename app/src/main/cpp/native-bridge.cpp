@@ -319,15 +319,15 @@ struct DiagOptions {
   // intd_dir_poke=1：把 pad 的四个方向键**直接映射**成 intD 标志位——
   // 按住某方向时写 intD[intd_dir_xxx] = 1，松开时写回 0（只写一次，不持续覆盖）。
   // 这既是"读编码"的手段（看角色往哪动），也是将来真正输入 op 的形态。
-  bool intd_dir_poke = false;
-  int intd_dir_up = 103;
-  int intd_dir_down = 104;
-  int intd_dir_left = 105;
-  int intd_dir_right = 106;
+  bool intd_dir_poke = true;
+  int intd_dir_up = 104;
+  int intd_dir_down = 106;
+  int intd_dir_left = 107;
+  int intd_dir_right = 105;
   // intd_hit_poke=1：把「击打」（鼠标左键）直接写进 intD[intd_hit_slot]（默认 101）。
   // 脚本判挥棒用 intD[101] == 1；实测即使用户按击打，intD[101] 也一直是 0，
   // 于是没有挥棒 → 没有投球循环 → 球和"猫"都不会出现。
-  bool intd_hit_poke = false;
+  bool intd_hit_poke = true;
   int intd_hit_slot = 101;
   // op_trace=a,b,c：只追踪「名字含任一子串」的指令（逗号分隔白名单）。
   // 非空即等价于打开 trace，但只打印白名单里的指令——用来在 46MB 全量 trace
@@ -1758,9 +1758,11 @@ void RunEngineOn(System& system,
               1);
           if (last_hit != 1) {
             last_hit = 1;
-            rlvm_android::AppendAppLogLine(
-                "[input] hit_poke: intD[" + std::to_string(diag.intd_hit_slot) +
-                "] = 1");
+            if (diag.input_trace) {
+              rlvm_android::AppendAppLogLine(
+                  "[input] hit_poke: intD[" + std::to_string(diag.intd_hit_slot) +
+                  "] = 1");
+            }
           }
         } else if (last_hit == 1) {
           last_hit = 0;
@@ -1768,9 +1770,11 @@ void RunEngineOn(System& system,
               libreallive::IntMemRef(libreallive::INTD_LOCATION,
                                      diag.intd_hit_slot),
               0);
-          rlvm_android::AppendAppLogLine(
-              "[input] hit_poke: intD[" + std::to_string(diag.intd_hit_slot) +
-              "] = 0");
+          if (diag.input_trace) {
+            rlvm_android::AppendAppLogLine(
+                "[input] hit_poke: intD[" + std::to_string(diag.intd_hit_slot) +
+                "] = 0");
+          }
         }
       }
       // ── pad 方向键 → intD 标志位直连（diag: intd_dir_poke=1）──────────────
@@ -1800,15 +1804,19 @@ void RunEngineOn(System& system,
                 1);
             if (*e.last != 1) {
               *e.last = 1;
-              rlvm_android::AppendAppLogLine(
-                  "[input] dir_poke: intD[" + std::to_string(e.slot) + "] = 1");
+              if (diag.input_trace) {
+                rlvm_android::AppendAppLogLine(
+                    "[input] dir_poke: intD[" + std::to_string(e.slot) + "] = 1");
+              }
             }
           } else if (*e.last == 1) {
             *e.last = 0;
             machine.SetIntValue(
                 libreallive::IntMemRef(libreallive::INTD_LOCATION, e.slot), 0);
-            rlvm_android::AppendAppLogLine(
-                "[input] dir_poke: intD[" + std::to_string(e.slot) + "] = 0");
+            if (diag.input_trace) {
+              rlvm_android::AppendAppLogLine(
+                  "[input] dir_poke: intD[" + std::to_string(e.slot) + "] = 0");
+            }
           }
         }
       }

@@ -8,13 +8,16 @@
 lb_minigame=1
 input_trace=1
 # 主模式：把 pad 方向键直连到 intD 标志位（按住写 1、松开写 0）
+# 2026-10-07 起**代码里默认已开**（native-bridge.cpp DiagOptions.intd_dir_poke=true），
+# 本文件保留只为显式备忘；要关掉直连、回到下面的轮换扫描，就写 intd_dir_poke=0。
 intd_dir_poke=1
-# 真机标定结果（2026-10-06）：104=上、106=下、105=右、103=左
+# 真机标定结果（2026-10-06）：104=上、106=下、105=右、107=左；103=跑步（尚未映射）
 intd_dir_up=104
 intd_dir_down=106
 intd_dir_left=107
 intd_dir_right=105
 # 击打（鼠标左键）→ intD[101]（挥棒判定；实测脚本读 intD[101] == 1）
+# 同上：2026-10-07 起代码默认已开；写 intd_hit_poke=0 可关。
 intd_hit_poke=1
 intd_hit_slot=101
 # 轮换扫描（备用，开了 intd_dir_poke 时不生效）

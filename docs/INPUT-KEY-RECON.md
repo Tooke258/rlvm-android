@@ -192,6 +192,7 @@ python tools/input_calib.py --session --watch-slots 101,109
 2. 修好后验证能选到 `30/31/32`，再看 `intD[73]/[76]/[1800]` 与球是否出现。
 3. 把 `intd_dir_poke` / `intd_hit_poke` 从调试开关**固化成正式实现**（默认开），然后回归：
    四方向 + 挥棒（`intD[101]`）+ 菜单导航（RLKEY 上下）+ Ctrl 快进。
+   ——✅ 已于 2026-10-07 固化（见 §8.6），真机回归待跑。
 4. 卡顿（独立问题，已量好）：见 `dev-log/PERF-STUTTER.jsonl` —— 每次 `loaded "…"` 前停顿
    平均 **96.5ms**、最大 **415ms**；修法是 SAF 目录清单/句柄缓存 + 预取，不是合成。
 
@@ -202,3 +203,31 @@ python tools/input_calib.py --session --watch-slots 101,109
 * `padButton()` 的 OnTouchListener 对 `ACTION_MOVE` 返回 false → 手势一滑就漏给游戏视图，
   游戏把每次滑动当成"点了一下屏幕"（这就是"按方向键像按了鼠标左键"的来源）；已改成整段手势
   一律返回 true，并给 `dpad`/`actionPad` 加 `isClickable = true`（按键栏区域自己吃掉触摸）。
+
+### 8.6 【已固化】方向键 / 挥棒直连 intD（2026-10-07 凌晨）
+
+`intd_dir_poke` 与 `intd_hit_poke` 原本是"标定用诊断"，现已**转正为默认行为**
+（`app/src/main/cpp/native-bridge.cpp` 的 `DiagOptions` 默认值）：
+
+| 项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `intd_dir_poke` | **true** | pad 方向键（含物理键盘 273/274/275/276）↔ `intD` 直连 |
+| `intd_dir_up / down / left / right` | **104 / 106 / 107 / 105** | 2026-10-06 真机标定值 |
+| `intd_hit_poke` | **true** | 鼠标左键（= 单指点击）↔ `intD[intd_hit_slot]` |
+| `intd_hit_slot` | `101` | 挥棒判定槽（`SEEN7420` 读 `intD[101] == 1`） |
+
+**为什么可以常态写入（不必只在小游戏里开）**：全库只有 `SEEN7420`（小游戏主循环）读
+`intD[101]` 与 `intD[103..107]`（`build/rlvm-scenes.txt` 全库扫描，读点各 7/1 处），
+其他场景既不读也不写这几个槽。
+
+**写法保持不变**：按住 **每帧重申写 1**，松开写一次 0。只写"真值边沿"会被脚本自己写的 0
+吞掉，表现成"动一下就停"。
+
+**日志降噪**：`[input] dir_poke:` / `[input] hit_poke:` 只在 `input_trace=1` 时输出，
+常态每次点击不再刷应用日志。
+
+**回退口**：`rlvm-diag.txt` 里写 `intd_dir_poke=0` 可关掉直连，配合 `intd_poke=1` 回到
+「轮换扫描」标定模式（`tools/rlvm-diag.input-poke.txt`）。
+
+**仍缺**：`intD[103]` = **跑步**（`SEEN7420`：`intD[103]==1 → intL[20]=5`，否则 3）。
+目前没有手势/按键映射到它，PC 端对应键未标定；不阻塞主线。

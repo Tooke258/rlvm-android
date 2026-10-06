@@ -381,6 +381,7 @@ SAF 目录授权需要人工在系统选择器里点一次（SAF 的固有环节
    进打击练习（模式 `30/31/32`）才能出手（`intD[76]==2 && intD[630]==58` → `intD[40]=123`）。
    现场取证：PC 上调出该菜单 → 手机同画面导渲染树 → 对 `SEEN7111` 逐 op 核对。
 2. 把方向键/挥棒**固化成正式实现**（默认开）+ 回归（四方向/挥棒/菜单导航/Ctrl 快进）。
+   ——✅ 已于 2026-10-07 固化（`docs/INPUT-KEY-RECON.md` §8.6），真机回归待跑。
 3. **卡顿**：已量清是"读图"（`loaded` 前平均 96.5ms、最大 415ms），
    修法 = SAF 目录清单+句柄缓存 + 预取。见 `dev-log/PERF-STUTTER.jsonl`。
 4. 仍挂着的：`Sys 460/461` 等空桩真实语义、`GanFg 101/102`、`ChildObjFg 1058`、
@@ -389,3 +390,27 @@ SAF 目录授权需要人工在系统选择器里点一次（SAF 的固有环节
 **诊断配置现状（重要）**：设备上的 `rlvm-diag.txt` 当前是**取证配置**
 （`lb_minigame=1 / input_trace=1 / intd_dir_poke=1 / intd_hit_poke=1`，
 样例 `tools/rlvm-diag.input-poke.txt`）。准备推包/发版前要换回常规配置或删掉该文件。
+
+---
+
+## 2026-10-07 凌晨 · 输入固化（本轮交付）
+
+**做了什么**：把上一轮用诊断开关标定出来的「方向键 / 挥棒 → intD」转正为默认实现，
+不再依赖设备上的 `rlvm-diag.txt`。
+
+* `intd_dir_poke` / `intd_hit_poke` 默认 **true**；方向槽位改成实机标定值
+  `up=104 / down=106 / left=107 / right=105`（代码里的旧默认 103..106 是错的，
+  只有 diag 文件覆盖过才对）。
+* 依据：`build/rlvm-scenes.txt` 全库扫描确认只有 `SEEN7420` 读 `intD[101]` 与
+  `intD[103..107]`，所以常态写入无副作用；写入语义仍为"按住每帧写 1、松开写一次 0"。
+* `[input] dir_poke:` / `[input] hit_poke:` 日志改为只在 `input_trace=1` 时输出，
+  避免常态点击刷日志。
+* 验证：`.\gradlew.bat assembleDebug` 通过（BUILD SUCCESSFUL in 20s，仅既有 warning）；
+  **真机未跑**。
+
+**下一步（顺序未变）**
+
+1. 练习选择菜单不渲染（`PT_PR_*`）——需要 PC 侧现场 + 手机同画面渲染树（`SEEN7111` 逐 op）。
+2. 真机回归：四方向 / 挥棒 / 菜单导航 / Ctrl 快进。
+3. 卡顿：SAF 目录清单 + 句柄缓存 + 预取（`dev-log/PERF-STUTTER.jsonl`）。
+4. 长尾：`intD[103]` 跑步映射、`Sys 460/461`、`GanFg 101/102`、`ChildObjFg 1058`。
