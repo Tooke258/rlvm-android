@@ -121,6 +121,9 @@ int g_logic_hz = 0;
 unsigned g_pt00_fp_lo = 0, g_pt00_fp_hi = 0;
 // 全指令追踪的地址区间（diag pt00_insn_lo / pt00_insn_hi，十六进制）。
 unsigned g_pt00_insn_lo = 0, g_pt00_insn_hi = 0;
+// 定点翻转条件跳转（diag pt00_jcc_flip=10003FFE，十六进制；0 = 关）。
+// 用途见 emu.c：把击球方向那个 jz 的条件取反，先让手感正常。
+unsigned g_pt00_jcc_flip = 0;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -608,6 +611,8 @@ DiagOptions LoadDiagOptions() {
       g_pt00_insn_lo = (unsigned)strtoul(value.c_str(), nullptr, 16);
     } else if (key == "pt00_insn_hi") {
       g_pt00_insn_hi = (unsigned)strtoul(value.c_str(), nullptr, 16);
+    } else if (key == "pt00_jcc_flip") {
+      g_pt00_jcc_flip = (unsigned)strtoul(value.c_str(), nullptr, 16);
     } else if (key == "max_instructions") {
       if (number > 0) options.max_instructions = number;
     } else if (key == "frame_log_every") {
@@ -1531,6 +1536,7 @@ void RunEngineOn(System& system,
     pt00emu::SetFpTrace(g_pt00_fp_lo, g_pt00_fp_hi, 6000);
   if (g_pt00_insn_lo != 0 && g_pt00_insn_hi > g_pt00_insn_lo)
     pt00emu::SetInsnTrace(g_pt00_insn_lo, g_pt00_insn_hi, 6000);
+  if (g_pt00_jcc_flip != 0) pt00emu::SetJccFlip(g_pt00_jcc_flip);
   if (!diag.dump_scenes.empty()) {
     // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
     // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。

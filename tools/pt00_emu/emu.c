@@ -166,6 +166,21 @@ void pt00_emu_set_insn_trace(uint32_t lo, uint32_t hi, int cap) {
   g_insn_trace_cap = cap;
 }
 
+/* 定点翻转条件跳转（外科手术式补丁）：EIP == eip 的那条 Jcc 把条件取反
+   （jz<->jnz、jb<->jae …，就是 op 字节的低位取反）。
+
+   为什么需要：小游戏击球方向的收尾是
+       0x10003ff1 fld[0]; 0x10003ff7 fcomp st(1); fnstsw; test ah,41h; jz 0x1000401B
+   —— X = −Δx（球每帧横向位移取反）；X<0 时跳过 +π（角度≈49.8°⇒朝外野），
+   X≥0 时加 π（≈229.8°⇒朝打者身后）。真机实测 15 球里 14 球走的是加 π 那支，
+   而我们已经验证过：角度链、标志位、角度→速度、以及球的运动学输入都与 PC 一致，
+   唯独"触球落在哪一侧"在手机上系统性地偏了。在把那个输入差找出来之前，
+   先用这个开关把判定翻过来，让手感正常（左/右侧都会用另一支的公式，仍由 DLL 自己算）。
+   默认 0 = 不改，纯诊断/对照用。 */
+static uint32_t g_jcc_flip_eip = 0;
+
+void pt00_emu_set_jcc_flip(uint32_t eip) { g_jcc_flip_eip = eip; }
+
 void pt00_emu_set_watch(uint32_t eip, int max_lines) {
   g_watch_eip = eip;
   /* max_lines < 0：只进环形缓冲、不逐条打印（默认用法，日志只留步数上限时的转储）。 */
@@ -1210,6 +1225,8 @@ static int step(void) {
   }
   uint8_t op = imm8();
   g_cur_eip = start;
+  if (g_jcc_flip_eip && start == g_jcc_flip_eip && (op & 0xf0) == 0x70)
+    op ^= 1; /* Jcc 条件取反 */
   if (g_insn_trace_cap > 0 && start >= g_insn_trace_lo && start < g_insn_trace_hi) {
     --g_insn_trace_cap;
     fprintf(stderr,

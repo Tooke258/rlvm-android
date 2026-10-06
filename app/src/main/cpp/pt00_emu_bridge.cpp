@@ -24,6 +24,7 @@ void pt00_emu_set_trace_ctx(int on, int max_lines);
 void pt00_emu_set_watch(unsigned eip, int max_lines);
 void pt00_emu_set_fp_trace(unsigned lo, unsigned hi, int cap);
 void pt00_emu_set_insn_trace(unsigned lo, unsigned hi, int cap);
+void pt00_emu_set_jcc_flip(unsigned eip);
 }
 
 namespace {
@@ -92,6 +93,9 @@ void SetFpTrace(unsigned lo, unsigned hi, int cap) {
 void SetInsnTrace(unsigned lo, unsigned hi, int cap) {
   pt00_emu_set_insn_trace(lo, hi, cap);
 }
+
+// 定点翻转条件跳转（见 emu.c 里 pt00_emu_set_jcc_flip 的说明）。
+void SetJccFlip(unsigned eip) { pt00_emu_set_jcc_flip(eip); }
 
 void SetVerbose(bool on) { g_verbose = on; }
 
