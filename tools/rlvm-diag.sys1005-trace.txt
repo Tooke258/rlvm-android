@@ -1,0 +1,18 @@
+# Sys 1005 取证 + 常规小游戏通路
+#
+# 背景（见 rlvm-release-0.14/src/modules/module_sys.cc 开头的反证）：
+#   LBEX 全库只有 1 处 Sys 1005：SEEN7420:267
+#     intL[0] = Sys1005(intD[610], intD[612], intD[226], intD[228])
+#     if (intD[625] == 0 && intD[210] == 1 && intL[0] < 35) { intD[220]=0; intD[600]=4; intD[630]=0 }
+#   → 这个 35 的阈值决定「球是否被隐藏、投球动画是否重启」。
+#   上游 RLVM 把它实现成 (v1-v3)/(v2-v4)，在 PC 实测值上会得到 0（< 35），
+#   与「PC 上球可见且在飞」矛盾 ⇒ 上游实现是错的；本仓库改成两点距离。
+#
+# sys1005=legacy|fixed ：A/B 用。fixed（不打这一行）= 两点距离；legacy = 上游公式。
+# sys1005_trace=N      ：打印前 N 次求值，形如
+#                        [sys1005] (610,612,226,228 的值) -> dist=… legacy=… 
+#                        只要看到 dist 是 0 而 legacy 是 634，就说明阈值那一步已经修好。
+sys1005_trace=40
+
+# 常规小游戏通路（保持不动）
+lb_minigame=1

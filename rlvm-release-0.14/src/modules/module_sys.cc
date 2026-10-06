@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,33 @@
 #include "utilities/string_utilities.h"
 
 const float PI = 3.14159265;
+
+// ---------------------------------------------------------------------------
+// [rlvm-android] Sys 1005 语义修正（上游 bug）。见 docs/PT00-CALLSITES.md、
+// dev-log/MINIGAME-RENDER-GAPS.jsonl 的 2026-10-07 段。
+//
+// 上游把 1005 实现成 `int((var1 - var3) / (var2 - var4))`，名字叫 "modulus"，
+// 而 1006 "angle" 的函数体与它**逐字相同** —— 显然是早期逆向时的占位猜测。
+//
+// 反证（用本机 PC 原生引擎的实测值，不是推测）：
+//   LBEX 全库对 Sys 1005 只有 1 处调用：SEEN7420:267
+//     intL[0] = Sys1005(intD[610], intD[612], intD[226], intD[228])
+//     if (intD[625] == 0 && intD[210] == 1 && intL[0] < 35) { 球复位/投球重启 }
+//   PC 端球在飞行中的实测值：intD[610]=-140 intD[612]=2100
+//                              intD[226]=-55  intD[228]=1471
+//     上游公式 -> (-140 - -55) / (2100 - 1471) = -85 / 629 -> int -> 0
+//     0 < 35 成立 => 复位块应当每帧执行 => 球应被隐藏。
+//   但 PC 上此刻 intD[220] == 1（球可见、正在飞）=> **上游公式必错**。
+//     改为两点距离 -> sqrt(85^2 + 629^2) = 634 >= 35 => 不复位 ✔
+//
+// 手机端症状与之逐项吻合（真机日志 build/lc_ball.txt）：复位块每帧执行 =>
+//   intD[220]=0（球被隐藏）、intD[232]=0（球速归零）、
+//   intD[600]=4 / intD[630]=0（投球动画反复重启）→「球永远不飞」。
+//
+// g_sys1005_legacy = true 时退回上游实现，用于真机 A/B 对照。
+// ---------------------------------------------------------------------------
+bool g_sys1005_legacy = false;
+int g_sys1005_trace = 0;  // >0：打印前 n 次求值（含旧/新两种结果）
 
 namespace {
 
@@ -181,12 +209,23 @@ struct sin_1 : public RLOp_Store_2<IntConstant_T, IntConstant_T> {
   }
 };
 
-struct Sys_modulus : public RLOp_Store_4<IntConstant_T,
-                                         IntConstant_T,
-                                         IntConstant_T,
-                                         IntConstant_T> {
+// [rlvm-android] 见文件开头 Sys 1005 的说明。语义 = 两点距离（整数、截断）。
+struct Sys_pair_distance : public RLOp_Store_4<IntConstant_T,
+                                               IntConstant_T,
+                                               IntConstant_T,
+                                               IntConstant_T> {
   int operator()(RLMachine& machine, int var1, int var2, int var3, int var4) {
-    return int(float(var1 - var3) / float(var2 - var4));
+    const double dx = double(var1 - var3);
+    const double dy = double(var2 - var4);
+    const int fixed_result = int(std::sqrt(dx * dx + dy * dy));
+    const int legacy_result = int(float(var1 - var3) / float(var2 - var4));
+    if (g_sys1005_trace > 0) {
+      --g_sys1005_trace;
+      std::fprintf(stderr, "[sys1005] (%d,%d,%d,%d) -> dist=%d legacy=%d %s\n",
+                   var1, var2, var3, var4, fixed_result, legacy_result,
+                   g_sys1005_legacy ? "(using legacy)" : "");
+    }
+    return g_sys1005_legacy ? legacy_result : fixed_result;
   }
 };
 
@@ -436,7 +475,8 @@ SysModule::SysModule() : RLModule("Sys", 1, 004) {
   AddOpcode(1003, 1, "power", new power_1);
   AddOpcode(1004, 0, "sin", new sin_0);
   AddOpcode(1004, 1, "sin", new sin_1);
-  AddOpcode(1005, 0, "modulus", new Sys_modulus);
+  // [rlvm-android] 上游此处是 "modulus"（占位实现，见文件开头说明）。
+  AddOpcode(1005, 0, "dist", new Sys_pair_distance);
   AddOpcode(1006, 0, "angle", new angle);
   AddOpcode(1007, 0, "min", new Sys_min);
   AddOpcode(1008, 0, "max", new Sys_max);

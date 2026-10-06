@@ -71,6 +71,12 @@
 #include "utilities/string_utilities.h"
 #include "utf8cpp/utf8.h"
 
+// Sys 1005（两参数点距离）的实现选择与求值取证。定义在上游
+// `rlvm-release-0.14/src/modules/module_sys.cc`（那里有完整的反证说明），
+// 这里只做 diag 接线；**必须声明在匿名 namespace 之外**，否则名字变成内部链接。
+extern bool g_sys1005_legacy;
+extern int g_sys1005_trace;
+
 namespace {
 
 constexpr char kLogTag[] = "rlvm-native";
@@ -355,6 +361,13 @@ struct DiagOptions {
   // patno_trace=1：`objPattNo` 写入取证（`[patno] SEENxxxx Lnnn parent=? child=?
   // set=? now=?`），用于定位「暂停菜单图标全是 0 号脸」。
   bool patno_trace = false;
+  // sys1005=legacy|fixed：Sys 1005（两点距离，LBEX 只在小游戏里用 1 次）的
+  // 实现选择。默认 fixed（正确语义）；legacy = 退回上游 RLVM 的占位公式
+  // `(v1-v3)/(v2-v4)`，用于真机 A/B 证明「球的显隐就是被它决定」。
+  // sys1005_trace=n：打印前 n 次求值（含旧/新两种结果）。
+  // 见 rlvm-release-0.14/src/modules/module_sys.cc 开头的说明。
+  std::string sys1005;
+  int sys1005_trace = 0;
   // force_pitch=1：**直接注入**「投球中」这套 DLL 状态，让脚本自己去画球。
   // 背景：球的显隐＝`intD[1800]`、位置＝`intD[1801..1803]`，正常由 PT00 的
   // func 900（init：x=-6000,y=0,z=3100）/ func 901（每帧推进）写，而这两支我们
@@ -459,6 +472,10 @@ DiagOptions LoadDiagOptions() {
       options.case_trace = (number != 0);
     } else if (key == "patno_trace") {
       options.patno_trace = (number != 0);
+    } else if (key == "sys1005") {
+      options.sys1005 = value;
+    } else if (key == "sys1005_trace") {
+      if (number > 0) options.sys1005_trace = number;
     } else if (key == "force_pitch") {
       options.force_pitch = (number != 0);
     } else if (key == "force_pitch_frames") {
@@ -1604,6 +1621,15 @@ void RunEngineOn(System& system,
   rlvm_android::SetLbOpTraceFilter(diag.op_trace);
   rlvm_android::SetLbCaseTrace(diag.case_trace);
   rlvm_android::SetLbPatNoTrace(diag.patno_trace);
+  // Sys 1005 的语义选择 + 求值取证（实现在上游 module_sys.cc 里）。
+  g_sys1005_legacy = (diag.sys1005 == "legacy");
+  g_sys1005_trace = diag.sys1005_trace;
+  if (!diag.sys1005.empty() || diag.sys1005_trace > 0) {
+    report += std::string("sys1005: ") +
+              (g_sys1005_legacy ? "legacy(上游 (v1-v3)/(v2-v4))"
+                                : "fixed(两点距离)") +
+              " trace=" + std::to_string(g_sys1005_trace) + "\n";
+  }
   if (!diag.op_trace.empty()) machine.set_tracing_on();
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);
