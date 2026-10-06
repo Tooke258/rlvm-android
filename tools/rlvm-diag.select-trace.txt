@@ -1,0 +1,22 @@
+# 抓"剧情选择枝"（Sel 3 = select_s）在运行期到底长什么样。
+#
+# 背景：全库 130 处真正的选项都是 `op<0:002:00003, 0>`（Sel 3，RLVM 注册为
+# select_s → ButtonSelectLongOperation，本该停下来等点击）。现象是选项被"直接忽略"，
+# 所以要区分：
+#   A) select_s 压根没被派发（说明走到的不是这条，或解析层把结构吃掉了）
+#   B) 派发了但参数是空的/只有一个（结构被拆）→ 长操作会立刻完成
+#   C) 派发了、参数正常，但长操作被"残留点击"立刻满足（那就是输入状态问题）
+# 逐指令 trace 会打印 `(SEENxxxx)(Line NNNN): select_s(<原始参数>)`，
+# 参数里就带着候选串——B/C 一眼可辨。
+#
+# 注意：trace 走 logcat（tag rlvm-stderr），不进 rlvm-log.txt；过滤成 select 后量很小。
+#
+# 用法：
+#   adb push tools/rlvm-diag.select-trace.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android
+#   启动 → 进到"开头有选项"的那个场景 → 看选项有没有出现
+#   adb logcat -d | grep 'select'
+
+op_trace=select
+loop_detect=1
