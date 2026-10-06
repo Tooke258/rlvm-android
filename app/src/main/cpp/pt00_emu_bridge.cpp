@@ -215,6 +215,24 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
            << GetD(machine, 1000 + i * 36 + 1) << "/"
            << GetD(machine, 1000 + i * 36 + 2) << " ";
       }
+      // 实体模式（record[4]）与**世界坐标**（record[10..12]）。
+      // 用途 1：「被打中的球朝背后飞」——launch_ball 的 intD[76]==1/3 分支算的是
+      //         (目标物位置 − 投手位置) 归一化；那些位置就是 record[10..12]。
+      // 用途 2：角色渲染位置不对时，先看这里是不是 0 / 是不是和 PC 一致。
+      os << " | entmode=";
+      for (int i = 0; i < 22; ++i) {
+        if (GetD(machine, 1000 + i * 36 + 0) == 0) continue;
+        os << i << ":" << GetD(machine, 1000 + i * 36 + 4) << ",";
+      }
+      std::cerr << os.str() << std::endl;
+      os.str("");
+      os << "[pt00] entpos=";
+      for (int i = 0; i < 22; ++i) {
+        if (GetD(machine, 1000 + i * 36 + 0) == 0) continue;
+        os << i << ":(" << GetD(machine, 1000 + i * 36 + 10) << ","
+           << GetD(machine, 1000 + i * 36 + 11) << ","
+           << GetD(machine, 1000 + i * 36 + 12) << ") ";
+      }
       // 棒球小游戏真正的球状态：脚本 objShow(203,0,intD[220]) / objShow(205,0,intD[250])
       // **拆成多行**：logcat 单行有长度上限，之前 ball1/ball2 被截断过。
       os << "[pt00] ball1 intD[210..232]=";

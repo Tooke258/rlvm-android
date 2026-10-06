@@ -259,6 +259,31 @@ static void DumpEntities(HANDLE h, uint64_t base) {
     ReadInt(h, base + (uint64_t)i * 4, &v);
     printf(" %d", v);
   }
+  /* 实体模式（record[4]）与世界坐标（record[10..12]）：手机侧打印同样的内容。
+     「被打中的球朝背后飞」= launch_ball 用 (目标物位置 − 投手位置) 定方向，
+     那些位置就是 record[10..12]；角色站错位置也先看这里。 */
+  printf("\n  entmode=");
+  for (int i = 0; i < 22; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)(1000 + i * 36 + 0) * 4, &v);
+    if (v == 0) continue;
+    printf(" %d:", i);
+    v = -999;
+    ReadInt(h, base + (uint64_t)(1000 + i * 36 + 4) * 4, &v);
+    printf("%d,", v);
+  }
+  printf("\n  entpos=");
+  for (int i = 0; i < 22; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)(1000 + i * 36 + 0) * 4, &v);
+    if (v == 0) continue;
+    printf(" %d:(", i);
+    for (int k = 10; k <= 12; ++k) {
+      v = -999;
+      ReadInt(h, base + (uint64_t)(1000 + i * 36 + k) * 4, &v);
+      printf("%d%s", v, k == 12 ? ")" : ",");
+    }
+  }
   printf("\n");
 }
 
