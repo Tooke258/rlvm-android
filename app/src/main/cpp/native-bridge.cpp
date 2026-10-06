@@ -98,6 +98,15 @@ unsigned int g_frame_serial = 0;
 int g_frame_log_every = 0;
 // 合成成本日志（diag 键 blit_cost=1 打开）。见 RunEngineOn 里 progress 行旁边的说明。
 bool g_blit_cost_log = false;
+// 逻辑帧节拍器（diag frame_hz=N，0 = 不限速 = 原行为）。
+//
+// 为什么需要：PT00 小游戏那套 DLL 逻辑全部是「每帧固定步长」——球速、投球
+// 动画、野手 AI 都按帧计数。真机实测逻辑帧约 66 fps，而原生端一球约 2 秒
+// ≈ 51 帧（≈26~30 fps），于是手机上同样的动作在墙钟时间上快 2~2.5 倍：
+// 球显得又硬又急，玩家也来不及在击球窗口（球到击球区 50~150 单位）里按键，
+// func 50 就走「没击中」的兜底分支 ⇒ 球朝打者身后飞。
+// 这里只做平台层限速，**不改 DLL / 脚本语义**；frame_hz=0 可完全退回原行为。
+int g_frame_hz = 0;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -573,6 +582,8 @@ DiagOptions LoadDiagOptions() {
       options.export_jp_text = (number != 0);
     } else if (key == "time_budget_ms") {
       if (number > 0) options.time_budget_ms = number;
+    } else if (key == "frame_hz") {
+      if (number >= 0) g_frame_hz = number;
     } else if (key == "max_instructions") {
       if (number > 0) options.max_instructions = number;
     } else if (key == "frame_log_every") {
@@ -1753,6 +1764,11 @@ void RunEngineOn(System& system,
   g_stop_requested.store(false);
   int executed = 0;
   int frames_presented = 0;
+  // 节拍器状态：目标时刻按固定周期递增；落后时不补帧（避免积压后猛跑）。
+  std::chrono::microseconds frame_period(0);
+  if (g_frame_hz > 0)
+    frame_period = std::chrono::microseconds(1000000 / g_frame_hz);
+  auto next_frame_deadline = std::chrono::steady_clock::now();
   // global memory 的定期落盘兜底（见下面循环里的说明）。
   unsigned int last_global_flush = system.event().GetTicks();
   std::string stop_reason = "instruction budget exhausted";
@@ -1797,6 +1813,16 @@ void RunEngineOn(System& system,
     if (graphics != nullptr) {
       CaptureFrame(*graphics);
       ++frames_presented;
+    }
+    // 节拍器：把「一帧的墙钟时长」钉在 1/frame_hz 上（见 g_frame_hz 的说明）。
+    if (g_frame_hz > 0) {
+      next_frame_deadline += frame_period;
+      const auto frame_now = std::chrono::steady_clock::now();
+      if (next_frame_deadline > frame_now) {
+        std::this_thread::sleep_for(next_frame_deadline - frame_now);
+      } else {
+        next_frame_deadline = frame_now;  // 已经落后：重新对齐，不补帧
+      }
     }
 
     // 进度日志：定位「跑很久但没有输出」这类问题。
