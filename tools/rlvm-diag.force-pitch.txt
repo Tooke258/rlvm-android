@@ -7,6 +7,25 @@
 #
 # 注入：设 intD[1800]=1，x 从 -6000 线性推到 0（`force_pitch_frames` 帧一轮，循环），
 # y=0 / z=3100 / 1804=0 与 func 900 的初值一致。
+# 标定（用户）：球从远处飞向近处＝**屏幕上→屏幕下**，普通一球约 2 秒；
+# 球速随机＝**飞行时长不同**。
+# 映射（`SEEN7470`）：
+#   屏幕x = intD[316] + (intD[1801]/10 + 1300)
+#   屏幕y = intD[317] + (1100 - intD[1803]/10)   ← 想往下走就减小 intD[1803]
+#   大小  = objAdjustVert(intD[1903])，intD[1903] = -intD[1802]/10  ← 越大＝越近
+#   图案帧 = intD[1804]
 lb_minigame=1
 force_pitch=1
-force_pitch_frames=120
+# 飞行时长（本机约 120 帧/秒 → 240 ≈ 2 秒），jitter = 每次随机的 ±帧数
+force_pitch_frames=240
+force_pitch_frames_jitter=60
+# 轨迹端点：x 不动（竖直方向是主运动），y(intD[1802]) 0 → -1000 让球变大，
+# z(intD[1803]) 3100 → 1100 让球从画面上方落到下方（func 900 的初值起点）
+force_pitch_x0=-6000
+force_pitch_x1=-6000
+force_pitch_y0=0
+force_pitch_y1=-1000
+force_pitch_z0=3100
+force_pitch_z1=1100
+# 到垒后隐藏多少帧再投下一球
+force_pitch_hold=30

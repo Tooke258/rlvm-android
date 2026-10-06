@@ -357,6 +357,18 @@ struct DiagOptions {
   // `force_pitch_frames` 帧一轮（默认 120 ≈ 1 秒），循环播放。
   bool force_pitch = false;
   int force_pitch_frames = 120;
+  // 注入轨迹的可调端点（func 900 的初值：x=-6000, y=0, z=3100）——调这四项就能
+  // 在线试出「球从投手飞向打者」的观感，不必每次重编译。
+  int force_pitch_x0 = -6000;
+  int force_pitch_x1 = 0;
+  int force_pitch_y0 = 0;
+  int force_pitch_y1 = 0;
+  int force_pitch_z0 = 3100;
+  int force_pitch_z1 = 3100;
+  // 球到达终点后再挂 hold 帧（保持 1800=1 与终点坐标），默认 0。
+  int force_pitch_hold = 0;
+  // 每轮飞行时长的随机抖动（±帧数）——PC 上球速随机 = 飞行时长不同。
+  int force_pitch_frames_jitter = 0;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
@@ -446,6 +458,22 @@ DiagOptions LoadDiagOptions() {
       options.force_pitch = (number != 0);
     } else if (key == "force_pitch_frames") {
       if (number > 0) options.force_pitch_frames = number;
+    } else if (key == "force_pitch_x0") {
+      options.force_pitch_x0 = number;
+    } else if (key == "force_pitch_x1") {
+      options.force_pitch_x1 = number;
+    } else if (key == "force_pitch_y0") {
+      options.force_pitch_y0 = number;
+    } else if (key == "force_pitch_y1") {
+      options.force_pitch_y1 = number;
+    } else if (key == "force_pitch_z0") {
+      options.force_pitch_z0 = number;
+    } else if (key == "force_pitch_z1") {
+      options.force_pitch_z1 = number;
+    } else if (key == "force_pitch_hold") {
+      if (number >= 0) options.force_pitch_hold = number;
+    } else if (key == "force_pitch_frames_jitter") {
+      if (number >= 0) options.force_pitch_frames_jitter = number;
     } else if (key == "input_trace") {
       options.input_trace = (number != 0);
     } else if (key == "intd_poke") {
@@ -1790,22 +1818,42 @@ void RunEngineOn(System& system,
     // 让脚本自己把球画出来——不依赖还没实现的 DLL 那两支。
     if (diag.force_pitch) {
       static int pitch_frame = 0;
-      const int total = diag.force_pitch_frames;
-      if (++pitch_frame > total) pitch_frame = 1;
-      const int x = -6000 + (6000 * pitch_frame) / total;
+      static int pitch_total = 0;
+      if (pitch_total == 0) {
+        // 新一轮：飞行时长 = 基准 ± jitter（PC 上球速随机 = 时长不同）。
+        pitch_total = diag.force_pitch_frames;
+        if (diag.force_pitch_frames_jitter > 0) {
+          pitch_total += (std::rand() % (2 * diag.force_pitch_frames_jitter + 1)) -
+                         diag.force_pitch_frames_jitter;
+        }
+        if (pitch_total < 30) pitch_total = 30;
+        pitch_frame = 0;
+      }
+      ++pitch_frame;
+      const int at = pitch_frame > pitch_total ? pitch_total : pitch_frame;
+      const int x = diag.force_pitch_x0 +
+                    (diag.force_pitch_x1 - diag.force_pitch_x0) * at / pitch_total;
+      // 注意命名：这里的 y 就是 intD[1802]（大小源）、z 是 intD[1803]（竖直位置源）。
+      const int y = diag.force_pitch_y0 +
+                    (diag.force_pitch_y1 - diag.force_pitch_y0) * at / pitch_total;
+      const int z = diag.force_pitch_z0 +
+                    (diag.force_pitch_z1 - diag.force_pitch_z0) * at / pitch_total;
+      const int flying = pitch_frame <= pitch_total ? 1 : 0;
       machine.SetIntValue(
-          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1800), 1);
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1800), flying);
       machine.SetIntValue(
           libreallive::IntMemRef(libreallive::INTD_LOCATION, 1801), x);
       machine.SetIntValue(
-          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1802), 0);
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1802), y);
       machine.SetIntValue(
-          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1803), 3100);
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1803), z);
       machine.SetIntValue(
           libreallive::IntMemRef(libreallive::INTD_LOCATION, 1804), 0);
+      if (pitch_frame > pitch_total + diag.force_pitch_hold) pitch_total = 0;
       if (diag.input_trace && pitch_frame == 1) {
         rlvm_android::AppendAppLogLine(
-            "[pitch] force_pitch: intD[1800]=1 (x from -6000 to 0)");
+            "[pitch] force_pitch: new pitch, frames=" +
+            std::to_string(pitch_total));
       }
     }
 
