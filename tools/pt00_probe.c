@@ -280,6 +280,20 @@ static void DumpEntities(HANDLE h, uint64_t base) {
     ReadInt(h, base + (uint64_t)i * 4, &v);
     printf(" %d", v);
   }
+  /* 节拍/计数槽：隔固定墙钟时间采两次就能算出原生端的"帧推进速率"，
+     用来定标 Android 侧的 frame_hz（手机侧 frame 行本来就会打 [760]）。
+     [760] 在手机上约 34/s（同一段里 loop 约 66 次/s），所以它大概率是
+     游戏自己的逻辑帧计数，而不是渲染帧计数 —— 这正是不该直接把 loop
+     限到 30 的原因。 */
+  printf("\n  tick intD[760],[761],[770],[771],[772]:");
+  {
+    const int idx[] = {760, 761, 770, 771, 772};
+    for (int k = 0; k < (int)(sizeof(idx) / sizeof(idx[0])); ++k) {
+      v = -999;
+      ReadInt(h, base + (uint64_t)idx[k] * 4, &v);
+      printf(" %d", v);
+    }
+  }
   /* 实体模式（record[4]）与世界坐标（record[10..12]）：手机侧打印同样的内容。
      「被打中的球朝背后飞」= launch_ball 用 (目标物位置 − 投手位置) 定方向，
      那些位置就是 record[10..12]；角色站错位置也先看这里。 */
