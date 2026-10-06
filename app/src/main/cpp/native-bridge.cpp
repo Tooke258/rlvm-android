@@ -1519,8 +1519,10 @@ void RunEngineOn(System& system,
   /* max_lines = -1：只进环形缓冲，步数上限时才整环转储（避免每帧几十条刷屏）。 */
   if (diag.pt00_watch != 0)
     pt00emu::SetWatch(diag.pt00_watch, -1);
+  // 上限 6000 行：大约覆盖 func 50 的 6~8 次调用。
+  // （第一轮设成 600，结果只装下一次「没击中」的调用，击中支被截断了。）
   if (g_pt00_fp_lo != 0 && g_pt00_fp_hi > g_pt00_fp_lo)
-    pt00emu::SetFpTrace(g_pt00_fp_lo, g_pt00_fp_hi, 600);
+    pt00emu::SetFpTrace(g_pt00_fp_lo, g_pt00_fp_hi, 6000);
   if (!diag.dump_scenes.empty()) {
     // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
     // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。
