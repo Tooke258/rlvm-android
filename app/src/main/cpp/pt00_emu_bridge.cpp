@@ -254,6 +254,32 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       std::cerr << os.str() << std::endl;
       os.str("");
 
+      // 球 2 族剩余部分：**被打飞那球的方向就在这里**。
+      // 状态 2 的积分器（build/pt00-state2.txt 的 sub_100031F0）是
+      //   sub_100032F0(intD+250, intD+410, 1, &flags)
+      // 里面只读 a2[6]/[12]/[14]/[15]/[16]/[18] ⇒ intD[256]/[262]/[264]/[265]/[266]/[268]：
+      //   [256] = ([265]*[262] + [266]) / 10000   ← x 位置
+      //   [258] = ([265]*[264] + [268]) / 10000   ← z 位置
+      // 所以 [262]（x 速）、[264]（z 速）、[265]（倍率）就决定了球往哪儿飞。
+      os << "[pt00] ballq intD[263..277]=";
+      for (int i = 263; i <= 277; ++i) os << GetD(machine, i) << ",";
+      std::cerr << os.str() << std::endl;
+      os.str("");
+
+      // 击球设定（脚本 CallDLL(func=50) → sub_10003BB0）的输入：
+      //   [620]/[622] = 打者/击球区坐标，[624] = 角度（0.1 度），
+      //   [626] = 玩家方向键选出的击球方向（脚本按 intD[104]/[106] 写 0/1/2），
+      //   [904]/[912] = 参与命中范围判定（50 ≤ 距离 < 150）的另一点。
+      // 手机 [904]=31 / PC 80 是重点观察项。
+      os << "[pt00] swing intD[620..626]=";
+      for (int i = 620; i <= 626; ++i) os << GetD(machine, i) << ",";
+      os << " [904]=" << GetD(machine, 904) << " [912]=" << GetD(machine, 912)
+         << " [914]=" << GetD(machine, 914) << " [916]=" << GetD(machine, 916)
+         << " [924]=" << GetD(machine, 924) << " [2496]=" << GetD(machine, 2496)
+         << " [2480]=" << GetD(machine, 2480) << " [2488]=" << GetD(machine, 2488);
+      std::cerr << os.str() << std::endl;
+      os.str("");
+
       // 出手参数是从这几处推出来的：intD[76]=模式（决定 func 900/901 的分支）、
       // intD[312]/[500]=投球种类、intD[904]=连投修正、[610..613]=打者目标点。
       os << "[pt00] parm intD[76]=" << GetD(machine, 76)
