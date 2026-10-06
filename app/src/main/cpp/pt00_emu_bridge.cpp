@@ -52,6 +52,11 @@ int GetG(RLMachine& machine, int index) {
       libreallive::IntMemRef(libreallive::INTG_LOCATION, index));
 }
 
+int GetF(RLMachine& machine, int index) {
+  return machine.GetIntValue(
+      libreallive::IntMemRef(libreallive::INTF_LOCATION, index));
+}
+
 }  // namespace
 
 namespace pt00emu {
@@ -185,6 +190,22 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
       os << " 100/101/109=" << GetD(machine, 100) << "/" << GetD(machine, 101)
          << "/" << GetD(machine, 109);
       os << " | intG[1900..1901]=" << GetG(machine, 1900) << "," << GetG(machine, 1901);
+      // 【阵容取证】小游戏的「进行中」标志与阵容都存在 intF：
+      //   SEEN7030 存：intF[1930]=1; intF[1931]=intD[70]; intF[1932]=intD[75];
+      //                intF[1940+i]=intD[1000+i*36+2]
+      //   SEEN7500 恢复：if (intF[1930]==1) intD[1000+i*36+2]=intF[1940+i]
+      // 若 intF 这边是 0/-1，实体 1/3/5 就不在场 → 投球永不触发（= 手机上
+      // 「击球手稳定被打中」的根因候选）。
+      os << " | intF[1930..1952]=";
+      for (int i = 1930; i <= 1952; ++i) {
+        os << GetF(machine, i) << ",";
+      }
+      os << " | ent(+0/+1/+2)=";
+      for (int i = 0; i < 22; ++i) {
+        os << GetD(machine, 1000 + i * 36 + 0) << "/"
+           << GetD(machine, 1000 + i * 36 + 1) << "/"
+           << GetD(machine, 1000 + i * 36 + 2) << " ";
+      }
       std::cerr << os.str() << std::endl;
       DumpFuncHistogram();
     }
