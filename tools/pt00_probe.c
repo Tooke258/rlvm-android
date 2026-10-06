@@ -80,6 +80,75 @@ typedef struct { uint64_t base; int score; int sane; } Cand;
 
 static int ReadInt(HANDLE h, uint64_t a, int *out);
 
+/* --entities：先用「三只猫」签名找 intD 基址——小游戏里槽 13/14/15 的类型
+ * 都是 18（猫），记录步长 36 个 int，所以内存里是「18 …(144B)… 18 …(144B)… 18」。
+ * 这个签名在棒球小游戏内非常稳，不依赖那个会翻转的 intD[70..76]。 */
+#define ENT_CAT_TYPE 18
+#define ENT_STRIDE_INTS 36
+static int FindEntityBase(HANDLE h, uint64_t *out_base) {
+  const int kChunkSize = 1 << 20;
+  unsigned char *buf = (unsigned char *)malloc(kChunkSize + 64);
+  if (!buf) return 0;
+  const uint64_t first_off = (uint64_t)(1000 + 13 * ENT_STRIDE_INTS + 2) * 4;
+  const SIZE_T need = 4 * (1 + 2 * ENT_STRIDE_INTS);
+  uint64_t addr = 0;
+  int found = 0;
+  while (!found && addr < 0x7fffffffffffULL) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQueryEx(h, (LPCVOID)(uintptr_t)addr, &mbi, sizeof(mbi)) != sizeof(mbi))
+      break;
+    uint64_t reg = (uint64_t)(uintptr_t)mbi.BaseAddress, sz = (uint64_t)mbi.RegionSize;
+    if (sz == 0) break;
+    int readable = (mbi.State == MEM_COMMIT) &&
+                   !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+                   (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                   PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                   PAGE_EXECUTE_WRITECOPY));
+    if (readable) {
+      for (uint64_t off = 0; off + 4 <= sz && !found; off += kChunkSize) {
+        SIZE_T want = (SIZE_T)((sz - off) > (uint64_t)kChunkSize ? (uint64_t)kChunkSize
+                                                                 : (sz - off));
+        SIZE_T got = 0;
+        if (!ReadProcessMemory(h, (LPCVOID)(uintptr_t)(reg + off), buf, want, &got) ||
+            got < need)
+          continue;
+        for (SIZE_T i = 0; i + need <= got; i += 4) {
+          int v = 0;
+          memcpy(&v, buf + i, 4);
+          if (v != ENT_CAT_TYPE) continue;
+          memcpy(&v, buf + i + ENT_STRIDE_INTS * 4, 4);
+          if (v != ENT_CAT_TYPE) continue;
+          memcpy(&v, buf + i + 2 * ENT_STRIDE_INTS * 4, 4);
+          if (v != ENT_CAT_TYPE) continue;
+          const uint64_t hit = reg + off + i;
+          if (hit < first_off) continue;
+          const uint64_t base = hit - first_off;
+          int ok = 1;
+          for (int c = 0; c < 3 && ok; ++c) {
+            int a0 = 99, a1 = 99;
+            if (!ReadInt(h, base + (uint64_t)(1000 + (13 + c) * ENT_STRIDE_INTS + 0) * 4, &a0))
+              ok = 0;
+            else if (!ReadInt(h, base + (uint64_t)(1000 + (13 + c) * ENT_STRIDE_INTS + 1) * 4, &a1))
+              ok = 0;
+            else if (!((a0 == 0 || a0 == 1) && (a1 == 0 || a1 == 1)))
+              ok = 0;
+          }
+          if (ok) {
+            *out_base = base;
+            found = 1;
+            break;
+          }
+        }
+      }
+    }
+    uint64_t next = reg + sz;
+    if (next <= addr) break;
+    addr = next;
+  }
+  free(buf);
+  return found;
+}
+
 /* --entities: dump the 22 entity records + mode/ball/camera slots, so the PC side
  * can be compared side by side with the Android dump ([pt00] frame ... ent(+0/+1/+2)). */
 static void DumpEntities(HANDLE h, uint64_t base) {
@@ -606,7 +675,21 @@ int main(int argc, char **argv) {
   }
   uint64_t best = 0;
   int rc = ScanAndDump(h, pid, have_anchor, anchor, maxc, &best, 0);
-  if (g_entities && best) DumpEntities(h, best);
+  if (g_entities) {
+    uint64_t ent_base = 0;
+    if (FindEntityBase(h, &ent_base)) {
+      printf("\n# entity-signature (three cats, type %d) found: intD base = 0x%llx\n",
+             ENT_CAT_TYPE, (unsigned long long)ent_base);
+      DumpEntities(h, ent_base);
+    } else if (best) {
+      printf("\n# entity-signature not found (no 'three cats' pattern); "
+             "falling back to candidate base 0x%llx\n",
+             (unsigned long long)best);
+      DumpEntities(h, best);
+    } else {
+      printf("\n# entity-signature not found and no candidate base\n");
+    }
+  }
   CloseHandle(h);
   return rc;
 }
