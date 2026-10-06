@@ -78,11 +78,71 @@ static void DumpFull(HANDLE h, uint64_t base) {
 /* base = intD 基址；score = 邻居签名命中数；sane = intD[0..1999] 里「像脚本变量」的个数 */
 typedef struct { uint64_t base; int score; int sane; } Cand;
 
+static int ReadInt(HANDLE h, uint64_t a, int *out);
+
+/* --entities: dump the 22 entity records + mode/ball/camera slots, so the PC side
+ * can be compared side by side with the Android dump ([pt00] frame ... ent(+0/+1/+2)). */
+static void DumpEntities(HANDLE h, uint64_t base) {
+  int v = 0;
+  printf("\n--- entity table: intD[1000 + i*36 + k] (i = 0..21) ---\n");
+  for (int i = 0; i < 22; ++i) {
+    const int fields[5] = {0, 1, 2, 3, 20};
+    int val[5] = {0, 0, 0, 0, 0};
+    for (int k = 0; k < 5; ++k) {
+      if (!ReadInt(h, base + (uint64_t)(1000 + i * 36 + fields[k]) * 4, &val[k]))
+        val[k] = -999;
+    }
+    printf("  ent %2d: +0=%d +1=%d +2=%d +3=%d +20=%d\n", i, val[0], val[1],
+           val[2], val[3], val[4]);
+  }
+  printf("  mode intD[70..96]:");
+  for (int i = 70; i <= 96; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  printf("\n  cam intD[316],[317],[1900..1904]:");
+  v = -999;
+  ReadInt(h, base + 316 * 4, &v);
+  printf(" %d", v);
+  v = -999;
+  ReadInt(h, base + 317 * 4, &v);
+  printf(" %d", v);
+  for (int i = 1900; i <= 1904; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  printf("\n  ball intD[1800..1804]:");
+  for (int i = 1800; i <= 1804; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  printf("\n  ballA intD[1830..1841]:");
+  for (int i = 1830; i <= 1841; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  printf("\n  ballB intD[1850..1865]:");
+  for (int i = 1850; i <= 1865; ++i) {
+    v = -999;
+    ReadInt(h, base + (uint64_t)i * 4, &v);
+    printf(" %d", v);
+  }
+  printf("\n");
+}
+
 /* 扫描时要跳过的地址区间（自检用：免得命中探针自己 .rdata 里的签名常量） */
 static uint64_t g_excl_lo = 0, g_excl_hi = 0;
 
 /* --scan-all 只扫「有可能装着引擎」的进程，别去啃一堆 3 MB 的系统服务 */
 #define SCANALL_MIN_WS (32u << 20)
+
+static int g_entities = 0; /* --entities: dump the 22 entity records + mode/ball/cam slots */
+
+static int ReadInt(HANDLE h, uint64_t a, int *out);
 
 static int g_full = 0; /* --full：候选块之后再整片打印 intD[0..1999] */
 
@@ -515,18 +575,27 @@ int main(int argc, char **argv) {
     return FindStr(fpid, argv[3], (argc > 4) ? atoi(argv[4]) : 20);
   }
   /* --full 可以出现在任意位置：任何参数里出现它，就整片打印 intD[0..1999] */
-  for (int i = 2; i < argc; ++i) if (strcmp(argv[i], "--full") == 0) g_full = 1;
+  for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--full") == 0) g_full = 1;
+    if (strcmp(argv[i], "--entities") == 0) g_entities = 1;
+  }
   if (strcmp(argv[1], "--scan-all") == 0) {
-    int have_anchor = (argc > 2 && strcmp(argv[2], "--full") != 0);
+    int have_anchor =
+        (argc > 2 && strcmp(argv[2], "--full") != 0 &&
+         strcmp(argv[2], "--entities") != 0);
     return ScanAll(have_anchor, have_anchor ? atoi(argv[2]) : 0, 4);
   }
 
   DWORD pid = ResolvePid(argv[1]);
   if (!pid) return 1;
 
-  int have_anchor = (argc > 2 && strcmp(argv[2], "--full") != 0);
+  int have_anchor = (argc > 2 && strcmp(argv[2], "--full") != 0 &&
+                     strcmp(argv[2], "--entities") != 0);
   int anchor = have_anchor ? atoi(argv[2]) : 0;
-  int maxc = (argc > 3 && strcmp(argv[3], "--full") != 0) ? atoi(argv[3]) : 4;
+  int maxc = (argc > 3 && strcmp(argv[3], "--full") != 0 &&
+              strcmp(argv[3], "--entities") != 0)
+                 ? atoi(argv[3])
+                 : 4;
   if (maxc < 1) maxc = 1;
 
   HANDLE h = OpenForScan(pid);
@@ -537,6 +606,7 @@ int main(int argc, char **argv) {
   }
   uint64_t best = 0;
   int rc = ScanAndDump(h, pid, have_anchor, anchor, maxc, &best, 0);
+  if (g_entities && best) DumpEntities(h, best);
   CloseHandle(h);
   return rc;
 }
