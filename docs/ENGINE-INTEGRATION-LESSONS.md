@@ -255,7 +255,9 @@ R_COMMAND_MOD / NAME_MOD` —— 等于**改掉了原有行为**，把流程带�
 1. **让 `Sys151` 尊重键码表**（最小、最可能直接见效）。**硬约束**：必须保留现有鼠标语义
    —— `SEEN7420` 的挥棒判定是 `intD[101] == 1`，改坏它小游戏会再卡一次（历史回归点）。
    **键 → 值的编码必须用 PC 真值标定**：PC 同场景按键 + `pt00_probe.exe <pid> --full`
-   抓 `intD[101]` 与变化槽位，测出来再写。
+   抓 `intD[101]` 与变化槽位，测出来再写。已备好一键标定工具：
+   `python tools/input_calib.py --session --watch-slots 101,109`
+   （交互式抓帧 + 逐帧 diff + 结束汇总；流程与判读见 `docs/INPUT-KEY-RECON.md` §6）。
 2. **引擎侧"方向键 → 光标移动"**（若要复刻原生手感）：平台层把
    `RLKEY_UP/DOWN/LEFT/RIGHT` 映射成 `InjectMouseMovement`，不依赖 long op。
    先按实验 C 确认 pad 的等价实现是否有效，避免重复劳动。
