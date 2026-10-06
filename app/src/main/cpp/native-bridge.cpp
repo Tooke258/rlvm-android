@@ -329,6 +329,16 @@ struct DiagOptions {
   // 于是没有挥棒 → 没有投球循环 → 球和"猫"都不会出现。
   bool intd_hit_poke = true;
   int intd_hit_slot = 101;
+  // intd_right_poke=1（默认开）：右键（= 长按手势松开那一帧）→ intD[102] = 2。
+  // 原生引擎每帧把鼠标/键盘写进 intD[100..108]（101=左键、102=右键），脚本
+  // SEEN7800 用 `intD[102] == 2` 开**暂停菜单**（菜单本体 = 221 号对象
+  // PT_RMENU_BG00/BTN00/BTN01，二级确认 = 222 号 PT_ENDWIN_*）。
+  // 只发"松开脉冲"而不整个镜像按钮状态机（1=按住 / 2=抬起），避免把
+  // `intD[101] == 1` 的挥棒判定带偏。
+  bool intd_right_poke = true;
+  int intd_right_slot = 102;
+  int intd_right_value = 2;
+  int intd_right_pulse_frames = 2;
   // op_trace=a,b,c：只追踪「名字含任一子串」的指令（逗号分隔白名单）。
   // 非空即等价于打开 trace，但只打印白名单里的指令——用来在 46MB 全量 trace
   // 里只盯会改对象状态的那十来个 op。默认空 = 不过滤（行为同原来）。
@@ -442,6 +452,14 @@ DiagOptions LoadDiagOptions() {
       options.intd_hit_poke = (number != 0);
     } else if (key == "intd_hit_slot") {
       options.intd_hit_slot = number;
+    } else if (key == "intd_right_poke") {
+      options.intd_right_poke = (number != 0);
+    } else if (key == "intd_right_slot") {
+      options.intd_right_slot = number;
+    } else if (key == "intd_right_value") {
+      options.intd_right_value = number;
+    } else if (key == "intd_right_pulse_frames") {
+      if (number > 0) options.intd_right_pulse_frames = number;
     } else if (key == "blit_fast") {
       options.blit_fast = (number != 0);
     } else if (key == "dirty_gate") {
@@ -1744,7 +1762,43 @@ void RunEngineOn(System& system,
     // intD 写入扫描（diag: intd_poke=1）：按住方向键时，往 intd_poke_lo..hi
     // 里轮流写 intd_poke_value，每个槽位停留 intd_poke_hold_ms。
     // 把当前写的 (槽位,值) 打进日志；用户只要盯游戏画面"角色动没动"。
-    if (diag.intd_poke || diag.intd_dir_poke || diag.intd_hit_poke) {
+    if (diag.intd_poke || diag.intd_dir_poke || diag.intd_hit_poke ||
+        diag.intd_right_poke) {
+      // 右键（长按松开）→ intD[102] 短脉冲（intd_right_poke，默认开）。
+      // 事件层把"长按松开"记成 button2_state_ = 2（1=按住 / 2=抬起）；这里只在
+      // 上升沿发 pulse_frames 帧的脉冲，脚本 SEEN7800 看到 `intD[102] == 2`
+      // 就会 farcall(7800, 1) 去建暂停菜单（221 号对象 PT_RMENU_*）。
+      if (diag.intd_right_poke) {
+        AndroidEventSystem& res =
+            static_cast<AndroidEventSystem&>(machine.system().event());
+        Point rp;
+        int rb1 = 0, rb2 = 0;
+        res.GetCursorPos(rp, rb1, rb2);
+        static int last_rb2 = 0;
+        static int right_pulse = 0;
+        if (rb2 == 2 && last_rb2 != 2) {
+          right_pulse = diag.intd_right_pulse_frames;
+        }
+        last_rb2 = rb2;
+        if (right_pulse > 0) {
+          --right_pulse;
+          machine.SetIntValue(
+              libreallive::IntMemRef(libreallive::INTD_LOCATION,
+                                     diag.intd_right_slot),
+              diag.intd_right_value);
+          if (diag.input_trace) {
+            rlvm_android::AppendAppLogLine(
+                "[input] right_poke: intD[" +
+                std::to_string(diag.intd_right_slot) + "] = " +
+                std::to_string(diag.intd_right_value));
+          }
+        } else {
+          machine.SetIntValue(
+              libreallive::IntMemRef(libreallive::INTD_LOCATION,
+                                     diag.intd_right_slot),
+              0);
+        }
+      }
       // ── 击打（鼠标左键） → intD[intd_hit_slot] 直连（diag: intd_hit_poke=1）──
       if (diag.intd_hit_poke) {
         static int last_hit = -1;
