@@ -142,6 +142,27 @@ def cmd_preset(path, out, lo, hi, which=0):
     print("写出 %s" % out)
 
 
+def cmd_fill(path, out, value, which=0):
+    """把整张表（或区间）填成同一个值。
+
+    用途：第 1 张表是**位域数组**（每个 int32 = 32 个标志位；原档里
+    [391]=542711623 这种值就是多位区段）。要把"看过/解锁"全点亮，必须把每个字
+    填满（-1 = 0xFFFFFFFF），只写 1 会只点亮每个字的第 0 位 —— 这正是"解锁得有点少"
+    的原因。
+    """
+    tokens, seps = tokenize(load(path))
+    off = find_intg(tokens, which)
+    arr = get_arr(tokens, off)
+    changed = sum(1 for v in arr if v != value)
+    for i in range(INTG_COUNT):
+        arr[i] = value
+    print("第 %d 张表：%d 项填成 %d" % (which, changed, value))
+    put_arr(tokens, off, arr)
+    data = rebuild(tokens, seps).encode("utf-8")
+    open(out, "wb").write(zlib.compress(data, 9))
+    print("写出 %s" % out)
+
+
 def main():
     if len(sys.argv) < 3:
         raise SystemExit(__doc__)
@@ -166,6 +187,12 @@ def main():
         if "--bool-hi" in rest:
             hi = int(rest[rest.index("--bool-hi") + 1])
         cmd_preset(path, out, lo, hi, which)
+    elif mode == "fill":
+        out = rest[0]
+        val = -1
+        if "--value" in rest:
+            val = int(rest[rest.index("--value") + 1])
+        cmd_fill(path, out, val, which)
     else:
         raise SystemExit(__doc__)
 
