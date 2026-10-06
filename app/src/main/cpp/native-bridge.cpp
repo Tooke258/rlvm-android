@@ -107,6 +107,15 @@ bool g_blit_cost_log = false;
 // func 50 就走「没击中」的兜底分支 ⇒ 球朝打者身后飞。
 // 这里只做平台层限速，**不改 DLL / 脚本语义**；frame_hz=0 可完全退回原行为。
 int g_frame_hz = 0;
+// 逻辑帧与渲染帧**解耦**（diag logic_hz=N，0 = 关 = 原行为）。
+//
+// 为什么需要：frame_hz 是把整条主循环（逻辑 + 抓帧）一起限速，渲染也跟着掉；
+// 而原生端不是这样 —— PC 实测 intD[760] 引擎帧 59/s，但球的推进只有
+// 1448 单位/秒 ÷ 38.6 单位/帧 ≈ 37.5 逻辑帧/s，也就是"渲染跑满、逻辑按固定
+// 周期走"。所以正确的旋钮是给_logic_限速，而不是给 loop 限速：
+//   logic_hz=N → 每 1/N 秒才执行一次 system.Run（脚本/DLL 前进一格），
+//                其余循环只做刷新与抓帧，渲染不被拖慢。
+int g_logic_hz = 0;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -584,6 +593,8 @@ DiagOptions LoadDiagOptions() {
       if (number > 0) options.time_budget_ms = number;
     } else if (key == "frame_hz") {
       if (number >= 0) g_frame_hz = number;
+    } else if (key == "logic_hz") {
+      if (number >= 0) g_logic_hz = number;
     } else if (key == "max_instructions") {
       if (number > 0) options.max_instructions = number;
     } else if (key == "frame_log_every") {
@@ -1769,6 +1780,11 @@ void RunEngineOn(System& system,
   if (g_frame_hz > 0)
     frame_period = std::chrono::microseconds(1000000 / g_frame_hz);
   auto next_frame_deadline = std::chrono::steady_clock::now();
+  // 逻辑时钟（logic_hz，见 g_logic_hz 的说明）：与渲染解耦，单独限速。
+  std::chrono::microseconds logic_period(0);
+  if (g_logic_hz > 0)
+    logic_period = std::chrono::microseconds(1000000 / g_logic_hz);
+  auto next_logic_deadline = std::chrono::steady_clock::now();
   // global memory 的定期落盘兜底（见下面循环里的说明）。
   unsigned int last_global_flush = system.event().GetTicks();
   std::string stop_reason = "instruction budget exhausted";
@@ -1809,8 +1825,17 @@ void RunEngineOn(System& system,
       break;
     }
 
-    system.Run(machine);
+    // 逻辑：logic_hz>0 时只在到点的循环里前进，其余循环跳过脚本执行；
+    // 渲染/抓帧仍然每轮都做，所以限的是逻辑节奏、不是画面帧率。
+    bool logic_due = true;
+    if (g_logic_hz > 0) {
+      const auto logic_now = std::chrono::steady_clock::now();
+      logic_due = (logic_now >= next_logic_deadline);
+      if (logic_due) next_logic_deadline = logic_now + logic_period;
+    }
+    if (logic_due) system.Run(machine);
     if (graphics != nullptr) {
+      if (!logic_due) graphics->Refresh(nullptr);  // 保持画面每轮都合成
       CaptureFrame(*graphics);
       ++frames_presented;
     }
