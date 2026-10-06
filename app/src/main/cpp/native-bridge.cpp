@@ -1235,6 +1235,44 @@ class AndroidRLMachine : public RLMachine {
                         new LbIgnoreRawArgs(4, 451, "Sys451"));
       module->AddOpcode(456, 1, "lb_ignore_456",
                         new LbIgnoreRawArgs(4, 456, "Sys456"));
+      // 真机日志里实际撞到的 Undefined（引擎自己打的 `Undefined: opcode<1:4:NNN, K>`
+      // 就是"确不存在"的证明）+ tools/sys_opcode_coverage.py 的审计结果。
+      // 一律按同一做法挂容错桩：效果与"引擎跳过"相同，但不再刷日志、也不再走异常路径。
+      // 其中 **460 / 461（最频繁）与 2056 / 3503 / 300 系列语义未知**，
+      // 需要按 D-040 用真值标定后再实现（已记进 docs/MINIGAME-STATIC-RECON.md）。
+      static const struct { int op, ov; } kSysIgnore[] = {
+          {106, 0},  {200, 0},  {201, 0},  {300, 0},  {301, 0}, {302, 0},
+          {366, 0},  {432, 0},  {437, 0},  {442, 0},  {447, 0}, {452, 0},
+          {456, 0},  // 原来只注册了 overload 1 —— 这是漏项
+          {457, 0},  {457, 1},  {460, 1},  {461, 1},  {711, 0}, {713, 0},
+          {801, 0},  {1231, 0}, {2056, 0}, {3503, 0},
+      };
+      for (const auto& e : kSysIgnore) {
+        module->AddOpcode(e.op, e.ov, "lb_ignore_sys_ext",
+                          new LbIgnoreRawArgs(4, e.op, "SysExt"));
+      }
+    } else if (module != nullptr && module->module_type() == 1 &&
+               module->module_number() == 255) {
+      // Debug 模块：LBEX 脚本用 12/14/15，RLVM 的 DebugModule 没实现 → 真机日志里是
+      // Undefined。按同一做法挂容错桩（本来就是调试用，无语义副作用）。
+      for (const int op : {12, 14, 15}) {
+        module->AddOpcode(op, 0, "lb_ignore_debug",
+                          new LbIgnoreRawArgs(255, op, "Debug"));
+      }
+    } else if (module != nullptr && module->module_type() == 1 &&
+               module->module_number() == 73) {
+      // GanFg（立绘动画）：RLVM 只有 3/4/104/1000..1007，而 LBEX 脚本用 101/102。
+      // ⚠️ 这两条**很可能是"实体不渲染"的源头之一**（动画/显示控制）—— 这里只做到
+      // "不再刷 Undefined"的容错；真语义要按 D-040 用真值标定后实现。
+      for (const int op : {101, 102}) {
+        module->AddOpcode(op, 0, "lb_ignore_ganfg",
+                          new LbIgnoreRawArgs(73, op, "GanFg"));
+      }
+    } else if (module != nullptr && module->module_type() == 1 &&
+               module->module_number() == 12) {
+      // Syscom：RLVM 有 1210..1216，LBEX 还用 1103(overload 1)。
+      module->AddOpcode(1103, 1, "lb_ignore_syscom_1103",
+                        new LbIgnoreRawArgs(12, 1103, "Syscom1103"));
     } else if (module != nullptr && module->module_type() == 1 &&
                module->module_number() == 21) {
       // Pcm：小游戏按名预载音效（WAV/PT_*.ogg），见 LbWavLoadByName 注释。

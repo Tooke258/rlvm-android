@@ -206,8 +206,6 @@ void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
                                      std::placeholders::_1,
                                      static_cast<KeyCode>(key.code),
                                      key.pressed));
-    __android_log_print(ANDROID_LOG_INFO, "rlvm-input", "key code=%d pressed=%d",
-                        key.code, key.pressed ? 1 : 0);
   }
 
   // 滚轮事件：与 SDL 后端同一条路 —— 也是按 MouseButtonStateChanged 派发，
