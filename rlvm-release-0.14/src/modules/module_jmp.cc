@@ -97,6 +97,25 @@ int EvaluateCase(RLMachine& machine, const CommandElement& goto_element) {
     // Strip the parens for parsing
     caseUnparsed = caseUnparsed.substr(1, caseUnparsed.size() - 2);
 
+    // 【rlvm-android 修复】RealLive 会把「整型 case 值」编译成**原始 32 位字面量**：
+    // 字节序列 `$ ff <int32 LE>`（外面还包着括号），所以字符串里**带内嵌 NUL**。
+    // 原来的实现把它当 C 字符串交给 `GetExpression(c_str())`，遇到 NUL 就截断，
+    // 于是永远匹配不上 → 抛 "no default case" → 上层 catch 后顺着执行到**第一个
+    // case 分支**。LBEX 暂停菜单里就表现为「221 号对象下所有按钮都画 0 号图案」。
+    // 这里显式识别这种原始字面量、直接取整数；其余情况仍走原来的文本解析。
+    if (caseUnparsed.size() >= 6 && caseUnparsed[0] == '$' &&
+        static_cast<unsigned char>(caseUnparsed[1]) == 0xff) {
+      const int raw_value = libreallive::read_i32(caseUnparsed.data() + 2);
+      if (raw_value == value) {
+        if (case_trace) {
+          case_trace_text << " -> raw_hit=" << i << "(v=" << raw_value << ")";
+          rlvm_android::AppendAppLogLine(case_trace_text.str());
+        }
+        return i;
+      }
+      continue;
+    }
+
     // Parse this expression, and goto the corresponding label if
     // it's equal to the value we're searching for
     const char* e = (const char*)caseUnparsed.c_str();
