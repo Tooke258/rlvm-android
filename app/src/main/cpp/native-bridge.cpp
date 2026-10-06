@@ -116,6 +116,9 @@ int g_frame_hz = 0;
 //   logic_hz=N → 每 1/N 秒才执行一次 system.Run（脚本/DLL 前进一格），
 //                其余循环只做刷新与抓帧，渲染不被拖慢。
 int g_logic_hz = 0;
+// 定点 x87 追踪的地址区间（十六进制，diag pt00_fp_lo / pt00_fp_hi）。
+// 例：盯 func 50 的角度解算 → pt00_fp_lo=10003BB0 pt00_fp_hi=10004380
+unsigned g_pt00_fp_lo = 0, g_pt00_fp_hi = 0;
 
 // ---------------------------------------------------------------------------
 // 设备侧诊断开关
@@ -595,6 +598,10 @@ DiagOptions LoadDiagOptions() {
       if (number >= 0) g_frame_hz = number;
     } else if (key == "logic_hz") {
       if (number >= 0) g_logic_hz = number;
+    } else if (key == "pt00_fp_lo") {
+      g_pt00_fp_lo = (unsigned)strtoul(value.c_str(), nullptr, 16);
+    } else if (key == "pt00_fp_hi") {
+      g_pt00_fp_hi = (unsigned)strtoul(value.c_str(), nullptr, 16);
     } else if (key == "max_instructions") {
       if (number > 0) options.max_instructions = number;
     } else if (key == "frame_log_every") {
@@ -1512,6 +1519,8 @@ void RunEngineOn(System& system,
   /* max_lines = -1：只进环形缓冲，步数上限时才整环转储（避免每帧几十条刷屏）。 */
   if (diag.pt00_watch != 0)
     pt00emu::SetWatch(diag.pt00_watch, -1);
+  if (g_pt00_fp_lo != 0 && g_pt00_fp_hi > g_pt00_fp_lo)
+    pt00emu::SetFpTrace(g_pt00_fp_lo, g_pt00_fp_hi, 600);
   if (!diag.dump_scenes.empty()) {
     // `dump_scenes=all` → 把 **全部** 场景反汇编写文件（351 幕约 35MB，走 logcat 必爆缓冲）。
     // 其余写法是逗号分隔的场景号，同样写文件（但只有列出的那几幕）。

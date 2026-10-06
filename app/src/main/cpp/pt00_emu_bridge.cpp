@@ -22,6 +22,7 @@ void pt00_emu_set_intd(const int* src, unsigned count);
 void pt00_emu_get_intd(int* dst, unsigned count);
 void pt00_emu_set_trace_ctx(int on, int max_lines);
 void pt00_emu_set_watch(unsigned eip, int max_lines);
+void pt00_emu_set_fp_trace(unsigned lo, unsigned hi, int cap);
 }
 
 namespace {
@@ -78,6 +79,12 @@ void SetIntgHack(bool on) { g_intg_hack = on; }
 
 void SetWatch(unsigned eip, int max_lines) {
   pt00_emu_set_watch(eip, max_lines);
+}
+
+// 定点 x87 追踪（diag pt00_fp_lo/pt00_fp_hi，十六进制）。
+// 只打印 EIP 落在区间内的 x87 操作及其栈顶，用来定位「整段浮点算偏了」的问题。
+void SetFpTrace(unsigned lo, unsigned hi, int cap) {
+  pt00_emu_set_fp_trace(lo, hi, cap);
 }
 
 void SetVerbose(bool on) { g_verbose = on; }

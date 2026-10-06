@@ -140,6 +140,20 @@ static int g_watch_hits = 0;
 
 /* 观察点：eip 命中时记录「每次 CallDLL 第一次命中」的寄存器/结构体现场。
  * 定义放在这里（不受 PT00_EMU_LIBRARY 分支影响），CLI 与 Android 库两边共用。 */
+/* 定点 x87 追踪：只打印 EIP 落在 [lo,hi) 内的 x87 操作，最多 cap 行。
+   用途：像 func 50（0x10003BB0，重浮点的小游戏击球解算）这种「整段数学偏了
+   一个角度」的问题，靠反推很难，直接把每条 x87 的栈顶值打出来就一目了然。
+   因为 pop/push 会改栈顶，这里打印的是**操作前**与**操作后**的 st0..st3。 */
+static uint32_t g_cur_eip = 0;
+static uint32_t g_fp_trace_lo = 0, g_fp_trace_hi = 0;
+static int g_fp_trace_cap = 0;
+
+void pt00_emu_set_fp_trace(uint32_t lo, uint32_t hi, int cap) {
+  g_fp_trace_lo = lo;
+  g_fp_trace_hi = hi;
+  g_fp_trace_cap = cap;
+}
+
 void pt00_emu_set_watch(uint32_t eip, int max_lines) {
   g_watch_eip = eip;
   /* max_lines < 0：只进环形缓冲、不逐条打印（默认用法，日志只留步数上限时的转储）。 */
@@ -707,7 +721,23 @@ static void fp_cmp(double a, double b) {
 /* log2：fyl2x/fyl2xp1 用（MSVC 没有 lg2） */
 static double fp_log2(double v) { return log(v) / log(2.0); }
 
+static int x87_impl(uint8_t op);
+
+/* 带追踪的 x87 入口：见 pt00_emu_set_fp_trace 的说明。 */
 static int x87(uint8_t op) {
+  if (!g_fp_trace_cap || g_cur_eip < g_fp_trace_lo || g_cur_eip >= g_fp_trace_hi)
+    return x87_impl(op);
+  --g_fp_trace_cap;
+  const double b0 = *XP(0), b1 = *XP(1), b2 = *XP(2), b3 = *XP(3);
+  const int rc = x87_impl(op);
+  fprintf(stderr,
+          "[x87] %08x op=%02x modrm=%02x rc=%d  st[%g %g %g %g] -> [%g %g %g %g]\n",
+          g_cur_eip, op, rd8(g_cur_eip + 1), rc, b0, b1, b2, b3, *XP(0), *XP(1),
+          *XP(2), *XP(3));
+  return rc;
+}
+
+static int x87_impl(uint8_t op) {
   ModRM m = modrm();
   const int reg = m.reg;
   if (op == 0xd8) { /* m32real 与 st 形式 */
@@ -1548,6 +1578,7 @@ static int step(void) {
     case 0xa4: wr8(cpu.edi, rd8(cpu.esi)); cpu.esi += 1; cpu.edi += 1; return 0;   /* movsb */
     case 0xd8: case 0xd9: case 0xda: case 0xdb:
     case 0xdc: case 0xdd: case 0xde: case 0xdf:
+      g_cur_eip = start;
       if (x87(op) == 0) return 0;
       cpu.eip = start; /* 回退 eip，让报错指向指令开头 */
       UNIMPL("x87");
