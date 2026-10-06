@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <thread>
+#include <typeinfo>
 
 #include "android/android_graphics.h"
 #include "android/audio_engine.h"
@@ -17,6 +18,7 @@
 #include "utf8cpp/utf8.h"
 #include "libreallive/gameexe.h"
 #include "machine/rlmachine.h"
+#include "machine/long_operation.h"
 #include "systems/base/colour.h"
 #include "systems/base/platform.h"
 #include "systems/base/voice_archive.h"
@@ -180,6 +182,16 @@ void AndroidEventSystem::ExecuteEventSystem(RLMachine& machine) {
     } else if (key.code == RLKEY_LCTRL || key.code == RLKEY_RCTRL) {
       ctrl_pressed_ = key.pressed;
     }
+    if (key.code >= 0 && key.code < kMaxKeyCode) key_held_[key.code] = key.pressed;
+    // 诊断（对应 docs/INPUT-KEY-RECON.md §2 的实验 B）：按键是"被当前 long op 吃掉"，
+    // 还是"当时栈顶根本没有 long op（脚本在跑 → DispatchEvent 直接丢弃）"。
+    {
+      std::shared_ptr<LongOperation> op = machine.CurrentLongOperation();
+      __android_log_print(ANDROID_LOG_INFO, "rlvm-input",
+                          "key code=%d pressed=%d longop=%s", key.code,
+                          key.pressed ? 1 : 0,
+                          op ? typeid(*op).name() : "none");
+    }
     DispatchEvent(machine, std::bind(&EventListener::KeyStateChanged,
                                      std::placeholders::_1,
                                      static_cast<KeyCode>(key.code),
@@ -198,6 +210,17 @@ void AndroidEventSystem::Wait(unsigned int milliseconds) const {
 bool AndroidEventSystem::ShiftPressed() const { return shift_pressed_; }
 
 bool AndroidEventSystem::CtrlPressed() const { return ctrl_pressed_; }
+
+bool AndroidEventSystem::IsKeyHeld(int rl_key_code) const {
+  return rl_key_code >= 0 && rl_key_code < kMaxKeyCode && key_held_[rl_key_code];
+}
+
+bool AndroidEventSystem::IsMouseButtonHeld(int button) const {
+  // button1_state_ / button2_state_ 的语义与 SDL 注入一致：1 = 按住中，2 = 刚抬起。
+  if (button == 1) return button1_state_ == 1;
+  if (button == 2) return button2_state_ == 1;
+  return false;
+}
 
 Point AndroidEventSystem::GetCursorPos() { return mouse_pos_; }
 

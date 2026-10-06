@@ -80,6 +80,18 @@ class AndroidEventSystem : public EventSystem {
   bool ClickSeenThisFrame() const { return click_seen_; }
   Point ClickPosition() const { return click_pos_; }
 
+  /**
+   * 某个 RealLive 键码（RLKEY_*）当前是否被按住。
+   *
+   * 为什么需要：Sys151/152 的语义是"轮询一串键码，把被按下的那个写回引用"
+   * （见 docs/INPUT-KEY-RECON.md）。在此之前我们只保留了 shift/ctrl 两个修饰键，
+   * 键码表里的键（49/65/66/80..89/100 等）根本无从查询。
+   */
+  bool IsKeyHeld(int rl_key_code) const;
+
+  /** 鼠标键当前是否被按住（1 = 左键，2 = 右键）。 */
+  bool IsMouseButtonHeld(int button) const;
+
  private:
   /** 按位掩码设置某个鼠标键状态并派发事件（1=左键 2=右键）。 */
   void ApplyButtonState(RLMachine& machine, int button, int state, int button_mask);
@@ -107,6 +119,9 @@ class AndroidEventSystem : public EventSystem {
   // "按住跳过"的判定来源）。
   bool shift_pressed_ = false;
   bool ctrl_pressed_ = false;
+  // 当前按住的键（只按 RLKEY 码存；脚本用到的码都在 0..100 与 273..306 区间）。
+  static constexpr int kMaxKeyCode = 512;
+  bool key_held_[kMaxKeyCode] = {};
   unsigned int last_mouse_move_ticks_;
 };
 
