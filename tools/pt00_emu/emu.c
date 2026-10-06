@@ -863,7 +863,19 @@ static int x87(uint8_t op) {
   } else if (op == 0xdd) { /* dd 寄存器形式：ffree / fst st(i) / fstp st(i) / fucom(p) */
     if (m.raw >= 0xc0 && m.raw <= 0xc7) return 0;                                   /* ffree st(i) */
     if (m.raw >= 0xd0 && m.raw <= 0xd7) { *XP(m.raw - 0xd0) = *XP(0); return 0; }   /* fst st(i) */
-    if (m.raw >= 0xd8 && m.raw <= 0xdf) { *XP(m.raw - 0xd8) = fp_pop(); return 0; } /* fstp st(i) */
+    if (m.raw >= 0xd8 && m.raw <= 0xdf) { /* fstp st(i) */
+      /* **目标槽必须在 pop 之前取**。`*XP(i) = fp_pop()` 依赖未指定的求值顺序，
+         而 fp_pop() 会先改 g_fptop —— RHS 先求值时目标会掉到错一格，
+         整条浮点链就变成「差不多对、但符号/尺子不对」。
+         真机症状：PT00 的向量归一化 sub_10001A00 里有 `dd da`（fstp st(2)），
+         写丢之后 sub_10006820 的 z 方向常量 -2000.0 实际被当成 +2000.0，
+         棒球小游戏的球朝反方向飞（intD[234] = +1000，PC 是 -999），
+         于是脚本的「球到打者」判定永不成立 → 卡在这一球。 */
+      const int dst = m.raw - 0xd8;
+      *XP(dst) = *XP(0);
+      fp_pop();
+      return 0;
+    }
     if (m.raw >= 0xe0 && m.raw <= 0xe7) { fp_cmp(*XP(0), *XP(m.raw - 0xe0)); return 0; }
     if (m.raw >= 0xe8 && m.raw <= 0xef) { fp_cmp(*XP(0), *XP(m.raw - 0xe8)); fp_pop(); return 0; }
   } else if (op == 0xde) { /* 出栈式算术 + fcompp；内存形式是 m16int 整数算术 */
