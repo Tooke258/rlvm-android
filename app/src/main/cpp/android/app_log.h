@@ -18,6 +18,18 @@ void SetAppLogFile(const std::string& path);
 // 写一行：照旧进 logcat，同时追加到上面的日志文件。
 void AppendAppLogLine(const std::string& line);
 
+// 诊断开关：对象「晋升/擦除」（GraphicsSystem::ClearAndPromoteObjects）明细。
+// diag 键 wipe_log=1 打开。默认关——它会逐对象打行，只在排查渲染丢失时开。
+bool LbWipeLogEnabled();
+void SetLbWipeLog(bool on);
+
+// 逐指令 trace 的**白名单**过滤器（diag 键 op_trace=a,b,c）。
+// 过滤器为空时 = 不过滤（此时只有 trace=1 才有输出，行为与原来一致）。
+// 非空时：只有名字里含任一子串的指令才会被打印——用来在小游戏里只盯
+// 「可能改对象状态」的那十来种指令，避免 46MB 的全量 trace。
+void SetLbOpTraceFilter(const std::string& csv_substrings);
+bool LbOpTraceWanted(const std::string& op_name);
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_

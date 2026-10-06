@@ -1,0 +1,26 @@
+# 主题：小游戏「方向键不通」第二步 —— 直接扫「哪个 intD 槽位能让角色动」
+#
+# 原理（已由 input_trace 证实）：pad 的方向键到了引擎（keys=UDLR 有值），
+# 但引擎从不把它写进 intD；而 PT00.dll 只能从 intD 拿输入。
+# 所以这里主动写 intD：按住任意方向键时，每 intd_poke_hold_ms 换下一个槽位，
+# 往 intD[槽位] 写 intd_poke_value，并把当前 (槽位,值) 写进应用日志。
+# 用户只需要盯游戏画面「角色动没动 / 转向了没」，日志告诉我们那一刻写的是哪个槽。
+lb_minigame=1
+input_trace=1
+# 主模式：把 pad 方向键直连到 intD 标志位（按住写 1、松开写 0）
+intd_dir_poke=1
+# 真机标定结果（2026-10-06）：104=上、106=下、105=右、103=左
+intd_dir_up=104
+intd_dir_down=106
+intd_dir_left=107
+intd_dir_right=105
+# 击打（鼠标左键）→ intD[101]（挥棒判定；实测脚本读 intD[101] == 1）
+intd_hit_poke=1
+intd_hit_slot=101
+# 轮换扫描（备用，开了 intd_dir_poke 时不生效）
+#intd_poke=1
+#intd_poke_lo=103
+#intd_poke_hi=107
+#intd_poke_value=1
+#intd_poke_hold_ms=8000
+#intd_poke_free=1

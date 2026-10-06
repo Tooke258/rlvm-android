@@ -709,11 +709,46 @@ std::shared_ptr<const Surface> GraphicsSystem::GetSurfaceNamed(
 void GraphicsSystem::ClearAndPromoteObjects() {
   typedef LazyArray<GraphicsObject>::full_iterator FullIterator;
 
+  // 诊断（diag: wipe_log=1）：逐个对象回报「擦除 / 覆盖 / 保留」。
+  // 背景：LBEX 小游戏的地图（objFg 201）在运镜结束的 bgrLoadHaikei("?",230)
+  // 之后就没了。全幕 trace 显示那一轮里**只有这条指令**碰得到对象数据，
+  // 但「不受 WipeCopy 保护而被擦除」和「bg 槽位已被占用而被空对象覆盖」
+  // 在画面上完全一样，只能靠这里区分。默认关。
+  const bool wipe_log = rlvm_android::LbWipeLogEnabled();
+  int n_fg_alloc = 0, n_fg_data = 0, n_bg_alloc = 0, n_fg_freed = 0,
+      n_bg_copy = 0;
+
   FullIterator bg = graphics_object_impl_->background_objects.full_begin();
   FullIterator bg_end = graphics_object_impl_->background_objects.full_end();
   FullIterator fg = graphics_object_impl_->foreground_objects.full_begin();
   FullIterator fg_end = graphics_object_impl_->foreground_objects.full_end();
   for (; bg != bg_end && fg != fg_end; bg++, fg++) {
+    if (wipe_log) {
+      const bool fg_alloc = fg.valid();
+      const bool fg_data = fg_alloc && fg->has_object_data();
+      const int fg_wc = fg_alloc ? fg->wipe_copy() : -1;
+      const bool bg_alloc = bg.valid();
+      const bool bg_data = bg_alloc && bg->has_object_data();
+      if (fg_alloc) ++n_fg_alloc;
+      if (fg_data) ++n_fg_data;
+      if (bg_alloc) ++n_bg_alloc;
+      if (fg_alloc && fg_wc == 0) ++n_fg_freed;
+      if (bg_alloc) ++n_bg_copy;
+      if (fg_data || bg_alloc || (fg_alloc && fg_wc != 0)) {
+        std::ostringstream line;
+        line << "[wipe] #" << fg.pos() << " fg(alloc=" << (fg_alloc ? 1 : 0)
+             << " data=" << (fg_data ? 1 : 0) << " wc=" << fg_wc
+             << ") bg(alloc=" << (bg_alloc ? 1 : 0)
+             << " data=" << (bg_data ? 1 : 0) << ") -> ";
+        if (fg_alloc && fg_wc == 0)
+          line << "FG_FREE ";
+        else if (fg_alloc)
+          line << "fg_keep ";
+        if (bg_alloc) line << "BG_COPY";
+        rlvm_android::AppendAppLogLine(line.str());
+      }
+    }
+
     if (fg.valid() && !fg->wipe_copy()) {
       fg->InitializeParams();
       fg->FreeObjectData();
@@ -724,6 +759,14 @@ void GraphicsSystem::ClearAndPromoteObjects() {
       bg->InitializeParams();
       bg->FreeObjectData();
     }
+  }
+
+  if (wipe_log) {
+    std::ostringstream sum;
+    sum << "[wipe] ClearAndPromoteObjects: fg_alloc=" << n_fg_alloc
+        << " fg_had_data=" << n_fg_data << " fg_freed=" << n_fg_freed
+        << " bg_alloc=" << n_bg_alloc << " bg_promoted=" << n_bg_copy;
+    rlvm_android::AppendAppLogLine(sum.str());
   }
 }
 

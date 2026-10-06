@@ -345,3 +345,47 @@ SAF 目录授权需要人工在系统选择器里点一次（SAF 的固有环节
 
 仍待处理见 `HANDOFF-2026-10-06.md` §5（结算段未实现 opcode、`lb_child_obj_1058` 四条 op、
 表现层对齐、小游戏 ~16fps 等）。
+
+---
+
+## 2026-10-06 夜 · 本轮交付（归档）
+
+**已闭环并真机验证**
+
+1. **左视窗地图消失**（`bgrLoadHaikei("?",230)` 的"对象晋升"把地图擦掉）：
+   根因是 `GraphicsObject::Impl` **拷贝构造函数**里 `wipe_copy_(0)` —— 任何参数 setter 的
+   首次写入（`objMove/objShow/…`）都会清掉 `objFgWipeCopyOn` 打的保护。
+   修：`graphics_object.cc` 改成 `wipe_copy_(rhs.wipe_copy_)`（+9/-1，仅此一处）。
+   真机 A/B：晋升汇总 `fg_freed` 109 → **60**；`#201` 一路 `vdw1`。见
+   `dev-log/MINIGAME-MAP-LOSS.jsonl`、`docs/MINIGAME-STATIC-RECON.md` §9。
+2. **方向键**：pad 事件本来就到引擎，缺的是"引擎写 intD"。实测标定
+   **`intD[104]=上 / 105=右 / 106=下 / 107=左`**（103 = 另一动作位）；
+   实现为"按住每帧写 1、松开写 0"。见 `docs/INPUT-KEY-RECON.md` §8.1。
+3. **挥棒**：`intD[101]` 直连已通（84 次电平切换）。
+4. **pad 两个缺陷**：推光标带 `buttons=1`（被当成左键）、方向键手势 MOVE 泄漏成游戏点击
+   （"按方向键像按左键"的真凶）。均已修。
+
+**新证据 / 新工具（都在库里）**
+
+* `[wipe]` 逐对象晋升/擦除日志 + 195..255 号对象活体时间线（`wipe_log=1`）。
+* **白名单逐指令 trace**（`op_trace=a,b,c`，默认不过滤时行为不变）。
+* `input_trace=1`：每帧变化时打 `keys=/cursor=/intD95_115=`，用来区分"按键没到引擎"与
+  "引擎没写 intD"。
+* `intd_dir_poke` / `intd_hit_poke` / `intd_poke`（+`intd_poke_free`）—— 直接写 intD 的标定器。
+* PC 侧：`tools/input_watch.py`（连续采样 + 噪声基线 + ★新变化★）；`pt00_probe.exe` **锚定模式**
+  （`<proc> <intD[73]的值> 6 --full`）在签名失效时也能锁定（本轮 intD 基址 `0x97a524`）。
+
+**进行中 / 下一步（优先级）**
+
+1. **「看不到球、看不到猫」**：根因已定位到**练习选择菜单不渲染**（`PT_PR_*` 那套世界内对象）。
+   进打击练习（模式 `30/31/32`）才能出手（`intD[76]==2 && intD[630]==58` → `intD[40]=123`）。
+   现场取证：PC 上调出该菜单 → 手机同画面导渲染树 → 对 `SEEN7111` 逐 op 核对。
+2. 把方向键/挥棒**固化成正式实现**（默认开）+ 回归（四方向/挥棒/菜单导航/Ctrl 快进）。
+3. **卡顿**：已量清是"读图"（`loaded` 前平均 96.5ms、最大 415ms），
+   修法 = SAF 目录清单+句柄缓存 + 预取。见 `dev-log/PERF-STUTTER.jsonl`。
+4. 仍挂着的：`Sys 460/461` 等空桩真实语义、`GanFg 101/102`、`ChildObjFg 1058`、
+   小游戏实体渲染的整体核对（`PT_PR_*`/`PT_Y*`）。
+
+**诊断配置现状（重要）**：设备上的 `rlvm-diag.txt` 当前是**取证配置**
+（`lb_minigame=1 / input_trace=1 / intd_dir_poke=1 / intd_hit_poke=1`，
+样例 `tools/rlvm-diag.input-poke.txt`）。准备推包/发版前要换回常规配置或删掉该文件。

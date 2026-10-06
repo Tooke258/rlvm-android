@@ -1,0 +1,20 @@
+# 主题：「小游戏地图（objFg #201）在运镜结束之后消失」的现场取证
+#
+# lb_minigame=1 : 启用小游戏（棒球）通路
+# wipe_log=1    : 新增。两件事——
+#                 1) 每次 ClearAndPromoteObjects（对象「晋升/擦除」，bgrLoadHaikei
+#                    都会走这里）逐对象打印一行 [wipe] #idx fg(alloc/data/wc)
+#                    bg(alloc/data) -> FG_FREE / fg_keep / BG_COPY，
+#                    并给一行汇总 fg_alloc/fg_had_data/fg_freed/bg_alloc/bg_promoted；
+#                 2) 195..255 号前景对象的活体时间线：可见/有数据/WipeCopy 变化时
+#                    打一行 objs[195..255]:，用来定位「哪一帧、以什么状态」没的。
+#                 日志同时进 logcat 与应用内 rlvm-log.txt。
+# blit_cost=1   : 每 60 帧一行合成成本（含最慢一次的 src→dst），看地图是否还在被合成。
+#
+# 复现点：进小游戏 → 运镜结束、CG 切入（bgrLoadHaikei("?",230)）→ 地图消失的那一瞬。
+lb_minigame=1
+wipe_log=1
+blit_cost=1
+# op_trace：白名单指令追踪（只看会改对象数据/保护标记的 op）+ 所有 WipeCopy 系。
+# 目的：找出「谁把 201/213/214/216/217/219/220/230 的 WipeCopy 清掉」。
+op_trace=objFgWipeCopy,objBgWipeCopy,objChildFgWipeCopy,objChildBgWipeCopy,objEraseWipeCopy,objFgInit,objBgInit,objInit,objFreeInit,objFreeAll,objInitAll,objCopy,objSetCopy,objBgCopy,objChildCopy,bgrLoadHaikei,objOfChild,objChildFgInit,objChildBgInit,objOfFile

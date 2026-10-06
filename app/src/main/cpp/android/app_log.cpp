@@ -4,14 +4,43 @@
 
 #include <cstdio>
 #include <mutex>
+#include <vector>
 
 namespace rlvm_android {
 namespace {
 
 std::mutex g_app_log_mutex;
 std::string g_app_log_path;
+bool g_lb_wipe_log = false;
+std::vector<std::string> g_lb_op_trace_filter;
 
 }  // namespace
+
+bool LbWipeLogEnabled() { return g_lb_wipe_log; }
+
+void SetLbWipeLog(bool on) { g_lb_wipe_log = on; }
+
+void SetLbOpTraceFilter(const std::string& csv_substrings) {
+  g_lb_op_trace_filter.clear();
+  std::string cur;
+  for (char c : csv_substrings) {
+    if (c == ',') {
+      if (!cur.empty()) g_lb_op_trace_filter.push_back(cur);
+      cur.clear();
+    } else if (c != ' ' && c != '\r' && c != '\n' && c != '\t') {
+      cur.push_back(c);
+    }
+  }
+  if (!cur.empty()) g_lb_op_trace_filter.push_back(cur);
+}
+
+bool LbOpTraceWanted(const std::string& op_name) {
+  if (g_lb_op_trace_filter.empty()) return true;
+  for (const std::string& s : g_lb_op_trace_filter) {
+    if (op_name.find(s) != std::string::npos) return true;
+  }
+  return false;
+}
 
 void SetAppLogFile(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_app_log_mutex);

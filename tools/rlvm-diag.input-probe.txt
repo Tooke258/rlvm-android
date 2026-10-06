@@ -1,0 +1,21 @@
+# 主题：小游戏「方向键不通」的第一层取证 —— 按键到底走没走到引擎侧？
+#
+# lb_minigame=1 : 小游戏通路（棒球）
+# input_trace=1 : 新增。每帧只在**内容变化**时打一行：
+#                 [input] keys=UDLR ctrl=0 ret=0 mouse=b1,b2 cursor=x,y intD95_115=…
+#                 用途：区分两种根因——
+#                   (a) pad 的按键/光标**没到达引擎**（keys 一直是 ----、cursor 不动）；
+#                   (b) 引擎收到了，但**没有把输入写进 intD**（keys 有值而 intD[95..115] 全 0）。
+#
+# 下面这两组是**下一步**的扫描器（默认注释掉；要用时把 intd_poke=1 打开并重启引擎）：
+#   按住任意方向键时，引擎每 intd_poke_hold_ms 毫秒换下一个槽位，
+#   往 intD[槽位] 写 intd_poke_value，并把当前 (槽位,值) 写进应用日志。
+#   用户只要盯游戏画面"角色动没动"，日志告诉我们那一刻在写哪个槽。
+#
+# intd_poke=1
+# intd_poke_lo=100
+# intd_poke_hi=110
+# intd_poke_value=1
+# intd_poke_hold_ms=6000
+lb_minigame=1
+input_trace=1

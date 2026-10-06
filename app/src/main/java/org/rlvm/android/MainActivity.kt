@@ -333,7 +333,11 @@ class MainActivity : Activity() {
                         v.isPressed = false
                         true
                     }
-                    else -> false
+                    // 必须把整段手势都吃掉：以前 MOVE 返回 false，手指在按钮上稍微一滑，
+                    // 事件就漏给父视图/游戏视图 —— 游戏那边会把它当成「在游戏里点了一下」，
+                    // 于是按方向键看起来像按了鼠标左键（真机反馈 + 日志里成对的
+                    // touch action=0/2 都印证了）。这里一律返回 true。
+                    else -> true
                 }
             }
         }
@@ -354,6 +358,11 @@ class MainActivity : Activity() {
 
         val dpad = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
+            // 关键：把整块方向键区域"吃掉"。否则点在按钮之间的空隙（或按钮边缘）
+            // 会穿透到下面的游戏视图 → 游戏当成"在游戏里点了一下"（真机表现就是
+            // 「按方向键像按了鼠标左键」）。isClickable = true 让 ViewGroup 自己
+            // 消费没有被子按钮处理的触摸，同时不影响屏幕其它区域的点击。
+            isClickable = true
             addView(padRow(null, padButton("\u2191", { startPadMove(RLKEY_UP, 0f, -8f) }, { stopPadMove() }), null))
             addView(padRow(
                 padButton("\u2190", { startPadMove(RLKEY_LEFT, -8f, 0f) }, { stopPadMove() }),
@@ -365,6 +374,7 @@ class MainActivity : Activity() {
 
         val actionPad = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
+            isClickable = true   // 同上：右侧按键栏区域也不许把触摸漏进游戏
             // log（回想）：原生引擎里由鼠标滚轮触发（WHEELUP=BackPage / WHEELDOWN=ForwardPage），
             // 而 Android 端此前没有滚轮通路 —— 这两个按钮补上。
             addView(padButton("\u56de\u6eaf", { sendWheel(1) }, {}),
@@ -604,7 +614,9 @@ class MainActivity : Activity() {
         val (w, h) = frameSize()
         cursorX = (cursorX + dx).coerceIn(0f, (w - 1).toFloat())
         cursorY = (cursorY + dy).coerceIn(0f, (h - 1).toFloat())
-        runCatching { NativeBridge.touchEvent(TOUCH_MOVE, cursorX, cursorY, 1) }
+        // 纯移动：buttons 必须是 0（以前传 1，等于告诉引擎"左键按着在移动"，
+        // 日志里也会显示成 mouse=1 —— 与"方向键像左键"的观感一致）。
+        runCatching { NativeBridge.touchEvent(TOUCH_MOVE, cursorX, cursorY, 0) }
     }
 
     /** 鼠标键：mask 1=左键 2=右键。按下/抬起分别投递，脚本才能看到"按住"这个状态。 */

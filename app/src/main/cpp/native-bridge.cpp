@@ -127,6 +127,12 @@ std::atomic<bool> g_suspend_flushed{false};
 // 为什么不在 UI 线程直接导出：只有引擎线程碰 graphics，跨线程会撕裂。
 std::atomic<bool> g_dump_tree_request{false};
 
+// 对象活体时间线（diag: wipe_log=1）用的上一帧摘要。只在内容变化时打印一行。
+std::string g_last_obj_digest;
+
+// 输入取证（diag: input_trace=1）的上一行内容，只在变化时打印。
+std::string g_last_input_line;
+
 // 文本容器（例如合并了汉化的 SEEN 归档）在游戏目录树内的相对路径。
 // 空 = 用游戏目录里的 Seen.txt。UI 线程写入、引擎线程读取，所以加锁。
 std::mutex g_text_container_mutex;
@@ -291,6 +297,42 @@ struct DiagOptions {
   // blit_cost=1：每 60 帧打一行合成成本（调用数 / 写入像素 / 总耗时 / 最慢一次及其矩形）。
   // 用来回答「卡在哪一层」——探针计数一直在维护，但此前没有消费者，从没被量过。
   bool blit_cost = false;
+  // wipe_log=1：打印对象「晋升/擦除」明细 + 195..255 号对象的活体时间线。
+  // 用于定位「小游戏地图（objFg #201）在运镜结束后消失」。默认关。
+  bool wipe_log = false;
+  // input_trace=1：每帧（变化才打）记录「pad 按住了什么 / 引擎光标在哪 /
+  // intD[95..115] 的值」。用来回答「按键到底有没有走到引擎侧、以及引擎会不会
+  // 把输入写进 intD」——小游戏方向键不通的第一步排查。默认关。
+  bool input_trace = false;
+  // intd_poke：诊断用的"往 intD 写值"扫描器。按住任意方向键时生效，
+  // 每 intd_poke_hold 秒换下一个槽位，并把当前正在写的 (槽位,值) 打进日志。
+  // 用途：直接验证"引擎把方向写进哪个 intD 槽、写什么值能让角色动"。
+  // 默认关；intd_poke_lo/hi 默认 100..110，值默认 1。
+  bool intd_poke = false;
+  int intd_poke_lo = 100;
+  int intd_poke_hi = 110;
+  int intd_poke_value = 1;
+  int intd_poke_hold_ms = 6000;
+  // intd_poke_free=1：不要求按住方向键，扫描器一直生效。
+  // 用来"读方向编码"：轮流往 intD[103..107] 写 1，用户只要看角色往哪动。
+  bool intd_poke_free = false;
+  // intd_dir_poke=1：把 pad 的四个方向键**直接映射**成 intD 标志位——
+  // 按住某方向时写 intD[intd_dir_xxx] = 1，松开时写回 0（只写一次，不持续覆盖）。
+  // 这既是"读编码"的手段（看角色往哪动），也是将来真正输入 op 的形态。
+  bool intd_dir_poke = false;
+  int intd_dir_up = 103;
+  int intd_dir_down = 104;
+  int intd_dir_left = 105;
+  int intd_dir_right = 106;
+  // intd_hit_poke=1：把「击打」（鼠标左键）直接写进 intD[intd_hit_slot]（默认 101）。
+  // 脚本判挥棒用 intD[101] == 1；实测即使用户按击打，intD[101] 也一直是 0，
+  // 于是没有挥棒 → 没有投球循环 → 球和"猫"都不会出现。
+  bool intd_hit_poke = false;
+  int intd_hit_slot = 101;
+  // op_trace=a,b,c：只追踪「名字含任一子串」的指令（逗号分隔白名单）。
+  // 非空即等价于打开 trace，但只打印白名单里的指令——用来在 46MB 全量 trace
+  // 里只盯会改对象状态的那十来个 op。默认空 = 不过滤（行为同原来）。
+  std::string op_trace;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
@@ -368,6 +410,38 @@ DiagOptions LoadDiagOptions() {
       options.blit_stats = (number != 0);
     } else if (key == "blit_cost") {
       options.blit_cost = (number != 0);
+    } else if (key == "wipe_log") {
+      options.wipe_log = (number != 0);
+    } else if (key == "op_trace") {
+      options.op_trace = value;
+    } else if (key == "input_trace") {
+      options.input_trace = (number != 0);
+    } else if (key == "intd_poke") {
+      options.intd_poke = (number != 0);
+    } else if (key == "intd_poke_lo") {
+      options.intd_poke_lo = number;
+    } else if (key == "intd_poke_hi") {
+      options.intd_poke_hi = number;
+    } else if (key == "intd_poke_value") {
+      options.intd_poke_value = number;
+    } else if (key == "intd_poke_hold_ms") {
+      if (number > 0) options.intd_poke_hold_ms = number;
+    } else if (key == "intd_poke_free") {
+      options.intd_poke_free = (number != 0);
+    } else if (key == "intd_dir_poke") {
+      options.intd_dir_poke = (number != 0);
+    } else if (key == "intd_dir_up") {
+      options.intd_dir_up = number;
+    } else if (key == "intd_dir_down") {
+      options.intd_dir_down = number;
+    } else if (key == "intd_dir_left") {
+      options.intd_dir_left = number;
+    } else if (key == "intd_dir_right") {
+      options.intd_dir_right = number;
+    } else if (key == "intd_hit_poke") {
+      options.intd_hit_poke = (number != 0);
+    } else if (key == "intd_hit_slot") {
+      options.intd_hit_slot = number;
     } else if (key == "blit_fast") {
       options.blit_fast = (number != 0);
     } else if (key == "dirty_gate") {
@@ -1131,8 +1205,8 @@ struct ObjBtnSelect : public RLOp_Store_Void {
       Point pos;
       int b1 = 0, b2 = 0;
       machine.system().event().GetCursorPos(pos, b1, b2);
-      const AndroidEventSystem& es =
-          static_cast<const AndroidEventSystem&>(machine.system().event());
+      AndroidEventSystem& es =
+          static_cast<AndroidEventSystem&>(machine.system().event());
       const bool pressed = (b1 == 1) || es.ClickSeenThisFrame();
       if (pressed) {
         if (es.ClickSeenThisFrame()) pos = es.ClickPosition();
@@ -1450,6 +1524,9 @@ void RunEngineOn(System& system,
 
   g_frame_log_every = diag.frame_log_every;
   g_blit_cost_log = diag.blit_cost;
+  rlvm_android::SetLbWipeLog(diag.wipe_log);
+  rlvm_android::SetLbOpTraceFilter(diag.op_trace);
+  if (!diag.op_trace.empty()) machine.set_tracing_on();
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);
   SetBlitFastEnabled(diag.blit_fast);
@@ -1664,6 +1741,107 @@ void RunEngineOn(System& system,
     // 上游在遇到长操作时只跳出**内层**时间片（把控制权让给这一帧），
     // 外层循环继续推进——长操作本身由后续的 ExecuteNextInstruction 轮询。
     // 早先这里直接 break 整个循环，导致游戏停在第一个长操作上不再前进。
+    // intD 写入扫描（diag: intd_poke=1）：按住方向键时，往 intd_poke_lo..hi
+    // 里轮流写 intd_poke_value，每个槽位停留 intd_poke_hold_ms。
+    // 把当前写的 (槽位,值) 打进日志；用户只要盯游戏画面"角色动没动"。
+    if (diag.intd_poke || diag.intd_dir_poke || diag.intd_hit_poke) {
+      // ── 击打（鼠标左键） → intD[intd_hit_slot] 直连（diag: intd_hit_poke=1）──
+      if (diag.intd_hit_poke) {
+        static int last_hit = -1;
+        AndroidEventSystem& hes =
+            static_cast<AndroidEventSystem&>(machine.system().event());
+        const int held = hes.IsMouseButtonHeld(1) ? 1 : 0;
+        if (held) {
+          machine.SetIntValue(
+              libreallive::IntMemRef(libreallive::INTD_LOCATION,
+                                     diag.intd_hit_slot),
+              1);
+          if (last_hit != 1) {
+            last_hit = 1;
+            rlvm_android::AppendAppLogLine(
+                "[input] hit_poke: intD[" + std::to_string(diag.intd_hit_slot) +
+                "] = 1");
+          }
+        } else if (last_hit == 1) {
+          last_hit = 0;
+          machine.SetIntValue(
+              libreallive::IntMemRef(libreallive::INTD_LOCATION,
+                                     diag.intd_hit_slot),
+              0);
+          rlvm_android::AppendAppLogLine(
+              "[input] hit_poke: intD[" + std::to_string(diag.intd_hit_slot) +
+              "] = 0");
+        }
+      }
+      // ── pad 方向键 → intD 标志位直连（diag: intd_dir_poke=1）──────────────
+      // 按住某方向就把对应槽位写 1，松开写回 0；只在电平**变化**的那一帧写，
+      // 避免每帧覆盖（游戏自己也会写这些槽）。
+      if (diag.intd_dir_poke) {
+        static int last_up = -1, last_down = -1, last_left = -1, last_right = -1;
+        struct DirMap {
+          int code;
+          int slot;
+          int* last;
+        } map4[4] = {
+            {273, diag.intd_dir_up, &last_up},
+            {274, diag.intd_dir_down, &last_down},
+            {276, diag.intd_dir_left, &last_left},
+            {275, diag.intd_dir_right, &last_right},
+        };
+        AndroidEventSystem& des =
+            static_cast<AndroidEventSystem&>(machine.system().event());
+        for (auto& e : map4) {
+          const int held = des.IsKeyHeld(e.code) ? 1 : 0;
+          if (held) {
+            // 按住时**每帧重申** 1：与原生引擎一致（游戏/脚本随时可能写 0，
+            // 只在边沿写一次会让按住状态被吞掉）。
+            machine.SetIntValue(
+                libreallive::IntMemRef(libreallive::INTD_LOCATION, e.slot),
+                1);
+            if (*e.last != 1) {
+              *e.last = 1;
+              rlvm_android::AppendAppLogLine(
+                  "[input] dir_poke: intD[" + std::to_string(e.slot) + "] = 1");
+            }
+          } else if (*e.last == 1) {
+            *e.last = 0;
+            machine.SetIntValue(
+                libreallive::IntMemRef(libreallive::INTD_LOCATION, e.slot), 0);
+            rlvm_android::AppendAppLogLine(
+                "[input] dir_poke: intD[" + std::to_string(e.slot) + "] = 0");
+          }
+        }
+      }
+      AndroidEventSystem& pes =
+          static_cast<AndroidEventSystem&>(machine.system().event());
+      const bool dir_held = pes.IsKeyHeld(273) || pes.IsKeyHeld(274) ||
+                            pes.IsKeyHeld(276) || pes.IsKeyHeld(275);
+      // intd_dir_poke 模式下只跑"方向→槽位"直连，不跑轮换扫描。
+      if (!diag.intd_dir_poke && (dir_held || diag.intd_poke_free)) {
+        static unsigned int last_advance = 0;
+        static int cur_slot = INT_MIN;
+        const unsigned int now_ms = system.event().GetTicks();
+        if (cur_slot == INT_MIN) cur_slot = diag.intd_poke_lo;
+        if (last_advance == 0) last_advance = now_ms;
+        if (now_ms - last_advance >=
+            static_cast<unsigned int>(diag.intd_poke_hold_ms)) {
+          last_advance = now_ms;
+          cur_slot = (cur_slot >= diag.intd_poke_hi) ? diag.intd_poke_lo
+                                                     : cur_slot + 1;
+        }
+        machine.SetIntValue(
+            libreallive::IntMemRef(libreallive::INTD_LOCATION, cur_slot),
+            diag.intd_poke_value);
+        static int logged_slot = INT_MIN;
+        if (logged_slot != cur_slot) {
+          logged_slot = cur_slot;
+          rlvm_android::AppendAppLogLine(
+              "[input] intd_poke: 正在写 intD[" + std::to_string(cur_slot) +
+              "] = " + std::to_string(diag.intd_poke_value));
+        }
+      }
+    }
+
     const unsigned int slice_start = system.event().GetTicks();
     unsigned int now = slice_start;
     do {
@@ -1680,6 +1858,64 @@ void RunEngineOn(System& system,
       graphics->Refresh(&tree);
       rlvm_android::AppendAppLogLine("graphics tree dump（按需导出）:\n" + tree.str());
       __android_log_print(ANDROID_LOG_INFO, kLogTag, "graphics tree dumped on request");
+    }
+
+    // 输入取证（diag: input_trace=1）：每帧只在**内容变化**时打一行
+    //   [input] keys=UDLR … cursor=x,y mouse=b1,b2 intD95_115=…
+    // 用途：区分「按键没到达引擎」和「引擎收到了但没写进 intD」
+    // （小游戏方向键不通的两种根因，见 docs/INPUT-KEY-RECON.md）。
+    if (diag.input_trace) {
+      AndroidEventSystem& es =
+          static_cast<AndroidEventSystem&>(machine.system().event());
+      Point cur;
+      int mb1 = 0, mb2 = 0;
+      es.GetCursorPos(cur, mb1, mb2);
+      std::ostringstream line;
+      line << "[input] keys=";
+      line << (es.IsKeyHeld(273) ? 'U' : '-');   // RLKEY_UP
+      line << (es.IsKeyHeld(274) ? 'D' : '-');   // RLKEY_DOWN
+      line << (es.IsKeyHeld(276) ? 'L' : '-');   // RLKEY_LEFT
+      line << (es.IsKeyHeld(275) ? 'R' : '-');   // RLKEY_RIGHT
+      line << " ctrl=" << (es.IsKeyHeld(306) ? 1 : 0)
+           << " ret=" << (es.IsKeyHeld(13) ? 1 : 0)
+           << " mouse=" << mb1 << "," << mb2 << " cursor=" << cur.x() << ","
+           << cur.y() << " intD95_115=";
+      for (int i = 95; i <= 115; ++i) {
+        line << machine.GetIntValue(
+            libreallive::IntMemRef(libreallive::INTD_LOCATION, i));
+        if (i != 115) line << ',';
+      }
+      const std::string s = line.str();
+      if (s != g_last_input_line) {
+        g_last_input_line = s;
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "%s", s.c_str());
+      }
+    }
+
+    // 对象活体时间线（diag: wipe_log=1）：把 195..255 号对象的
+    // [可见/有数据/WipeCopy] 压成一行，**只在变化时**输出。
+    // 意义：不用手按「导出渲染树」也能看到地图(#201)是哪一帧、以什么状态消失的；
+    // 配合 ClearAndPromoteObjects 的 [wipe] 明细就能区分
+    // 「被擦除」还是「被 bg 槽位覆盖」。
+    if (graphics != nullptr && rlvm_android::LbWipeLogEnabled()) {
+      const int dig_lo = 195, dig_hi = 255;
+      std::ostringstream digest;
+      LazyArray<GraphicsObject>& objs = graphics->GetForegroundObjects();
+      for (AllocatedLazyArrayIterator<GraphicsObject> it = objs.begin(),
+                                                    e = objs.end();
+           it != e; ++it) {
+        const int pos = static_cast<int>(it.pos());
+        if (pos < dig_lo || pos > dig_hi) continue;
+        digest << ' ' << pos << ':' << (it->visible() ? 'v' : '-')
+               << (it->has_object_data() ? 'd' : '-') << 'w'
+               << it->wipe_copy();
+      }
+      const std::string d = digest.str();
+      if (d != g_last_obj_digest) {
+        g_last_obj_digest = d;
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "objs[%d..%d]:%s", dig_lo,
+                            dig_hi, d.c_str());
+      }
     }
 
     // global memory 的**兜底**落盘（60 秒一次）：挂起那一笔是主要保障，这一笔防的是

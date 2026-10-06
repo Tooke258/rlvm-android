@@ -38,6 +38,7 @@
 #include "machine/general_operations.h"
 #include "machine/rloperation.h"
 #include "utilities/exception.h"
+#include "android/app_log.h"
 
 // -----------------------------------------------------------------------
 // RLMoudle
@@ -135,13 +136,17 @@ void RLModule::DispatchFunction(RLMachine& machine,
   if (it != stored_operations_.end()) {
     try {
       if (machine.is_tracing_on()) {
-        std::cerr << "(SEEN" << std::setw(4) << std::setfill('0')
-                  << machine.SceneNumber()
-                  << ")(Line " << std::setw(4) << std::setfill('0')
-                  << machine.line_number() << "): " << it->second->name();
-        libreallive::PrintParameterString(std::cerr,
-                                          f.GetUnparsedParameters());
-        std::cerr << std::endl;
+        // 平台侧白名单过滤器（diag: op_trace=...）。过滤器为空时行为与原来完全一致，
+        // 只影响「打印哪几条」，不碰分发/异常语义。
+        if (rlvm_android::LbOpTraceWanted(it->second->name())) {
+          std::cerr << "(SEEN" << std::setw(4) << std::setfill('0')
+                    << machine.SceneNumber()
+                    << ")(Line " << std::setw(4) << std::setfill('0')
+                    << machine.line_number() << "): " << it->second->name();
+          libreallive::PrintParameterString(std::cerr,
+                                            f.GetUnparsedParameters());
+          std::cerr << std::endl;
+        }
       }
       it->second->DispatchFunction(machine, f);
     }

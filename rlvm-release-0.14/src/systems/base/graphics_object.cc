@@ -1009,7 +1009,15 @@ GraphicsObject::Impl::Impl(const Impl& rhs)
       z_order_(rhs.z_order_),
       z_layer_(rhs.z_layer_),
       z_depth_(rhs.z_depth_),
-      wipe_copy_(0) {
+      // wipe_copy 是「槽位级」标记：它不属于会被 objFgInit/参数 setter 重设的
+      // 那组「参数」。原来这里写死 0，于是**每一次** MakeImplUnique()
+      // （= 任意 objMove/objShow/objAlpha/objLayer/objPattNo/… 的首次写入，
+      //   以及被 savepoint 快照共享 impl_ 之后的首次写入）
+      // 都会把 LBEX 小游戏在开局打的 objFgWipeCopyOn(200..249) 静默清掉，
+      // 下一次 bgrLoadHaikei 的「对象晋升」就把地图(objFg #201) 等对象擦掉了
+      // （wipe_log 实证：#201 fg(alloc=1 data=1 wc=0) -> FG_FREE）。
+      // 赋值运算符（下方 Impl::operator=）本来就是拷贝 wipe_copy_ 的，这里补齐。
+      wipe_copy_(rhs.wipe_copy_) {
   if (rhs.text_properties_)
     text_properties_.reset(new TextProperties(*rhs.text_properties_));
   if (rhs.drift_properties_)

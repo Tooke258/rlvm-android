@@ -226,3 +226,50 @@ set_source_files_properties(
 2. 在 `objOfFile(201, …)` **之后**，还有哪条 op 动过 201（或整批对象）；
 3. 我们挂的容错桩里是否**吞掉了其中一条**（候选：`ChildObjFg 1058`、`GanFg 101/102`、
    `Sys 210/211/215/216`、`Sys 431/460/461`）。
+
+---
+
+## 9. 已结案：运镜结束时地图（objFg #201）消失（2026-10-07 凌晨）
+
+**症状**：运镜（每帧 `objMove(201, intD[316], intD[317])`）结束、CG 切入
+`bgrLoadHaikei("?", 230)` 的那一刻，左视窗里的 `PT_MAP00?`（objFg #201）消失。
+
+**根因**：`GraphicsObject::Impl` 的**拷贝构造函数**里写死 `wipe_copy_(0)`
+（同一文件里的赋值运算符反而正确拷贝了它）。`MakeImplUnique()` 正是用这个
+拷贝构造产生私有副本，于是**任何参数 setter 的首次写入**都会把
+`objFgWipeCopyOn` 打的保护标记静默清零：
+
+| 步骤 | 现场证据 |
+| --- | --- |
+| 1. `SEEN7120 Line 0223` 保护 200..249 | `objs` 时间线：200..249 全部 `w1` |
+| 2. 同帧常规参数更新（`objEveDisplay(213,…)`、`objMove(201,…)`…）触发 `MakeImplUnique()` | ~100ms 后**只有** 201/213/214/216/217/219/220/230 掉回 `w0`，恰好是那一帧被 setter 碰过的那批 |
+| 3. 运镜末尾 `bgrLoadHaikei("?",230)` → `ClearAndPromoteObjects` | `[wipe] #201 fg(alloc=1 data=1 wc=0) -> FG_FREE`；汇总 `fg_freed=110` |
+
+`savepoint` 快照也要算进来（`LazyArray::CopyTo` 用 GraphicsObject 拷贝构造共享
+`impl_`，之后的首次 setter 同样丢标记）——所以保护“看起来打上了”，却活不过一帧。
+
+**修复**：`rlvm-release-0.14/src/systems/base/graphics_object.cc` 的 `Impl`
+拷贝构造改为 `wipe_copy_(rhs.wipe_copy_)`（+9/-1，只此一处）。中途试过的
+“`InitializeParams` 保留 `wipe_copy`”已回滚——无效，因为标记是在其**之后**的
+setter 里丢的。
+
+**真机 A/B**（同一复现路径，`wipe_log=1`）：
+
+* 修复前：保护循环后 ~100ms，201 变 `vdw0`，随后 `--w0`；运镜末尾晋升汇总
+  `fg_alloc=110 fg_had_data=17 fg_freed=109/110`。
+* 修复后：201 一路保持 `vdw1`（连续 15 秒无变化）；运镜末尾晋升汇总
+  `fg_alloc=110 fg_had_data=17 fg_freed=60 bg_alloc=6 bg_promoted=6`
+  —— 受保护的 50 个槽位不再被擦，地图不再消失。
+
+**新增只读取证设施**（默认全关，示例见 `tools/rlvm-diag.minigame-wipe.txt`）：
+
+| diag 键 | 作用 |
+| --- | --- |
+| `wipe_log=1` | `ClearAndPromoteObjects` 逐对象打印 `fg(alloc/data/wc) bg(alloc/data) -> FG_FREE / fg_keep / BG_COPY` 与一行汇总；并打印 195..255 号对象的活体时间线（可见/有数据/WipeCopy 变化才打一行） |
+| `op_trace=a,b,c` | 逐指令 trace 的白名单过滤器（`rlmodule.cc`；过滤器为空时行为与原来完全一致），避免 46MB 全量日志 |
+
+**遗留（独立问题，未修）**：同一次晋升里还有
+`#232 fg(data=1 wc=0) bg(alloc=1 data=0) -> FG_FREE BG_COPY` —— `bg` 槽位一旦
+用过就永久处于“已分配”，即使里面已经空了，之后每次晋升都会 `fg = bg` 把空对象
+盖到前景槽位上，已经显示出来的 CG 会被弄丢。修法（只在 bg 真有内容时才覆盖 fg）
+会改变系统消息窗口那条路径的行为，需要单独决策 + A/B。
