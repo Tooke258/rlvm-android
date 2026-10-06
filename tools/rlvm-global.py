@@ -34,19 +34,27 @@ def load(path):
     return text
 
 
-def find_intg(tokens):
-    """返回 intG 数组在 token 列表中的起点（第一个 count 令牌之后）。"""
+def find_intg(tokens, which=0):
+    """返回第 which 个 2000 长整型数组在 token 列表中的起点（count 令牌之后）。
+
+    实测这个 global 里有三张 2000 长的表（token 位置 6 / 2007 / 4008）：
+      第 0 张 = intG（216 个非 0）
+      第 1 张 = 既读/进度表（793 个非 0，含 [391]=542711623 这类位域）
+      第 2 张 = 全 0（未使用 / 另一套标志）
+    """
+    hits = []
     for i, t in enumerate(tokens):
         if t == str(INTG_COUNT) and i + INTG_COUNT < len(tokens):
-            # 后面 2000 个必须都是整数
             ok = True
             for k in range(i + 1, i + 1 + INTG_COUNT):
                 if not re.fullmatch(r"-?\d+", tokens[k]):
                     ok = False
                     break
             if ok:
-                return i + 1
-    raise SystemExit("找不到 intG[0..1999] 数组（文件格式可能变了）")
+                hits.append(i + 1)
+    if which >= len(hits):
+        raise SystemExit("找不到第 %d 张 2000 长数组（共发现 %d 张）" % (which, len(hits)))
+    return hits[which]
 
 
 def tokenize(text):
@@ -86,12 +94,12 @@ def put_arr(tokens, off, arr):
         tokens[off + i] = str(int(v))
 
 
-def cmd_dump(path, show_all):
+def cmd_dump(path, show_all, which=0):
     tokens, _ = tokenize(load(path))
-    off = find_intg(tokens)
+    off = find_intg(tokens, which)
     arr = get_arr(tokens, off)
     nz = [(i, v) for i, v in enumerate(arr) if v]
-    print("intG 非 0 项 %d 个：" % len(nz))
+    print("第 %d 张表非 0 项 %d 个：" % (which, len(nz)))
     if show_all:
         for i, v in enumerate(arr):
             print("  [%4d] = %d" % (i, v))
@@ -100,9 +108,9 @@ def cmd_dump(path, show_all):
             print("  [%4d] = %d" % (i, v))
 
 
-def cmd_set(path, out, pairs):
+def cmd_set(path, out, pairs, which=0):
     tokens, seps = tokenize(load(path))
-    off = find_intg(tokens)
+    off = find_intg(tokens, which)
     arr = get_arr(tokens, off)
     for p in pairs:
         idx_s, val_s = p.split("=", 1)
@@ -118,16 +126,16 @@ def cmd_set(path, out, pairs):
     print("写出 %s（%d 字节，压缩前 %d）" % (out, len(open(out, "rb").read()), len(data)))
 
 
-def cmd_preset(path, out, lo, hi):
+def cmd_preset(path, out, lo, hi, which=0):
     tokens, seps = tokenize(load(path))
-    off = find_intg(tokens)
+    off = find_intg(tokens, which)
     arr = get_arr(tokens, off)
     changed = 0
     for i in range(lo, min(hi, INTG_COUNT - 1) + 1):
         if arr[i] == 0:
             arr[i] = 1
             changed += 1
-    print("区间 [%d,%d]：把 %d 个 0 置成 1（已有值一律不动）" % (lo, hi, changed))
+    print("第 %d 张表 区间 [%d,%d]：把 %d 个 0 置成 1（已有值一律不动）" % (which, lo, hi, changed))
     put_arr(tokens, off, arr)
     data = rebuild(tokens, seps).encode("utf-8")
     open(out, "wb").write(zlib.compress(data, 9))
@@ -139,14 +147,17 @@ def main():
         raise SystemExit(__doc__)
     mode, path = sys.argv[1], sys.argv[2]
     rest = sys.argv[3:]
+    which = 0
+    if "--array" in rest:
+        which = int(rest[rest.index("--array") + 1])
     if mode == "dump":
-        cmd_dump(path, "--all" in rest)
+        cmd_dump(path, "--all" in rest, which)
     elif mode == "set":
         out = rest[0]
         pairs = [x for x in rest[1:] if "=" in x]
         if not pairs:
             raise SystemExit("set 需要至少一组 idx=value")
-        cmd_set(path, out, pairs)
+        cmd_set(path, out, pairs, which)
     elif mode == "preset":
         out = rest[0]
         lo, hi = 1000, 1049
@@ -154,7 +165,7 @@ def main():
             lo = int(rest[rest.index("--bool-lo") + 1])
         if "--bool-hi" in rest:
             hi = int(rest[rest.index("--bool-hi") + 1])
-        cmd_preset(path, out, lo, hi)
+        cmd_preset(path, out, lo, hi, which)
     else:
         raise SystemExit(__doc__)
 
