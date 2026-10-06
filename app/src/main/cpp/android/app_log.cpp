@@ -42,6 +42,14 @@ bool LbOpTraceWanted(const std::string& op_name) {
   return false;
 }
 
+namespace {
+bool g_lb_case_trace = false;
+}  // namespace
+
+void SetLbCaseTrace(bool on) { g_lb_case_trace = on; }
+
+bool LbCaseTraceWanted() { return g_lb_case_trace; }
+
 void SetAppLogFile(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_app_log_mutex);
   g_app_log_path = path;

@@ -1,0 +1,11 @@
+# 目的：定位「暂停菜单图标全是 0 号脸（六个棗铃）」——`goto_case(intA[i])` 到底命中谁。
+#
+# 现状（真机渲染树）：SEEN7800 建的 221 号对象，其 1..17 子对象里 6 个相机按钮
+# （PT_CAM_BTN00）与两个 PT_RMENU_BTN00 的 `patt=` 全是 0；而脚本按 `角色号 × 5`
+# 写图案（0/5/10/15/…/70），PT_RMENU_BTN00 那两个应是 5 和 10。
+#
+# case_trace=1 会让引擎每次求值 goto_case/goto_on 都打一行（**所有场景都会打**，
+# 所以看完菜单就尽快退出，别长时间挂着）：
+#   [case] SEEN7800 Lnnn value=? n=? [0](0) [1](1) … -> hit=6 / default=13 / none
+lb_minigame=1
+case_trace=1

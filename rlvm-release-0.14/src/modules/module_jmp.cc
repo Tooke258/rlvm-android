@@ -39,6 +39,7 @@
 #include "machine/rloperation/argc_t.h"
 #include "machine/rloperation/special_t.h"
 #include "utilities/exception.h"
+#include "android/app_log.h"
 
 using libreallive::CommandElement;
 using libreallive::ExpressionPiecesVector;
@@ -60,11 +61,23 @@ int EvaluateCase(RLMachine& machine, const CommandElement& goto_element) {
   const ExpressionPiecesVector& conditions = goto_element.GetParsedParameters();
   int value = conditions[0]->GetIntegerValue(machine);
 
+  // 取证（diag: case_trace=1，默认关）：把「求值多少 / 有哪些 case / 命中谁」打出来。
+  const bool case_trace = rlvm_android::LbCaseTraceWanted();
+  std::ostringstream case_trace_text;
+  if (case_trace) {
+    case_trace_text << "[case] SEEN" << machine.SceneNumber() << " L"
+                    << machine.line_number() << " value=" << value
+                    << " n=" << goto_element.GetCaseCount();
+  }
+
   // Walk linearly through the output cases, executing the first
   // match against value.
   int cases = goto_element.GetCaseCount();
   for (int i = 0; i < cases; ++i) {
     std::string caseUnparsed = goto_element.GetCase(i);
+    if (case_trace) {
+      case_trace_text << " [" << i << "]" << caseUnparsed;
+    }
 
     // Check for bytecode wellformedness. All cases should be
     // surrounded by parens
@@ -73,8 +86,13 @@ int EvaluateCase(RLMachine& machine, const CommandElement& goto_element) {
 
     // In the case of an empty set of parens, always accept. It is
     // the bytecode representation for the default case.
-    if (caseUnparsed == "()")
+    if (caseUnparsed == "()") {
+      if (case_trace) {
+        case_trace_text << " -> default=" << i;
+        rlvm_android::AppendAppLogLine(case_trace_text.str());
+      }
       return i;
+    }
 
     // Strip the parens for parsing
     caseUnparsed = caseUnparsed.substr(1, caseUnparsed.size() - 2);
@@ -84,10 +102,19 @@ int EvaluateCase(RLMachine& machine, const CommandElement& goto_element) {
     const char* e = (const char*)caseUnparsed.c_str();
     std::unique_ptr<libreallive::ExpressionPiece> output(
         libreallive::GetExpression(e));
-    if (output->GetIntegerValue(machine) == value)
+    if (output->GetIntegerValue(machine) == value) {
+      if (case_trace) {
+        case_trace_text << " -> hit=" << i;
+        rlvm_android::AppendAppLogLine(case_trace_text.str());
+      }
       return i;
+    }
   }
 
+  if (case_trace) {
+    case_trace_text << " -> none";
+    rlvm_android::AppendAppLogLine(case_trace_text.str());
+  }
   throw rlvm::Exception("Malformed bytecode: no default case");
 }
 

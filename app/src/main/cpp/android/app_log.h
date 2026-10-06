@@ -30,6 +30,13 @@ void SetLbWipeLog(bool on);
 void SetLbOpTraceFilter(const std::string& csv_substrings);
 bool LbOpTraceWanted(const std::string& op_name);
 
+// goto_case / goto_on 的**分派取证**（diag: case_trace=1，默认关）：
+// 每次求值都打一行 `[case] SEENxxxx Lnnn value=? n=? [i](case)… -> idx=?`。
+// 用途：LBEX 暂停菜单里 `goto_case(intA[i])` 选图案号那一处，确认「求值多少、
+// 命中哪个 case、有没有走默认」。命中失败会抛 "no default case"。
+void SetLbCaseTrace(bool on);
+bool LbCaseTraceWanted();
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_

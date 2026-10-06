@@ -343,6 +343,10 @@ struct DiagOptions {
   // 非空即等价于打开 trace，但只打印白名单里的指令——用来在 46MB 全量 trace
   // 里只盯会改对象状态的那十来个 op。默认空 = 不过滤（行为同原来）。
   std::string op_trace;
+  // case_trace=1：把 goto_case / goto_on 的求值与命中打一行
+  // `[case] SEENxxxx Lnnn value=? n=? [i](case)… -> hit/default/none`
+  // 用途：暂停菜单里 `goto_case(intA[i])` 选图案号，确认为什么全部落在 0 号脸。
+  bool case_trace = false;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
@@ -424,6 +428,8 @@ DiagOptions LoadDiagOptions() {
       options.wipe_log = (number != 0);
     } else if (key == "op_trace") {
       options.op_trace = value;
+    } else if (key == "case_trace") {
+      options.case_trace = (number != 0);
     } else if (key == "input_trace") {
       options.input_trace = (number != 0);
     } else if (key == "intd_poke") {
@@ -1544,6 +1550,7 @@ void RunEngineOn(System& system,
   g_blit_cost_log = diag.blit_cost;
   rlvm_android::SetLbWipeLog(diag.wipe_log);
   rlvm_android::SetLbOpTraceFilter(diag.op_trace);
+  rlvm_android::SetLbCaseTrace(diag.case_trace);
   if (!diag.op_trace.empty()) machine.set_tracing_on();
   g_touch_buttons.store(diag.touch_button);
   SetBlitStatsEnabled(diag.blit_stats);
