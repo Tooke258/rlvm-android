@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <mutex>
+#include <sstream>
 #include <vector>
 
 namespace rlvm_android {
@@ -57,6 +58,26 @@ bool g_lb_patno_trace = false;
 void SetLbPatNoTrace(bool on) { g_lb_patno_trace = on; }
 
 bool LbPatNoTraceWanted() { return g_lb_patno_trace; }
+
+namespace {
+int g_lb_last_scene = -1;
+int g_lb_last_line = -1;
+std::string g_lb_last_op;
+}  // namespace
+
+void SetLbLastOpContext(int scene, int line, const std::string& op_name) {
+  g_lb_last_scene = scene;
+  g_lb_last_line = line;
+  g_lb_last_op = op_name;
+}
+
+std::string LbLastOpContextString() {
+  if (g_lb_last_scene < 0) return "(none)";
+  std::ostringstream oss;
+  oss << "SEEN" << g_lb_last_scene << " L" << g_lb_last_line << " "
+      << g_lb_last_op;
+  return oss.str();
+}
 
 void SetAppLogFile(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_app_log_mutex);

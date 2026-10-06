@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <map>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -44,6 +45,8 @@
 
 #include "systems/base/graphics_object_data.h"
 #include "systems/base/object_mutator.h"
+
+#include "android/app_log.h"
 #include "utilities/exception.h"
 
 const int DEFAULT_TEXT_SIZE = 14;
@@ -865,6 +868,25 @@ void GraphicsObject::DeleteObjectMutators() {
 void GraphicsObject::Render(int objNum,
                             const GraphicsObject* parent,
                             std::ostream* tree) {
+  if (!tree && object_data_ && rlvm_android::LbPatNoTraceWanted()) {
+    std::ostringstream info;
+    object_data_->ObjectInfoForTree(info);
+    const std::string desc = info.str();
+    if (desc.find("PT_CAM_BTN00") != std::string::npos ||
+        desc.find("PT_RMENU_BTN0") != std::string::npos) {
+      static std::map<int, int> last_patt;
+      std::map<int, int>::iterator it = last_patt.find(objNum);
+      if (it == last_patt.end() || it->second != GetPattNo()) {
+        last_patt[objNum] = GetPattNo();
+        std::ostringstream oss;
+        oss << "[render] child=" << objNum << " patt=" << GetPattNo()
+            << " vis=" << (visible() ? 1 : 0) << " xy=" << x() << "," << y()
+            << desc;
+        rlvm_android::AppendAppLogLine(oss.str());
+      }
+    }
+  }
+
   // 诊断（只在 tree != NULL 时开）：把**所有已分配**对象都列一行，包括不可见的。
   // 这一步很关键：原实现只列「有 data 且 visible()」的对象，于是
   //   「对象根本没被创建」和「创建了但 visible=0（或被裁剪掉）」
@@ -896,6 +918,12 @@ void GraphicsObject::FreeObjectData() {
 }
 
 void GraphicsObject::InitializeParams() {
+  // 取证（diag: patno_trace=1）：谁在什么时候把对象参数重置了（图案号会一起归零）。
+  if (rlvm_android::LbPatNoTraceWanted()) {
+    rlvm_android::AppendAppLogLine(
+        "[params-reset] InitializeParams after=" +
+        rlvm_android::LbLastOpContextString());
+  }
   impl_ = s_empty_impl;
   DeleteObjectMutators();
 }

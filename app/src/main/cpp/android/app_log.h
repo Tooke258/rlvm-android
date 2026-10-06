@@ -43,6 +43,11 @@ bool LbCaseTraceWanted();
 void SetLbPatNoTrace(bool on);
 bool LbPatNoTraceWanted();
 
+// 「最近一次派发的指令」上下文（scene/line/op 名），给 graphics_object 侧的
+// `InitializeParams()` 取证用：`[params-reset] after=SEENxxxx Lnnn op`。
+void SetLbLastOpContext(int scene, int line, const std::string& op_name);
+std::string LbLastOpContextString();
+
 }  // namespace rlvm_android
 
 #endif  // RLVM_APP_SRC_MAIN_CPP_ANDROID_APP_LOG_H_

@@ -350,6 +350,13 @@ struct DiagOptions {
   // patno_trace=1：`objPattNo` 写入取证（`[patno] SEENxxxx Lnnn parent=? child=?
   // set=? now=?`），用于定位「暂停菜单图标全是 0 号脸」。
   bool patno_trace = false;
+  // force_pitch=1：**直接注入**「投球中」这套 DLL 状态，让脚本自己去画球。
+  // 背景：球的显隐＝`intD[1800]`、位置＝`intD[1801..1803]`，正常由 PT00 的
+  // func 900（init：x=-6000,y=0,z=3100）/ func 901（每帧推进）写，而这两支我们
+  // 还没实现 → 球永远 vis=0。这里按 func 900 的初值朝打者方向线性推进，
+  // `force_pitch_frames` 帧一轮（默认 120 ≈ 1 秒），循环播放。
+  bool force_pitch = false;
+  int force_pitch_frames = 120;
   // 诊断：blit_fast=0 关闭 D-022 的 blit 优化（内容包围盒裁剪 + 不透明 memcpy）。
   bool blit_fast = true;
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
@@ -435,6 +442,10 @@ DiagOptions LoadDiagOptions() {
       options.case_trace = (number != 0);
     } else if (key == "patno_trace") {
       options.patno_trace = (number != 0);
+    } else if (key == "force_pitch") {
+      options.force_pitch = (number != 0);
+    } else if (key == "force_pitch_frames") {
+      if (number > 0) options.force_pitch_frames = number;
     } else if (key == "input_trace") {
       options.input_trace = (number != 0);
     } else if (key == "intd_poke") {
@@ -1775,6 +1786,29 @@ void RunEngineOn(System& system,
     // intD 写入扫描（diag: intd_poke=1）：按住方向键时，往 intd_poke_lo..hi
     // 里轮流写 intd_poke_value，每个槽位停留 intd_poke_hold_ms。
     // 把当前写的 (槽位,值) 打进日志；用户只要盯游戏画面"角色动没动"。
+    // force_pitch（diag）：**直接注入**投球状态（func 900/901 的等价物），
+    // 让脚本自己把球画出来——不依赖还没实现的 DLL 那两支。
+    if (diag.force_pitch) {
+      static int pitch_frame = 0;
+      const int total = diag.force_pitch_frames;
+      if (++pitch_frame > total) pitch_frame = 1;
+      const int x = -6000 + (6000 * pitch_frame) / total;
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1800), 1);
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1801), x);
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1802), 0);
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1803), 3100);
+      machine.SetIntValue(
+          libreallive::IntMemRef(libreallive::INTD_LOCATION, 1804), 0);
+      if (diag.input_trace && pitch_frame == 1) {
+        rlvm_android::AppendAppLogLine(
+            "[pitch] force_pitch: intD[1800]=1 (x from -6000 to 0)");
+      }
+    }
+
     if (diag.intd_poke || diag.intd_dir_poke || diag.intd_hit_poke ||
         diag.intd_right_poke) {
       // 右键（长按松开）→ intD[102] 短脉冲（intd_right_poke，默认开）。

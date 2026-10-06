@@ -148,6 +148,13 @@ void RLModule::DispatchFunction(RLMachine& machine,
           std::cerr << std::endl;
         }
       }
+      // 取证：记住「最近一条派发的指令」，供 graphics_object 的
+      // `[params-reset]` 日志标注是哪条指令之后发生的参数重置。
+      if (rlvm_android::LbPatNoTraceWanted()) {
+        rlvm_android::SetLbLastOpContext(machine.SceneNumber(),
+                                         machine.line_number(),
+                                         it->second->name());
+      }
       it->second->DispatchFunction(machine, f);
     }
     catch (rlvm::Exception& e) {

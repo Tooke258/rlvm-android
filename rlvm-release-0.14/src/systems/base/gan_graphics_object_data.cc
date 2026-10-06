@@ -37,7 +37,11 @@
 #include <boost/serialization/export.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <iostream>
+#include <set>
+#include <sstream>
 #include <string>
+
+#include "android/app_log.h"
 #include <vector>
 
 #include "libreallive/defs.h"
@@ -291,6 +295,31 @@ std::shared_ptr<const Surface> GanGraphicsObjectData::CurrentSurface(
 }
 
 Rect GanGraphicsObjectData::SrcRect(const GraphicsObject& go) {
+  // 取证（diag: patno_trace=1）：gan 对象取源矩形——`current_set_/current_frame_`
+  // 都 != -1 时用 gan 帧的 pattern，否则退回 `objPattNo`。猫咪（PT_YLA*）走这里，
+  // 用来判断「gan 有没有在跑 / 退回的 patt 是多少」。
+  // 只看猫咪（PT_YLA*）与球（PT_BALL*）相关的 gan，避免被别的资源刷爆。
+  const bool gan_interesting =
+      gan_filename_.find("YLA") != std::string::npos ||
+      img_filename_.find("YLA") != std::string::npos ||
+      gan_filename_.find("BALL") != std::string::npos;
+  if (rlvm_android::LbPatNoTraceWanted() && gan_interesting) {
+    static std::set<std::string> seen;
+    {
+      std::ostringstream key;
+      key << gan_filename_ << '|' << img_filename_ << '|' << current_set_ << '|'
+          << current_frame_ << '|' << go.GetPattNo();
+      if (seen.insert(key.str()).second) {
+        std::ostringstream oss;
+        oss << "[gan-src] " << gan_filename_ << " img=" << img_filename_
+            << " set=" << current_set_ << " frame=" << current_frame_
+            << " patt=" << go.GetPattNo()
+            << " branch=" << ((current_set_ != -1 && current_frame_ != -1) ? "gan" : "patt");
+        rlvm_android::AppendAppLogLine(oss.str());
+      }
+    }
+  }
+
   if (current_set_ != -1 && current_frame_ != -1) {
     const Frame& frame = animation_sets.at(current_set_).at(current_frame_);
     if (frame.pattern != -1) {

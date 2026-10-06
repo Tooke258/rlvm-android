@@ -33,8 +33,11 @@
 
 #include <iostream>
 #include <memory>
+#include <set>
+#include <sstream>
 #include <string>
 
+#include "android/app_log.h"
 #include "machine/serialization.h"
 #include "systems/base/event_system.h"
 #include "systems/base/graphics_object.h"
@@ -152,6 +155,32 @@ std::shared_ptr<const Surface> GraphicsObjectOfFile::CurrentSurface(
 // -----------------------------------------------------------------------
 
 Rect GraphicsObjectOfFile::SrcRect(const GraphicsObject& go) {
+  // 取证（diag: patno_trace=1）：普通图片对象取源矩形走的是哪条分支——
+  // `time_at_last_frame_change_ != 0` 时会**忽略 objPattNo**、改用 current_frame_，
+  // 这正是「六个 0 号脸」的可疑点。按 (file,patt,frame,last,playing) 去重打印。
+  // 只看菜单图标相关的几个文件，避免被别的资源刷爆。
+  const bool src_interesting =
+      filename_.find("CAM_BTN") != std::string::npos ||
+      filename_.find("RMENU_BTN") != std::string::npos;
+  if (rlvm_android::LbPatNoTraceWanted() && src_interesting) {
+    static std::set<std::string> seen;
+    {
+      std::ostringstream key;
+      key << filename_ << '|' << go.GetPattNo() << '|' << current_frame_ << '|'
+          << time_at_last_frame_change_ << '|'
+          << (is_currently_playing() ? 1 : 0);
+      if (seen.insert(key.str()).second) {
+        std::ostringstream oss;
+        oss << "[src] " << filename_ << " patt=" << go.GetPattNo()
+            << " frame=" << current_frame_
+            << " last=" << time_at_last_frame_change_
+            << " playing=" << (is_currently_playing() ? 1 : 0)
+            << " branch=" << ((time_at_last_frame_change_ != 0) ? "frame" : "patt");
+        rlvm_android::AppendAppLogLine(oss.str());
+      }
+    }
+  }
+
   if (time_at_last_frame_change_ != 0) {
     // If we've ever been treated as an animation, we need to continue acting
     // as an animation even if we've stopped.

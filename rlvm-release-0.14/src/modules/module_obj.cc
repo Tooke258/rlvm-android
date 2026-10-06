@@ -28,6 +28,7 @@
 #include "modules/module_obj.h"
 
 #include <sstream>
+#include <set>
 
 #include "android/app_log.h"
 #include "machine/properties.h"
@@ -282,11 +283,17 @@ void Obj_SetOneIntOnObj::operator()(RLMachine& machine, int buf, int incoming) {
       setter == &GraphicsObject::SetPattNo) {
     int parent = -1;
     this->GetProperty(P_PARENTOBJ, parent);
-    std::ostringstream oss;
-    oss << "[patno] SEEN" << machine.SceneNumber() << " L"
-        << machine.line_number() << " parent=" << parent << " child=" << buf
-        << " set=" << incoming << " now=" << obj.GetPattNo();
-    rlvm_android::AppendAppLogLine(oss.str());
+    // 每帧都会重复写同样的值，这里按 (parent,child,set) 去重，避免刷屏。
+    static std::set<std::string> seen;
+    std::ostringstream key;
+    key << parent << '|' << buf << '|' << incoming;
+    if (seen.insert(key.str()).second) {
+      std::ostringstream oss;
+      oss << "[patno] SEEN" << machine.SceneNumber() << " L"
+          << machine.line_number() << " parent=" << parent << " child=" << buf
+          << " set=" << incoming << " now=" << obj.GetPattNo();
+      rlvm_android::AppendAppLogLine(oss.str());
+    }
   }
 
   machine.system().graphics().mark_object_state_as_dirty();
