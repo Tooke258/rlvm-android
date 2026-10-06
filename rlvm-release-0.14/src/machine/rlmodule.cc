@@ -150,6 +150,10 @@ void RLModule::DispatchFunction(RLMachine& machine,
       }
       // 取证：记住「最近一条派发的指令」，供 graphics_object 的
       // `[params-reset]` 日志标注是哪条指令之后发生的参数重置。
+      // 死循环探测（diag: loop_detect=1）：只统计最近若干条 (场景,行号)，
+      // 一旦按周期重复就报一次，用于"卡死但不崩"（例如相册 Scene 回想）。
+      rlvm_android::NoteOpForLoopDetect(machine.SceneNumber(),
+                                        machine.line_number());
       if (rlvm_android::LbPatNoTraceWanted()) {
         rlvm_android::SetLbLastOpContext(machine.SceneNumber(),
                                          machine.line_number(),

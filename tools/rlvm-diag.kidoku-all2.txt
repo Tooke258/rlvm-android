@@ -1,0 +1,12 @@
+# 第二轮：CG 收集（cgm_data_）已经在 global 里落盘了，这一轮只补"既読场景"。
+# kidoku_unlock_all：把全部 (场景 0..9999) × (kidoku 位 0..63) 标记为已读，
+# 然后由引擎自己 flush global（Memory::RecordKidoku，格式必然合法）。
+#
+# 用途：相册里的 "SCENE（シーン回想）" 那一栏目前只有 1 条，
+# 若它是按 kidoku 判定的，这一轮后应该变满。
+#
+# 用法：
+#   adb push tools/rlvm-diag.kidoku-all2.txt /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android   # diag 只在引擎启动时读一次
+
+kidoku_unlock_all=1

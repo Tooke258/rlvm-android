@@ -34,6 +34,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "libreallive/gameexe.h"
 #include "libreallive/intmemref.h"
@@ -177,4 +178,67 @@ void CGMTable::SetViewed(RLMachine& machine, const std::string& filename) {
 
     cgm_data_.insert(flag);
   }
+}
+
+std::string CGMTable::MarkAllViewed(RLMachine& machine) {
+  std::ostringstream oss;
+  int total = 0;
+  int in_range = 0;
+  int out_of_range = 0;
+  int min_flag = -1;
+  int max_flag = -1;
+  std::vector<int> out_of_range_flags;
+
+  for (CGMMap::const_iterator it = cgm_info_.begin(); it != cgm_info_.end();
+       ++it) {
+    ++total;
+    const int flag = it->second;
+    if (min_flag == -1 || flag < min_flag)
+      min_flag = flag;
+    if (flag > max_flag)
+      max_flag = flag;
+
+    // intZ 只有 2000 个槽；越界的标志位记录到 intZ 会抛异常，这里只统计。
+    if (flag >= 0 && flag < SIZE_OF_MEM_BANK) {
+      machine.memory().SetIntValue(
+          libreallive::IntMemRef(libreallive::INTZ_LOCATION, 0, flag), 1);
+      ++in_range;
+    } else {
+      ++out_of_range;
+      if (out_of_range_flags.size() < 8)
+        out_of_range_flags.push_back(flag);
+    }
+
+    // cgm_data_ 才是 cgStatus/相册读的那份数据（不依赖 intZ 是否写得下去）。
+    cgm_data_.insert(flag);
+  }
+
+  oss << "cgm_mark_all: entries=" << total << " intZ_set=" << in_range
+      << " out_of_range=" << out_of_range
+      << " cgm_data=" << cgm_data_.size();
+  if (total) {
+    oss << " flag_min=" << min_flag << " flag_max=" << max_flag;
+  }
+  if (!out_of_range_flags.empty()) {
+    oss << " oob_sample=";
+    for (size_t i = 0; i < out_of_range_flags.size(); ++i) {
+      if (i)
+        oss << ",";
+      oss << out_of_range_flags[i];
+    }
+  }
+  return oss.str();
+}
+
+std::string CGMTable::DumpTable() const {
+  std::ostringstream oss;
+  oss << "cgm_table: entries=" << cgm_info_.size();
+  int shown = 0;
+  for (CGMMap::const_iterator it = cgm_info_.begin(); it != cgm_info_.end();
+       ++it) {
+    if (shown++ >= 200)
+      break;
+    oss << "\n  " << it->first << "=" << it->second;
+  }
+  return oss.str();
 }

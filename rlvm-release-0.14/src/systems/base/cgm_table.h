@@ -73,6 +73,19 @@ class CGMTable {
   // Mark a cg as viewed. Sets intZ[getFlag()] to 1.
   void SetViewed(RLMachine& machine, const std::string& filename);
 
+  // 移植辅助（Android）：把 CG 表里的**所有**条目都标记成"已观看"。
+  // 语义与 SetViewed 完全一致（intZ[flag]=1 + cgm_data_.insert(flag)），
+  // 但逐个条目容错：flag 越界（RLVM 的 intZ 只有 2000 个槽）时只计数不抛，
+  // 这样引擎不会因为表里某个越界条目而整轮中断。返回一行人类可读报告。
+  //
+  // 为什么需要它：相册场景（SEEN9515 / LBEX 的"CG 鉴赏"）用 Sys 1504
+  // （cgStatus）逐条问"这个文件看过没有"，而 cgStatus 读的就是 cgm_data_。
+  // 也就是说 cgm_data_ 才是"收集度"的真源，而它只在真正显示过 CG 时被填。
+  std::string MarkAllViewed(RLMachine& machine);
+
+  // 诊断：把 CG 表内容 dump 成 "文件名=flag" 的多行文本（最多 200 条）。
+  std::string DumpTable() const;
+
  private:
   typedef std::map<std::string, int> CGMMap;
 

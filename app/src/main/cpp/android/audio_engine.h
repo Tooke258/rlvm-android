@@ -172,6 +172,11 @@ class AudioEngine {
   // 在 duration_ms 内把音量平滑过渡到 target_volume（0..255）。duration 为 0
   // 表示立即生效。混音在音频回调里按块插值，不需要额外的线程或定时器。
   void FadeVolume(int channel, int target_volume, int duration_ms);
+  // 音量淡出到 0，**并在 duration_ms 到点时真正停止通道**。
+  // 语义对齐 SDL 端的 Mix_FadeOutMusic：RLVM 的 `bgmFadeOutEx` 会推一个
+  // WaitLongOperation 等 `BgmStatus()==0`，而 BgmStatus 就是本引擎的 IsPlaying；
+  // 只做音量淡出而不停通道 ⇒ 那个"等"永远不返回（相册 Scene 回想必卡死）。
+  void FadeOutAndStop(int channel, int duration_ms);
   bool IsPlaying(int channel) const;
 
   struct Stats {

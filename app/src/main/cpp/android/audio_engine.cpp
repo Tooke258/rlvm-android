@@ -534,6 +534,9 @@ struct AudioEngine::Channel {
   std::atomic<bool> draining{false};
   // 停播时的淡出（防咔哒声）：控制线程请求，音频回调逐步衰减到 0 再停通道。
   std::atomic<bool> fade_out_request{false};
+  // "到点停"：非 0 时，音频回调一过这个时刻就停通道（含音量淡出）。
+  // 这是 bgmFadeOutEx / Mix_FadeOutMusic 需要的语义：淡出**结束就要停**。
+  std::atomic<long long> stop_at_ms{0};
   // 仅由音频回调读写的淡出剩余帧数（回调是唯一写入者，无需原子）。
   int fade_out_remaining = 0;
   // 起播淡入剩余帧数：BGM/语音文件的起始样本往往不是零，瞬间满音量起播
@@ -795,6 +798,26 @@ void AudioEngine::FadeVolume(int channel_index,
   channel.fade_end_ms.store(now + duration_ms);
 }
 
+void AudioEngine::FadeOutAndStop(int channel_index, int duration_ms) {
+  if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
+    return;
+  Channel& channel = *channels_[channel_index];
+  const long long now = NowMillis();
+
+  if (duration_ms <= 0) {
+    channel.volume.store(0);
+    channel.fade_end_ms.store(0);
+    channel.stop_at_ms.store(now);  // 下一帧回调立刻停
+    return;
+  }
+
+  channel.fade_from.store(channel.volume.load());
+  channel.fade_start_ms.store(now);
+  channel.volume.store(0);
+  channel.fade_end_ms.store(now + duration_ms);   // 音量线性降到 0
+  channel.stop_at_ms.store(now + duration_ms);    // 到点真正停通道
+}
+
 bool AudioEngine::IsPlaying(int channel_index) const {
   if (channel_index < 0 || channel_index >= static_cast<int>(channels_.size()))
     return false;
@@ -913,8 +936,32 @@ void AudioEngine::MixInto(int16_t* out,
   for (auto& channel : channels_) {
     if (!channel->playing.load(std::memory_order_relaxed)) continue;
 
+    // 到点停：必须在"读环形缓冲"之前判断。若放在后面，一旦缓冲已排空
+    // （got == 0 就 continue），这个停通道的请求永远不会被处理，
+    // IsPlaying 一直为真 ⇒ RLVM 侧等 BgmStatus()==0 的长操作会永久挂住
+    // （相册 Scene 回想点进去卡死就是这么来的）。
+    const long long stop_at = channel->stop_at_ms.load(std::memory_order_relaxed);
+    if (stop_at > 0 && now >= stop_at) {
+      channel->stop_at_ms.store(0, std::memory_order_relaxed);
+      channel->fade_end_ms.store(0, std::memory_order_relaxed);
+      channel->fade_out_request.store(false, std::memory_order_relaxed);
+      channel->fade_out_remaining = 0;
+      channel->playing.store(false, std::memory_order_relaxed);
+      channel->draining.store(false, std::memory_order_relaxed);
+      continue;
+    }
+
     const size_t got = channel->ring->Read(scratch, static_cast<size_t>(frames));
-    if (got == 0) continue;
+    if (got == 0) {
+      // 缓冲空了但已经请求停播 ⇒ 直接停，别让淡出卡在这里。
+      if (channel->fade_out_request.load(std::memory_order_relaxed)) {
+        channel->fade_out_request.store(false, std::memory_order_relaxed);
+        channel->fade_out_remaining = 0;
+        channel->playing.store(false, std::memory_order_relaxed);
+        channel->draining.store(false, std::memory_order_relaxed);
+      }
+      continue;
+    }
 
     // 音量：若有未结束的渐变，按时间线性插值；否则直接用目标值。
     const int target_volume = channel->volume.load(std::memory_order_relaxed);

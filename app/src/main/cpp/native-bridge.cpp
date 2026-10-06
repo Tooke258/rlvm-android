@@ -63,6 +63,7 @@
 #include "modules/modules.h"
 #include "systems/base/event_system.h"
 #include "systems/base/frame_counter.h"
+#include "systems/base/cgm_table.h"
 #include "systems/base/graphics_system.h"
 #include "systems/base/graphics_object.h"
 #include "systems/base/parent_graphics_object_data.h"
@@ -345,6 +346,37 @@ struct DiagOptions {
   // 手写它的 boost 序列化格式容易错（我就错把 intZ 当既读表填 -1，导致清零），
   // 而走 Memory::RecordKidoku 则由引擎保证格式合法。
   bool kidoku_unlock_all = false;
+  // cgm_unlock_all=1 + cgm_dump=1：CG 收集（相册）诊断。
+  //
+  // 事实链（源码）：相册场景 SEEN9515 用 `Sys 1504`（cgStatus）逐条问
+  // "这个 g00 看过没有"，cgStatus 读的是 CGMTable::cgm_data_；而 cgm_data_
+  // 只在真正显示过某个 CG 时（graphics_system.cc:681 SetViewed）才被填。
+  // cgm_data_ 属于 GraphicsSystemGlobals，会被写进 global.sav.gz
+  // （serialization_global.cc:100），所以只要让引擎自己标记一遍就能固化。
+  //
+  // cgm_unlock_all=1：对 dat/<CGTABLE_FILENAME>（LBEX 是 mode.cgm）里的每个
+  //   条目调一次"已观看"语义，然后 flush global。
+  // cgm_dump=1：把表内容（文件名 → flag）打印到应用日志，用于核对。
+  // 默认关。
+  bool cgm_unlock_all = false;
+  bool cgm_dump = false;
+  // collection_unlock_all=1：把相册另外两栏的位域也由引擎自己写一遍。
+  //
+  // 相册三栏的真源（都是源码/场景 dump 里读出来的）：
+  //   Gallery(CG) = CGMTable::cgm_data_（Sys 1504 cgStatus，SEEN9515）
+  //   Scene       = intZ 位 390*32 + 0..15（SEEN9517 里 14 个条目逐条判 ==1）
+  //   Music       = intZ 位 391*32 + 0..55（SEEN9516 逐条读）
+  // 这些位是 Z1b[] 语义（1 位一个元素），所以必须用 type=1 的内存引用去写；
+  // 直接往 intZ 的"字"里塞值会把别的条目一起改掉（CG 表的 flag 391/392 就是字）。
+  bool collection_unlock_all = false;
+  // op_trace_budget=N：逐指令 trace 的打印预算（行）。配合 op_trace=* 用，
+  // 防止"抓卡死循环"时把日志刷爆（默认 -1 = 不限）。
+  long op_trace_budget = -1;
+  // loop_detect=1：死循环探测（最近 8 条指令按周期重复就报一次）。
+  // 用于相册 Scene 回想这类"卡死但不崩"的问题。
+  bool loop_detect = false;
+  // longop_log=1：记录长操作（"等输入/等动画"）的 push/pop 与类型。
+  bool longop_log = false;
   // input_trace=1：每帧（变化才打）记录「pad 按住了什么 / 引擎光标在哪 /
   // intD[95..115] 的值」。用来回答「按键到底有没有走到引擎侧、以及引擎会不会
   // 把输入写进 intD」——小游戏方向键不通的第一步排查。默认关。
@@ -502,8 +534,20 @@ DiagOptions LoadDiagOptions() {
       options.wipe_log = (number != 0);
     } else if (key == "kidoku_unlock_all") {
       options.kidoku_unlock_all = (number != 0);
+    } else if (key == "cgm_unlock_all") {
+      options.cgm_unlock_all = (number != 0);
+    } else if (key == "cgm_dump") {
+      options.cgm_dump = (number != 0);
+    } else if (key == "collection_unlock_all") {
+      options.collection_unlock_all = (number != 0);
     } else if (key == "op_trace") {
       options.op_trace = value;
+    } else if (key == "op_trace_budget") {
+      if (number > 0) options.op_trace_budget = number;
+    } else if (key == "loop_detect") {
+      options.loop_detect = (number != 0);
+    } else if (key == "longop_log") {
+      options.longop_log = (number != 0);
     } else if (key == "case_trace") {
       options.case_trace = (number != 0);
     } else if (key == "patno_trace") {
@@ -1714,10 +1758,65 @@ void RunEngineOn(System& system,
     rlvm_android::AppendAppLogLine(msg);
   }
 
+  // diag cgm_dump / cgm_unlock_all：CG 收集（相册）的开关。
+  // 相册的"收集度"由 Sys 1504(cgStatus) → CGMTable::cgm_data_ 决定，
+  // 所以这里直接走引擎自己的 CGMTable，而不是往 intZ 里猜位。
+  if (diag.cgm_dump || diag.cgm_unlock_all) {
+    std::string msg;
+    try {
+      CGMTable& cg_table = machine.system().graphics().cg_table();
+      if (diag.cgm_dump) {
+        rlvm_android::AppendAppLogLine(cg_table.DumpTable());
+        report += std::string("cgm_table dumped; entries=") +
+                  std::to_string(cg_table.GetTotal()) + "\n";
+      }
+      if (diag.cgm_unlock_all) {
+        msg = cg_table.MarkAllViewed(machine);
+        Serialization::saveGlobalMemory(machine);
+        msg += "; global flushed";
+      }
+    } catch (const std::exception& e) {
+      msg = std::string("cgm_unlock_all failed: ") + e.what();
+    }
+    if (!msg.empty()) {
+      report += msg + "\n";
+      rlvm_android::AppendAppLogLine(msg);
+    }
+  }
+
+  // diag collection_unlock_all：相册 Scene / Music 两栏的位域（1 位条目）。
+  // 必须用 type=1 的 IntMemRef（Z1b 语义）写，否则会把整字覆盖掉。
+  if (diag.collection_unlock_all) {
+    std::string msg;
+    try {
+      int marked = 0;
+      for (int bit = 390 * 32; bit < 390 * 32 + 16; ++bit) {
+        machine.memory().SetIntValue(
+            libreallive::IntMemRef(libreallive::INTZ_LOCATION, 1, bit), 1);
+        ++marked;
+      }
+      for (int bit = 391 * 32; bit < 391 * 32 + 56; ++bit) {
+        machine.memory().SetIntValue(
+            libreallive::IntMemRef(libreallive::INTZ_LOCATION, 1, bit), 1);
+        ++marked;
+      }
+      Serialization::saveGlobalMemory(machine);
+      msg = "collection_unlock_all: set " + std::to_string(marked) +
+            " bits (scene 390*32+0..15, music 391*32+0..55); global flushed";
+    } catch (const std::exception& e) {
+      msg = std::string("collection_unlock_all failed: ") + e.what();
+    }
+    report += msg + "\n";
+    rlvm_android::AppendAppLogLine(msg);
+  }
+
   g_frame_log_every = diag.frame_log_every;
   g_blit_cost_log = diag.blit_cost;
   rlvm_android::SetLbWipeLog(diag.wipe_log);
   rlvm_android::SetLbOpTraceFilter(diag.op_trace);
+  rlvm_android::SetLbOpTraceBudget(diag.op_trace_budget);
+  rlvm_android::SetLoopDetector(diag.loop_detect);
+  rlvm_android::SetLongOpLog(diag.longop_log);
   rlvm_android::SetLbCaseTrace(diag.case_trace);
   rlvm_android::SetLbPatNoTrace(diag.patno_trace);
   // Sys 1005 的语义选择 + 求值取证（实现在上游 module_sys.cc 里）。

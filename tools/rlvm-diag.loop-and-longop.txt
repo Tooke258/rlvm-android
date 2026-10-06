@@ -1,0 +1,20 @@
+# Scene 回想卡死：同时抓"热点行"与"长操作 push/pop"。
+#
+# loop_detect=1 → 每 2 秒往应用日志写一行当前最热的两条 (场景,行号)：
+#     loop_probe: 2s top=(SEEN9517)(Line 220) n=38 ; 2nd=(SEEN9517)(Line 199) n=30
+#   如果点击之后**不再有新行** ⇒ 引擎不再派发指令（阻塞），不是死循环。
+# longop_log=1 → 长操作（等输入/等动画）push/pop 各写一行，带 C++ 类型名：
+#     longop push: 22ButtonObjectSelectLongOperation... @(SEEN9517)(Line 242)
+#     longop pop:  22ButtonObjectSelectLongOperation...
+#   如果最后是 push 而没有对应 pop ⇒ 它在等输入（游戏其实没死，是输入/状态问题）。
+#
+# 用法：
+#   adb push tools/rlvm-diag.loop-and-longop.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android   # diag 只在引擎启动时读一次
+#   （启动 → 进相册 Scene → 点一个条目 → tail rlvm-log.txt）
+#
+# 注意：本 diag 不要带 cgm_unlock_all（会按"字"覆盖 intZ[391]/[392]，抹掉 Music 位域）。
+
+loop_detect=1
+longop_log=1

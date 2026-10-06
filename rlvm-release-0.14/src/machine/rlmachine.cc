@@ -48,6 +48,7 @@
 #include "libreallive/gameexe.h"
 #include "libreallive/intmemref.h"
 #include "libreallive/scenario.h"
+#include "android/app_log.h"
 #include "long_operations/pause_long_operation.h"
 #include "long_operations/textout_long_operation.h"
 #include "machine/long_operation.h"
@@ -439,6 +440,16 @@ void RLMachine::PushStringValueUp(int index, const std::string& val) {
 }
 
 void RLMachine::PushLongOperation(LongOperation* long_operation) {
+  // 诊断（diag: longop_log=1）：记录"推入长操作"的时刻与类型。
+  // 用途：像相册 Scene 回想这种"卡死但不崩"的情况，如果最后一条是 push 而没有
+  // 对应的 pop，说明引擎是在**等输入/等长操作完成**（不是死循环）。
+  if (rlvm_android::LongOpLogWanted()) {
+    std::ostringstream oss;
+    oss << "longop push: " << typeid(*long_operation).name() << " @(SEEN"
+        << call_stack_.back().scenario->scene_number() << ")(Line " << line_
+        << ")";
+    rlvm_android::AppendAppLogLine(oss.str());
+  }
   PushStackFrame(StackFrame(
       call_stack_.back().scenario, call_stack_.back().ip, long_operation));
 }
@@ -464,6 +475,14 @@ void RLMachine::PopStackFrame() {
     return;
   }
 
+  // 诊断（diag: longop_log=1）：长操作出栈 = 这一条"等一下"的动作完成了。
+  if (rlvm_android::LongOpLogWanted() &&
+      call_stack_.back().frame_type == StackFrame::TYPE_LONGOP &&
+      call_stack_.back().long_op) {
+    std::ostringstream oss;
+    oss << "longop pop:  " << typeid(*call_stack_.back().long_op).name();
+    rlvm_android::AppendAppLogLine(oss.str());
+  }
   call_stack_.pop_back();
 }
 

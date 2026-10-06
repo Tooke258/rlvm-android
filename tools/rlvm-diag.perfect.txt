@@ -1,0 +1,20 @@
+# "完美收集档"一次性生成：三栏都由引擎自己写，避免手改 boost 文本归档。
+#
+#   cgm_unlock_all          → Gallery：CGMTable::cgm_data_（410 条）
+#   collection_unlock_all   → Scene：intZ 位 390*32+0..15
+#                             Music：intZ 位 391*32+0..55
+#   kidoku_unlock_all       → 既读场景（文本已读率，统计器那一项）
+#
+# 用法：
+#   adb push tools/rlvm-diag.perfect.txt /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android   # diag 只在引擎启动时读一次
+#   （启动 App → 引擎起来后立刻把 global 拉下来留档）
+#
+# 日志里应有：
+#   cgm_mark_all: entries=410 intZ_set=410 out_of_range=0 cgm_data=410
+#   collection_unlock_all: set 72 bits ...; global flushed
+#   kidoku_unlock_all: marked 640000 bits and flushed global
+
+cgm_unlock_all=1
+collection_unlock_all=1
+kidoku_unlock_all=1

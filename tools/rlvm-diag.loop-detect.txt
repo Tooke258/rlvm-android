@@ -1,0 +1,18 @@
+# 死循环探测：找"卡死但不崩"的那一行（例如相册 Scene 回想的进入动作）。
+#
+# 机制：RLModule::DispatchFunction 每次派发指令都会调用
+# rlvm_android::NoteOpForLoopDetect(scene, line)。平台侧保留最近 24 条
+# (场景,行号)，一旦尾部 8 条按周期 1..4 重复，就往 **应用日志**
+# （rlvm-log.txt，不是 logcat 环形缓冲）写一行：
+#     loop_detector: hot loop period=2 at (SEEN9517)(Line 0244)
+# 只报一次，不刷日志。
+#
+# 用法：
+#   adb push tools/rlvm-diag.loop-detect.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android
+#   启动 → 进相册 Scene → 点一个条目 → tail rlvm-log.txt | grep loop_detector
+#
+# 注意：本 diag 不要带 cgm_unlock_all（会按"字"覆盖 intZ[391]/[392]）。
+
+loop_detect=1

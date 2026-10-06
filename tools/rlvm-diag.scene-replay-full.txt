@@ -1,0 +1,18 @@
+# Scene 回想卡死：全量逐指令 trace（带打印预算，防止刷爆日志）。
+#
+# 上一版只过滤 farcall/rtl/gosub/goto，结果一条都没打印 —— 说明卡住的循环里
+# 没有这些指令（多半是某个"等待"用的 Sys/刷新指令在空转）。
+# 这一版 op_trace=* 打全部指令，预算 200000 行（够看几十次循环）。
+#
+# 用法：
+#   adb push tools/rlvm-diag.scene-replay-full.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android
+#   启动 → 进相册 Scene → 点一个条目 → 等 3 秒 → 抓 rlvm-log.txt 尾部
+#   （把最后 200 行按 op 名统计出现次数，出现最多的那几条就是死循环）
+#
+# 注意：本 diag 不要带 cgm_unlock_all（它会按"字"覆盖 intZ[391]/[392]，
+# 抹掉 Music 的位域，见 docs/SAVE-STRUCTURE-ANALYSIS.md §11）。
+
+op_trace=*
+op_trace_budget=200000

@@ -29,6 +29,17 @@ void SetLbWipeLog(bool on);
 // 「可能改对象状态」的那十来种指令，避免 46MB 的全量 trace。
 void SetLbOpTraceFilter(const std::string& csv_substrings);
 bool LbOpTraceWanted(const std::string& op_name);
+// 逐指令 trace 的打印预算（行数）。-1 = 不限，0 = 关闭，>0 = 还能打这么多行。
+void SetLbOpTraceBudget(long n);
+// 死循环探测（diag: loop_detect=1）。每次派发指令时调用 NoteOpForLoopDetect()：
+// 一旦发现"最近 8 条 (场景,行号) 序列按周期 1..4 完全重复"，就写一行
+// `loop_detector: hot loop ...` 到应用日志（只报一次），不走 logcat 环形缓冲。
+// 用途：像 Scene 回想这种"卡死但不崩"的问题，直接告诉我们是哪一行在空转。
+void SetLoopDetector(bool on);
+void NoteOpForLoopDetect(int scene, int line);
+// 长操作（"等一等"）日志（diag: longop_log=1）：push/pop 各写一行。
+void SetLongOpLog(bool on);
+bool LongOpLogWanted();
 
 // goto_case / goto_on 的**分派取证**（diag: case_trace=1，默认关）：
 // 每次求值都打一行 `[case] SEENxxxx Lnnn value=? n=? [i](case)… -> idx=?`。

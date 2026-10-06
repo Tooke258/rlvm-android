@@ -674,8 +674,12 @@ void AndroidSoundSystem::BgmUnPause() {
 }
 
 void AndroidSoundSystem::BgmFadeOut(int fade_out_ms) {
-  rlvm_android::AudioEngine::Instance().FadeVolume(kBgmEngineChannel, 0,
-                                                   fade_out_ms);
+  // 语义对齐 SDL 端：`Mix_FadeOutMusic` 是"淡出**并停**"，不是只把音量拉到 0。
+  // RLVM 的 `bgmFadeOutEx`(op<1:20:106,1>) 会推 WaitLongOperation 等
+  // `BgmStatus()==0`（= 本引擎 IsPlaying）。以前只做音量淡出，通道一直算在播，
+  // 那个等永远不返回 —— 相册 Scene 回想点进去必卡死就是这个。
+  rlvm_android::AudioEngine::Instance().FadeOutAndStop(kBgmEngineChannel,
+                                                       fade_out_ms);
 }
 
 std::string AndroidSoundSystem::GetBgmName() const { return bgm_name_; }

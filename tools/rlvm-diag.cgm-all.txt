@@ -1,0 +1,18 @@
+# CG 收集（相册）诊断：让引擎自己把 dat/mode.cgm 里的每个条目标记成"已观看"。
+#
+# 背景（源码链）：
+#   相册场景 SEEN9515 用 `Sys 1504`(cgStatus) 逐条问"这个 g00 看过没有"，
+#   cgStatus 读的是 CGMTable::cgm_data_；cgm_data_ 只在真正显示过 CG 时
+#   （graphics_system.cc:681 SetViewed）才被填，并且会随 global.sav.gz 一起
+#   写盘（serialization_global.cc:100 GraphicsSystemGlobals）。
+#   ⇒ 收集度不需要"猜 intZ 的位"，只要让引擎自己标记一遍。
+#
+# 用法：
+#   adb push tools/rlvm-diag.cgm-all.txt /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android   # diag 只在引擎启动时读一次
+# 启动后看应用日志（rlvm-log.txt）里的：
+#   `cgm_mark_all: entries=… intZ_set=… out_of_range=… cgm_data=…`
+#   `cgm_table: entries=…`（随后是 文件名=flag 列表）
+
+cgm_dump=1
+cgm_unlock_all=1

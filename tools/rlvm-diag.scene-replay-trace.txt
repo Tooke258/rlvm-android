@@ -1,0 +1,19 @@
+# Scene 回想卡死：抓控制流（farcall / rtl / gosub / goto*）。
+#
+# 背景：SEEN9517 选中条目后走 op<0:001:00004,0>(intA[32])（goto_case），
+# 每个分支是一条 farcall(<剧情场景>, 90x)，例如 farcall(1003, 90)。
+# 但按引擎自己的 dump，SEEN1003 只有 entrypoint 0/371/696/1206 —— 没有 90。
+# RLVM 的 Scenario::FindEntrypoint() 找不到会抛 Error("Unknown entrypoint")，
+# 而 RLMachine 的异常路径会 AdvanceInstructionPointer()（halt_on_exception=false），
+# 所以"应当"是静默跳过。这条 trace 就是来验证：跳过之后到底谁在循环。
+#
+# 注意：本 diag **不要**再带 cgm_unlock_all —— 它会按"字"写 intZ[391]/[392]，
+# 把 Music 的位域覆盖掉（详见 docs/SAVE-STRUCTURE-ANALYSIS.md §11）。
+#
+# 用法：
+#   adb push tools/rlvm-diag.scene-replay-trace.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android   # diag 只在引擎启动时读一次
+# 然后进相册 → Scene → 点一个条目，再 `tail rlvm-log.txt`。
+
+op_trace=farcall,rtl,gosub,goto
