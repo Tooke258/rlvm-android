@@ -946,6 +946,23 @@ class LbIgnoreRawArgs : public RLOp_SpecialCase {
   void ParseParameters(const std::vector<std::string>&,
                        libreallive::ExpressionPiecesVector&) override {}
 
+  // **必须覆写 `Dispatch`**：有些 op（如 ChildObjFg 的 `2:81:1058`）不走
+  // `RLOp_SpecialCase::DispatchFunction`，而走 `module_obj.cc` 的
+  // `handler->Dispatch(machine, ...)`；基类 `Dispatch` 直接
+  // `throw Exception("Tried to call empty RLOp_SpecialCase::Dispatch().")`
+  // —— 真机日志 `(SEEN7340)(Line 110)[lb_child_obj_1058]: Tried to call empty …`
+  // 就是它：每帧抛异常 + 每帧一行日志，而这个 op 的效果从未落地。
+  // 这里做成真正的静默 no-op（与"忽略"同义，但不再每帧报错）。
+  void Dispatch(RLMachine& machine,
+                const libreallive::ExpressionPiecesVector&) override {
+    static std::set<int> logged;
+    const int key = module_number_ * 100000 + opcode_;
+    if (logged.insert(key).second) {
+      std::cout << "[lb-ext] " << label_ << " (module 1:" << module_number_
+                << " op " << opcode_ << ") ignored (via Dispatch)" << std::endl;
+    }
+    machine.AdvanceInstructionPointer();
+  }
   void operator()(RLMachine& machine,
                   const libreallive::CommandElement& f) override {
     static std::set<int> logged;
@@ -1031,6 +1048,27 @@ struct LbStub3 : public RLOp_Void_3<IntConstant_T, IntConstant_T, IntConstant_T>
 // （脚本里只出现 group=2）里取；21/23 是配置类，先按空实现接上。
 int g_objbtn_group = 2;
 
+// 小游戏每帧诊断日志的开关（默认关）。
+// 下面 objbtn 那几行是**每帧同步写 stdout → logcat**；实测这类逐帧日志会把小游戏
+// 越跑越慢（同 pt00 的逐调用日志，见 dev-log/PT00-EMU.jsonl 的 perf 记录）。
+// 需要时用 diag 的 pt00_verbose=1 打开。
+bool g_lb_verbose = false;
+void SetLbVerbose(bool on) { g_lb_verbose = on; }
+
+namespace {
+class LbNullBuf : public std::streambuf {
+ protected:
+  int overflow(int c) override { return c; }
+};
+}  // namespace
+
+/** 默认丢弃的小游戏诊断流；g_lb_verbose 时才真的往 stdout 写。 */
+std::ostream& LbLog() {
+  static LbNullBuf buf;
+  static std::ostream null_stream(&buf);
+  return g_lb_verbose ? std::cout : null_stream;
+}
+
 struct ObjBtnConfig2 : public RLOp_Void_2<IntConstant_T, IntConstant_T> {
   void operator()(RLMachine& machine, int group, int value) {
     g_objbtn_group = group;
@@ -1060,7 +1098,7 @@ struct ObjBtnSelect : public RLOp_Store_Void {
           Rect r = o.has_object_data()
                        ? o.GetObjectData().DstRect(o, nullptr)
                        : Rect();
-          std::cout << "[lb-ext] objbtn hit#" << btns << " obj=" << idx
+          LbLog() << "[lb-ext] objbtn hit#" << btns << " obj=" << idx
                     << " group=" << o.GetButtonGroup() << " rect=(" << r.x()
                     << "," << r.y() << " " << r.width() << "x" << r.height()
                     << ") show=" << o.visible() << std::endl;
@@ -1072,7 +1110,7 @@ struct ObjBtnSelect : public RLOp_Store_Void {
               if (c.IsButton() && c.GetButtonGroup() == g_objbtn_group) {
                 ++btns;
                 Rect r = c.GetObjectData().DstRect(c, &o);
-                std::cout << "[lb-ext] objbtn hit#" << btns << " child of obj="
+                LbLog() << "[lb-ext] objbtn hit#" << btns << " child of obj="
                           << idx << " group=" << c.GetButtonGroup()
                           << " rect=(" << r.x() << "," << r.y() << " "
                           << r.width() << "x" << r.height() << ")"
@@ -1108,7 +1146,7 @@ struct ObjBtnSelect : public RLOp_Store_Void {
           }
         }
       }
-      std::cout << "[lb-ext] objbtn poll group=" << g_objbtn_group
+      LbLog() << "[lb-ext] objbtn poll group=" << g_objbtn_group
                 << " at=" << pos.x() << "," << pos.y() << " b1=" << b1
                 << " b2=" << b2 << " fg_objects=" << fg
                 << " buttons_in_group=" << btns << " -> " << hit << std::endl;
@@ -1236,6 +1274,7 @@ void RunEngineOn(System& system,
   pt00emu::SetTraceCtx(diag.pt00_trace_ctx);
   pt00emu::SetTick31(diag.pt00_tick31);
   pt00emu::SetVerbose(diag.pt00_verbose);
+  SetLbVerbose(diag.pt00_verbose);
   /* max_lines = -1：只进环形缓冲，步数上限时才整环转储（避免每帧几十条刷屏）。 */
   if (diag.pt00_watch != 0)
     pt00emu::SetWatch(diag.pt00_watch, -1);
