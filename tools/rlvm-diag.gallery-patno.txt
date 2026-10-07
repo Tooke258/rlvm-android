@@ -1,0 +1,16 @@
+# 相册页码（O_CGM_NUM00）"图案号变 0"取证。
+#
+# 事实（两份渲染树 dump 逐项对过，见 docs/MINIGAME-UI-PRESENTATION.md §7）：
+#   同一屏、同一批子对象（layer 209/210 的 O_CGM_NUM00），
+#   正确那份 patt=7/6/3/4/5…，默认那份 patt 全 0；xy / Image / vis / data 完全一致。
+#   脚本 SEEN9515 L301 `if (intL[20]>=1 && intL[21]>=2)` → L303-307 每帧
+#   objOfChild + objPattNo(209/210, i, intL[20]+1 / intL[21]+1)。
+#
+# patno_trace=1 会打两类行（都带场景/行号）：
+#   [patno]  SEENxxxx Lnnn parent=<父> child=<子> set=<写入值> now=<读回值>
+#   [params-reset] InitializeParams after=SEENxxxx Lnnn <op>
+# 目标：看上面那两条 objPattNo 的 set 到底是几，以及之后有没有别的指令把它重置掉。
+#
+# 小游戏里 patno_trace 会刷屏，看完相册就退出。
+lb_minigame=1
+patno_trace=1

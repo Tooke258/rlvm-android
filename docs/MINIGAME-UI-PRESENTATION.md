@@ -155,3 +155,44 @@ graphics_->Refresh(nullptr);                   // ← 再合成
 打开时按上游次序**在跑脚本之前**合成；默认仍为原行为，便于对比。
 `android_system.cpp` 里把合成那段抽成 `RefreshAndClearDirty()`，两处按标志二选一调用。
 引擎启动报告的 diagnostics 行会打印 `refresh_before_run=on/off` 以便确认生效。
+
+## 7. 2026-10-07 深夜（续）· **时序假设作废**；差异锁定为「页码图案号变 0」
+
+### 7.1 `refresh_before_run=1` 真机 A/B：**没修好**
+
+用户打开 `refresh_before_run=1` 后仍然"刷回默认" ⇒ §6.2 那条"合帧时机"假设
+**不是根因**（最多是放大器）。开关保留（默认关），不再作为结论。
+
+### 7.2 相册两份渲染树逐项对照：差异**只有 `patt`**
+
+用户导出了相册的两个状态（正确 / 默认），逐对象对照结果：
+
+| | 正确那份 | 默认那份 |
+| --- | --- | --- |
+| `O_CGM_NUM00` 各子对象 `patt` | **7 / 6 / 3 / 4 / 5 / 7 / 5 / 4 …** | **全部 0** |
+| `xy` / `Image:` / `vis` / `data` | 完全一致 | 完全一致 |
+
+⇒ 位置、素材、可见性全都对，**只有图案号被写成/读成 0**。
+
+### 7.3 相册页码的真实生成点（脚本静态）
+
+`SEEN9515`（CG 相册）每帧重建这些子对象：
+
+```reallive
+#line 301   if (intL[20] >= 1 && intL[21] >= 2)
+#line 303   objOfChild(layer 209, i, "O_CGM_NUM00", ...)
+#line 304   objPattNo (layer 209, i, intL[20] + 1)     ← 正确那份的 7/6/3/4/5 出自这里
+#line 307   objPattNo (layer 210, i, intL[21] + 1)
+#line 310   objPattNo (layer 211, i, 0)               ← 这一层**本来就写 0**
+```
+
+`intL[20]`/`intL[21]` 来自更上游的页码表（`intL[21] = intA[900 * 8 + intL[11]]`，L278）。
+**`patt=0` 本身就是这个素材的合法值**（211 层恒用 0），所以"默认图案"= 页码位画成 0 号图。
+
+待查（下一步取证）：
+
+1. L304/L307 的 `set=` 到底写了几（0 还是 6/7）—— 即页码值本身错，还是写入后被重置；
+2. `[params-reset] InitializeParams after=…` 是否出现在那两条写入之后。
+
+取证配置：`tools/rlvm-diag.gallery-patno.txt`（`patno_trace=1`）。
+复现：启动 → 进相册 → 停在页码不对的那一屏约 5 秒 → 退出 → 拉 `rlvm-log.txt`。
