@@ -94,6 +94,8 @@ class MainActivity : Activity() {
     // 悬浮球 + 侧边栏：游戏画面占满屏幕，控制项与日志收进侧栏，
     // 由右上角的小球（可拖动）展开/收起。
     private lateinit var panel: LinearLayout
+    /** 面板的滚动容器：按钮越加越多，竖屏放不下，用 ScrollView 包一层。 */
+    private lateinit var panelScroll: ScrollView
     private lateinit var ball: TextView
     private lateinit var rootView: FrameLayout
     private var panelWidth = 0
@@ -120,6 +122,8 @@ class MainActivity : Activity() {
     // 「事件牌：屏蔽/恢复」按钮（标签随状态变，留引用）。
     private lateinit var eveDisplayButton: Button
     private var muteEveDisplay = false
+    private val eveMuteHandler = Handler(Looper.getMainLooper())
+    private var eveMuteOff: Runnable? = null
     private var engineRunning = false
     private var longPressRightClick = true
     // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
@@ -239,11 +243,12 @@ class MainActivity : Activity() {
         longPressRightClick = prefs.getBoolean(KEY_LONG_PRESS_RIGHT, true)
         stopButton.setOnClickListener { toggleLongPressRightClick() }
         updateLongPressButtonLabel()
-        // ③ 「事件牌：屏蔽/恢复」：卡住的公告牌（PT_ANN*/PT_CALL* 那类）一键洗掉。
+        // ③ 「清事件牌」：卡住的公告牌（PT_ANN*/PT_CALL* 那类）一键洗掉。
         //    它挡的是 objEveDisplay 的"显示"请求 —— 脚本每帧重申显示，单纯隐藏一帧没用。
-        muteEveDisplay = prefs.getBoolean(KEY_MUTE_EVE, false)
+        //    **一次性脉冲**：只屏蔽 1 秒就自动恢复；常开会把菜单元素一起杀掉（菜单也走同一族）。
+        muteEveDisplay = false
         eveDisplayButton = Button(this).apply {
-            setOnClickListener { toggleMuteEveDisplay() }
+            setOnClickListener { pulseMuteEveDisplay() }
         }
         updateEveDisplayButtonLabel()
 
@@ -532,7 +537,16 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // 先加侧栏、后加球：FrameLayout 里后添加的在上层，
         // 否则面板一展开就把球盖住，用户再也点不到它（无法收起）。
-        root.addView(panel, FrameLayout.LayoutParams(
+        // 面板内容会随按钮增多超过一屏 ⇒ 外面套一层 ScrollView（可竖滚）。
+        // 开合/可见性一律挂在这层 ScrollView 上：否则 panel 被 GONE 掉时
+        // ScrollView 仍占着右侧那条竖带、会把游戏触摸吃掉。
+        panelScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(panel, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        root.addView(panelScroll, FrameLayout.LayoutParams(
             panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
         val ballParams = FrameLayout.LayoutParams(
             ballSize, ballSize, Gravity.END or Gravity.CENTER_VERTICAL)
@@ -543,7 +557,7 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // 初始状态明确为「收起」：直接 GONE，连布局都不参与。
         panelOpen = false
-        panel.visibility = android.view.View.GONE
+        panelScroll.visibility = android.view.View.GONE
         setContentView(root)
 
         log(buildString {
@@ -962,7 +976,7 @@ class MainActivity : Activity() {
         // 计算那块区域的绘制——真机表现就是"第一次展开时上面一半不渲染，点一下
         // 才画出来"（已复现并截图确认）。
         // 用 VISIBLE/GONE 会让视图树重新布局并完整重绘，彻底避免残留区域。
-        panel.visibility =
+        panelScroll.visibility =
             if (panelOpen) android.view.View.VISIBLE else android.view.View.GONE
         rootView.requestLayout()
         rootView.invalidate()
@@ -1130,35 +1144,35 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 「事件牌：屏蔽/恢复」开关。
+     * 「清事件牌」——**一次性脉冲**：屏蔽 `objEveDisplay` 的显示请求 1 秒，然后自动恢复。
      *
-     * 做什么：让引擎忽略 `objEveDisplay(…, display=1, …)` —— 也就是"事件牌/公告牌"的显示请求。
+     * 为什么要脉冲而不是常开：`PT_ANN01/02`、`PT_CALL00` 这类牌子由 `objEveDisplay` 驱动的
+     * `DisplayMutator` 控制；一旦触发它的脚本条件卡住（例如练习模式 `intD[72]=15..19 &&
+     * intD[73]==0` 一直成立），脚本会**每帧重新显示**一次，所以"隐藏一帧"没用 ——
+     * 只有从引擎侧屏蔽"显示"请求才洗得掉。但**菜单元素也走同一族**，常开会把菜单一起杀掉；
+     * 因此做成 1 秒脉冲：足够洗掉卡住的那一两帧重发，又不会长期压制 UI。
      *
-     * 为什么要它：`PT_ANN01/02`、`PT_CALL00` 这类牌子由 `objEveDisplay` 驱动的
-     * `DisplayMutator` 控制显示/隐藏；一旦触发它的那条脚本条件卡住（例如某个练习模式
-     * `intD[72]=15..19 && intD[73]==0` 一直成立），脚本会**每帧重新显示**一次，
-     * 于是"隐藏一帧"根本不管用 —— 只有从引擎侧屏蔽掉"显示"请求才能一键洗掉。
      * 见 app/src/main/cpp/android/app_log.h 的 SetLbMuteEveDisplay()。
-     *
-     * 代价：屏蔽期间不会再有新的公告/事件牌出现（恢复即正常）。
      */
-    private fun toggleMuteEveDisplay() {
-        muteEveDisplay = !muteEveDisplay
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putBoolean(KEY_MUTE_EVE, muteEveDisplay).apply()
-        runCatching { NativeBridge.setMuteEveDisplay(muteEveDisplay) }
+    private fun pulseMuteEveDisplay() {
+        eveMuteOff?.let { eveMuteHandler.removeCallbacks(it) }
+        muteEveDisplay = true
+        runCatching { NativeBridge.setMuteEveDisplay(true) }
             .onFailure { log("事件牌屏蔽写入失败：${it.message}") }
         updateEveDisplayButtonLabel()
-        log(
-            if (muteEveDisplay) "事件牌：屏蔽（卡住的公告/事件牌会被洗掉，期间不再出现新的）"
-            else "事件牌：恢复显示"
-        )
+        val off = Runnable {
+            muteEveDisplay = false
+            runCatching { NativeBridge.setMuteEveDisplay(false) }
+            updateEveDisplayButtonLabel()
+        }
+        eveMuteOff = off
+        eveMuteHandler.postDelayed(off, 1000)
+        log("事件牌：清一次（屏蔽 1 秒后自动恢复）")
     }
 
     private fun updateEveDisplayButtonLabel() {
         if (::eveDisplayButton.isInitialized) {
-            eveDisplayButton.text =
-                if (muteEveDisplay) "事件牌：屏蔽" else "事件牌：显示"
+            eveDisplayButton.text = if (muteEveDisplay) "清理中…" else "清事件牌"
         }
     }
 
