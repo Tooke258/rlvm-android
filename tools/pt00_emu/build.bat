@@ -22,4 +22,11 @@ if not defined VCVARS (
 call "%VCVARS%" x64 >nul
 rem /utf-8 is required: the sources are UTF-8, MSVC otherwise reads them as CP936 and
 rem mis-decodes Chinese comments, swallowing the code that follows them.
-cl /nologo /W3 /O2 /utf-8 /Fe:emu.exe emu.c
+rem Optional: build.bat [source.c] [output.exe]
+rem Used to A/B two revisions of emu.c, e.g. build an older revision into a second exe
+rem and diff both against the oracle (see tools/pt00_oracle/compare.py --emu).
+set "EMU_SRC=%~1"
+if not defined EMU_SRC set "EMU_SRC=emu.c"
+set "EMU_OUT=%~2"
+if not defined EMU_OUT set "EMU_OUT=emu.exe"
+cl /nologo /W3 /O2 /utf-8 /Fe:%EMU_OUT% %EMU_SRC%

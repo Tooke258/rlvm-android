@@ -6,6 +6,11 @@
 
 用法：
     python tools/pt00_oracle/compare.py <PT00.dll> <calls.txt> [--seed seed.bin] [--limit N]
+                                       [--emu <emu.exe>]
+
+`--emu` 用来 A/B 两个版本的执行器：例如把旧修订编成第二个 exe，跑
+「oracle vs 旧版」应当不一致、跑「oracle vs 新版」应当一致 —— 这样才能证明
+夹具真的走到了被修的那条指令，而不是"两边都早退、空对空"。
 
 退出码：0 = 全部一致；1 = 有差异（并打印前若干处）。
 """
@@ -46,19 +51,22 @@ def main():
     dll, calls = sys.argv[1], sys.argv[2]
     seed = None
     limit = 0
+    emu = EMU
     for i, a in enumerate(sys.argv[3:], 3):
         if a == "--seed" and i + 1 < len(sys.argv):
             seed = sys.argv[i + 1]
         elif a == "--limit" and i + 1 < len(sys.argv):
             limit = int(sys.argv[i + 1])
+        elif a == "--emu" and i + 1 < len(sys.argv):
+            emu = sys.argv[i + 1]
 
     seed_arg = ["--seed", seed] if seed else []
     ref = per_call_lines(run([ORACLE, dll, calls] + seed_arg))
-    got = per_call_lines(run([EMU, dll, calls] + seed_arg))
+    got = per_call_lines(run([emu, dll, calls] + seed_arg))
     if limit:
         ref, got = ref[:limit], got[:limit]
 
-    print("# oracle 调用数=%d  emu 调用数=%d" % (len(ref), len(got)))
+    print("# oracle 调用数=%d  emu=%s 调用数=%d" % (len(ref), os.path.basename(emu), len(got)))
     bad = 0
     for i in range(max(len(ref), len(got))):
         a = ref[i] if i < len(ref) else "(缺)"

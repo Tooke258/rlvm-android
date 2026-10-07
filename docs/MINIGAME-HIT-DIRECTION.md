@@ -315,7 +315,44 @@ if (di >= 1) *XP(di - 1) = r;            /* pop 后旧的 st(i) 落到 st(i-1) *
 
 ### 11.4 残留与下一步
 
-* 修复后仍有 **1 例极晚触球**（棒角 1435、球已过 box 55）`[264] = −374`。PC 同口径
-  5/5 为正、但样本只有一轮，先按「合法结果」看待，后续用同一张表继续观察。
+* ~~修复后仍有 1 例极晚触球（棒角 1435、球已过 box 55）`[264] = −374`，疑似复合 bug。~~
+  **已结案（见 §11.5）**：把同一组输入喂给原版 DLL，原版自己就给 −95/−197/−487/−135 ——
+  **极晚触球本来就往后飞**，不是残留 bug。
 * 两个仍在 diag 层的开关待转正：`pt00_run_ctors=1`（真实宿主语义）、`logic_hz=37`。
 * 推包/发版前必须清设备上的 `rlvm-diag.txt`。
+
+### 11.5 离线复现装置：`func 50` 现在不用真机也能验
+
+`tools/pt00_oracle/` 里本来就有一套「原版 DLL 直跑（`oracle.exe`，native LoadLibrary）
+对照我们的执行器（`emu.exe`）」的逐位比对装置，但原来的夹具（`calls_long.txt`）只覆盖
+func 60/12/71/31/901..931，**不含 func 50**，所以它证明不了方向这件事。
+
+本轮把它补齐（`make_fixtures.py` 新增 func 50 夹具 + `compare.py` 新增 `--emu`，
+`build.bat` 支持 `build.bat [source.c] [output.exe]` 以便编第二份做 A/B）：
+
+```powershell
+# 夹具：种子里直接放"触球帧"的 7 个方向输入槽（来源见 build/pc_swing.txt 与 build/phone_func50_fix.txt）
+python tools/pt00_oracle/make_fixtures.py
+# 正向：修复后的执行器 vs 原版 —— 必须逐位一致
+python tools/pt00_oracle/compare.py build/PT00.dll build/pt00-fixtures/calls_func50.txt `
+    --seed build/pt00-fixtures/seed_f50_pc_hit.bin
+# 反向：编译修复前的 emu.c 成第二份 exe，用 --emu 指过去 —— 必须报 DIFF
+cmd /c "git show HEAD~1:tools/pt00_emu/emu.c > build\emu_prefix.c"   # 注意：cmd 会吃掉 ^，用 HEAD~1
+cmd /c "tools\pt00_emu\build.bat <abs>\build\emu_prefix.c <abs>\build\emu_prefix.exe"
+python tools/pt00_oracle/compare.py build/PT00.dll build/pt00-fixtures/calls_func50.txt `
+    --seed build/pt00-fixtures/seed_f50_pc_hit.bin --emu build\emu_prefix.exe
+```
+
+结果（5 个场景：`pc_hit / pc_hit2 / ph_fwd1 / ph_fwd2 / ph_late`）：
+
+| 执行器 | 与原生 DLL 的对照 | `[264]`（原版真值 → 执行器） |
+| --- | --- | --- |
+| 修复前 | **5/5 场 DIFF（每场 4 次调用全不一致）** | +999 → **−334**；+997 → −429；+927 → −685；+999 → −372 |
+| 修复后 | **5/5 场逐位一致** | 完全相同 |
+
+* 不一致的槽只有 `[262]` 与 `[264]`（`[265]` 两边都对得上）—— 正是"值对、槽错、
+  下游取到另一个数"的指纹，与 §11.1 的机理推断完全吻合。
+* `ph_late`（极晚触球）：**原版自己**就给 `[264] = −95/−197/−487/−135` ⇒ 那例负值合法，
+  §11.4 的"疑似复合 bug"作废。
+* 注意坑：**cmd 会把 `^` 当转义符**，`0ff4c6d^:tools/...` 会变成 `0ff4c6d:tools/...`
+  （等于拿到修复后的源码，反向对照就成了空对空）—— 用 `HEAD~1` 或加引号。
