@@ -1,0 +1,20 @@
+# A/B：补跑 PT00.dll 的 CRT 静态构造表（手工加载镜像缺失的 _initterm 那一步）。
+#
+# 背景：真实宿主用 LoadLibrary 加载 PT00.dll ⇒ DllMain → _CRT_INIT → _initterm ⇒
+# 静态构造函数会被跑一遍；我们的执行器从 func_load 起跑，从未跑过这一步。
+# 已证实的后果：目标点/本垒 (0,0,2100) 是静态构造表里的 sub_10004AD0 写的，
+# 它没跑 ⇒ dword_10023D20/D24/D28 = 0/0/0 ⇒ 「朝目标投/捕手回传」瞄 z=0 ⇒
+# 落点偏到击球手身后（用户实测症状）。
+#
+# 用法：
+#   adb push tools/rlvm-diag.run-ctors.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android
+#   进小游戏打一球 → 看 logcat：
+#     [pt00] ctor 10001070 ok / … / [pt00] ctor 10004ad0 ok
+#     [pt00] CRT initializers attempted: 6
+#     [pt00] peek 10023d20=0 10023d24=0 10023d28=2100   ← ★ 目标点被填上了
+
+lb_minigame=1
+pt00_run_ctors=1
+pt00_peek=10023D20,10023D24,10023D28
