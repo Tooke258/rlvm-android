@@ -1,0 +1,19 @@
+# A/B：把棒角 intD[624] 钉死在 PC 触球时的值，用来分开"相位"与"参数/轴向"。
+#
+# 依据：我们的方向码 = 1000·sinθ，θ 的输入就是 [624]（0.1° 单位，脚本每帧 +150）。
+#   PC 触球样本： [624]=2635 → [264]=+740 ；[624]=2785 → +521（均外野）
+#   我们触球样本：[624]=2935/3685/3985 → −923/−778/−763（均身后）
+#
+# 判读：
+#   钉住后偏转变外野 ⇒ 参数没问题，之前是**触球相位**（我们比 PC 晚 2~8 级阶梯）。
+#   钉住后仍逆时针偏 ~90° ⇒ **参数/轴向映射**确实错，转去逐项对棒角→棒位置那几行。
+#
+# 用法（一次只改一个值）：
+#   adb push tools/rlvm-diag.pin-bat-angle.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android
+#   进小游戏打一球 → 看 logcat 的 [pt00] ballq（intD[263..277]，[264] 就是方向码）。
+
+lb_minigame=1
+pt00_run_ctors=1
+intd_pin=624=2635

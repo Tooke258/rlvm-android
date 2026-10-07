@@ -1,0 +1,16 @@
+# 数据层取证：盯 PT00.dll 里「目标点/本垒」的两个 dword。
+#
+#   dword_10023D20 / dword_10023D28 —— DLL 文件里是 0/0，运行期应由 func 50 内的
+#   初始化段（0x10004AD0 → 0x10004AE0）填成 0 / 2100；
+#   「朝目标投 / 捕手回传」的逻辑都用它。
+#   手机上若读到 0/0 ⇒ 回传落点 z 从 2100 变 0，正好偏到击球手身后。
+#
+# 用法：
+#   adb push tools/rlvm-diag.peek-target.txt \
+#     /sdcard/Android/data/org.rlvm.android/files/rlvm-diag.txt
+#   adb shell am force-stop org.rlvm.android
+#   进小游戏、让它投几球（回传一次更好）→
+#   adb logcat -d | grep '\[pt00\] peek'
+
+lb_minigame=1
+pt00_peek=10023D20,10023D28
