@@ -73,6 +73,17 @@ ButtonObjectSelectLongOperation::~ButtonObjectSelectLongOperation() {
   // Disable overrides on all graphics objects we've dealt with.
   for (ButtonPair& button_pair : buttons_) {
     button_pair.first->ClearButtonOverrides();
+    // 移植补丁（2026-10-07，用户定调）：关菜单后按钮"残留在原地"。
+    //
+    // 现场：SEEN7800 的关闭路径只做
+    //     loop (intL[0] < 14): objVisible(221, 1+intL[0], 0)
+    // 也就是**只隐藏子对象 1..14**；而暂停菜单的底图/按钮落在 221 的
+    // **#0 / #15 / #16 / #17**（渲染树实测：CAM 菜单那 15 项仍挂在同一个父对象下，
+    // 子对象列表在换菜单时没有被清空），那条循环永远扫不到它们 ⇒ 关菜单后仍然 vis=1。
+    //
+    // 这里在长操作析构（= 菜单真正结束）时，把它管辖的按钮对象一并置为不可见。
+    // 属于引擎侧、窄口径的偏离：脚本下次要用它们时会重新 objVisible/objOfChild 建回来。
+    button_pair.first->SetVisible(0);
   }
 }
 
