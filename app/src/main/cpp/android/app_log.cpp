@@ -212,6 +212,14 @@ void SetLbNoButtonOverrides(bool on) { g_lb_no_button_overrides = on; }
 bool LbNoButtonOverridesWanted() { return g_lb_no_button_overrides; }
 
 namespace {
+bool g_lb_mute_eve_display = false;
+}  // namespace
+
+void SetLbMuteEveDisplay(bool on) { g_lb_mute_eve_display = on; }
+
+bool LbMuteEveDisplayWanted() { return g_lb_mute_eve_display; }
+
+namespace {
 int g_lb_last_scene = -1;
 int g_lb_last_line = -1;
 std::string g_lb_last_op;

@@ -444,6 +444,8 @@ struct DiagOptions {
   // 按钮态图案覆盖：**默认不应用**（见 android/app_log.h 的用户定调）。
   // 想恢复引擎的 BTNOBJ.ACTION 行为，写 no_button_overrides=0。
   bool no_button_overrides = true;
+  // mute_eve_display=1：事件牌（objEveDisplay）显示抑制。默认关。
+  bool mute_eve_display = false;
   // sys1005=legacy|fixed：Sys 1005（两点距离，LBEX 只在小游戏里用 1 次）的
   // 实现选择。默认 fixed（正确语义）；legacy = 退回上游 RLVM 的占位公式
   // `(v1-v3)/(v2-v4)`，用于真机 A/B 证明「球的显隐就是被它决定」。
@@ -578,6 +580,8 @@ DiagOptions LoadDiagOptions() {
       options.wipe_copy_all = (number != 0);
     } else if (key == "no_button_overrides") {
       options.no_button_overrides = (number != 0);
+    } else if (key == "mute_eve_display") {
+      options.mute_eve_display = (number != 0);
     } else if (key == "sys1005") {
       options.sys1005 = value;
     } else if (key == "sys1005_trace") {
@@ -1869,6 +1873,7 @@ void RunEngineOn(System& system,
   rlvm_android::SetLbGalleryProbe(diag.gallery_probe);
   rlvm_android::SetLbWipeCopyAll(diag.wipe_copy_all);
   rlvm_android::SetLbNoButtonOverrides(diag.no_button_overrides);
+  rlvm_android::SetLbMuteEveDisplay(diag.mute_eve_display);
   // Sys 1005 的语义选择 + 求值取证（实现在上游 module_sys.cc 里）。
   g_sys1005_legacy = (diag.sys1005 == "legacy");
   g_sys1005_trace = diag.sys1005_trace;
@@ -2707,6 +2712,15 @@ void RequestStop(JNIEnv* /*env*/, jobject /*thiz*/) {
  * 音频位置全都不动，唤醒后接着跑。这里只置标志，真正的收敛点在引擎循环开头
  * （不推进指令、不合成帧）与 AudioEngine::SetSuspended（静音 + 停 AAudio 回调）。
  */
+/**
+ * 面板按钮「事件牌：屏蔽/恢复」：开关 `objEveDisplay` 的显示抑制
+ * （见 android/app_log.h）。卡住的 PT_ANN/PT_CALL 那类牌子会被脚本每帧重申显示，
+ * 一键屏蔽即可把它们彻底洗掉，不必追状态链。
+ */
+void SetMuteEveDisplay(JNIEnv* /*env*/, jobject /*thiz*/, jboolean on) {
+  rlvm_android::SetLbMuteEveDisplay(on == JNI_TRUE);
+}
+
 void SetEngineSuspended(JNIEnv* /*env*/, jobject /*thiz*/, jboolean suspended) {
   const bool value = suspended != JNI_FALSE;
   g_engine_suspended.store(value);
@@ -2858,6 +2872,7 @@ const JNINativeMethod kNativeMethods[] = {
      reinterpret_cast<void*>(SetDiagnosticsDir)},
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
     {"setEngineSuspended", "(Z)V", reinterpret_cast<void*>(SetEngineSuspended)},
+    {"setMuteEveDisplay", "(Z)V", reinterpret_cast<void*>(SetMuteEveDisplay)},
     {"requestGraphicsDump", "()V", reinterpret_cast<void*>(RequestGraphicsDump)},
     {"setTextContainerPath", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetTextContainerPath)},

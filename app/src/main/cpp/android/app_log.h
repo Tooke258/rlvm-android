@@ -81,6 +81,15 @@ bool LbWipeCopyAllWanted();
 void SetLbNoButtonOverrides(bool on);
 bool LbNoButtonOverridesWanted();
 
+// 事件牌屏蔽（diag: mute_eve_display=1 / 面板按钮「清事件牌」）：
+// 让 `objEveDisplay(..., display=1, ...)` 一律按 display=0 处理。
+//
+// 用途：PT_ANN01/02、PT_CALL00 这类"事件牌/公告牌"卡住时（脚本每帧重新
+// `objEveDisplay(…,1,…)` 重申，所以单纯隐藏一帧没用），一键把它们彻底洗掉。
+// 用户定调（2026-10-07）：与其继续追状态链，不如给一个外部开关强制清理。
+void SetLbMuteEveDisplay(bool on);
+bool LbMuteEveDisplayWanted();
+
 // 「最近一次派发的指令」上下文（scene/line/op 名），给 graphics_object 侧的
 // `InitializeParams()` 取证用：`[params-reset] after=SEENxxxx Lnnn op`。
 void SetLbLastOpContext(int scene, int line, const std::string& op_name);

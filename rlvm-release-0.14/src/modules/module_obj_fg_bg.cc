@@ -58,6 +58,7 @@
 #include "systems/base/graphics_text_object.h"
 #include "systems/base/object_mutator.h"
 #include "systems/base/system.h"
+#include "android/app_log.h"
 #include "utilities/exception.h"
 #include "utilities/graphics.h"
 #include "utilities/string_utilities.h"
@@ -609,6 +610,10 @@ struct objEveDisplay_2 : public RLOp_Void_9<IntConstant_T,
                   int move_mod,
                   int move_len_x,
                   int move_len_y) {
+    // 移植开关（diag: mute_eve_display=1）：把"显示"请求一律按"隐藏"处理。
+    // 用途：PT_ANN/PT_CALL 这类事件牌卡住时（脚本每帧重发 display=1），一键洗掉。
+    // 见 android/app_log.h 的说明。
+    if (rlvm_android::LbMuteEveDisplayWanted() && display != 0) display = 0;
     GraphicsObject& object = GetGraphicsObject(machine, this, obj);
     unsigned int creation_time = machine.system().event().GetTicks();
     object.AddObjectMutator(std::unique_ptr<ObjectMutator>(

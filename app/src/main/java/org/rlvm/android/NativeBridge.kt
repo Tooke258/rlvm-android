@@ -67,6 +67,15 @@ object NativeBridge {
     external fun setEngineSuspended(suspended: Boolean)
 
     /**
+     * 面板「事件牌：屏蔽/恢复」。
+     *
+     * 开关 `objEveDisplay` 的显示抑制：卡住的公告/事件牌（`PT_ANN*`、`PT_CALL*` 那类）
+     * 会被脚本每帧重新显示，单纯隐藏一帧没用——屏蔽之后引擎直接忽略"显示"请求，
+     * 一点即可洗掉，不必追状态链。见 android/app_log.h。
+     */
+    external fun setMuteEveDisplay(on: Boolean)
+
+    /**
      * 指定文本容器（汉化/原版 SEEN 归档）在**游戏目录树内的相对路径**；
      * 空串表示用游戏目录里的 Seen.txt。
      *

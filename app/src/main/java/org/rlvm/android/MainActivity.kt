@@ -49,10 +49,16 @@ class MainActivity : Activity() {
         const val KEY_CONTAINER_ON = "text_container_on"
         // 浮动按键栏（v0.2.1 T7.2）：默认关闭。
         const val KEY_INPUT_PAD_ON = "input_pad_on"
+        // 方向键是**独立开关**（v0.2.6 体验项）：很多人只要右边的动作键，
+        // 不想让左下角的山寨十字键占地方；反过来只想要方向键的也一样。
+        // 默认开（= 按键栏打开时的原有行为）。
+        const val KEY_DPAD_ON = "dpad_on"
         const val KEY_LANDSCAPE = "landscape"
         const val KEY_FIT_MODE = "fit_mode"
         // 长按呼出右键的显式开关（v0.2.4 体验项）：默认沿用旧行为（开）。
         const val KEY_LONG_PRESS_RIGHT = "long_press_right"
+        // 「事件牌：屏蔽/恢复」（2026-10-07）：卡住的公告/事件牌一键洗掉，默认关。
+        const val KEY_MUTE_EVE = "mute_eve_display"
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
         // 指令上限也放宽到实际达不到的值，由「停止引擎」按钮负责收尾。
         const val MAX_INSTRUCTIONS = Int.MAX_VALUE
@@ -97,6 +103,8 @@ class MainActivity : Activity() {
     // 浮动按键栏（v0.2.1 T7.2）：默认隐藏的输入层 + 它的开关按钮。
     private lateinit var inputOverlay: FrameLayout
     private lateinit var inputPadButton: Button
+    private lateinit var dpadButton: Button
+    private lateinit var dpadView: LinearLayout
     // ---- 日志与「影片自测」开关（v0.2.3）----------------------------------
     // 面板里的日志区太小、而且重启就没了；现在日志同时落盘到
     // <外部文件目录>/rlvm-log.txt，启动时读回来，点「日志」是全屏可复制的视图。
@@ -109,6 +117,9 @@ class MainActivity : Activity() {
     // 运行/停止一体化（引擎只有一个，不能并行）；长按呼出右键的显式开关。
     private lateinit var engineToggleButton: Button
     private lateinit var longPressButton: Button
+    // 「事件牌：屏蔽/恢复」按钮（标签随状态变，留引用）。
+    private lateinit var eveDisplayButton: Button
+    private var muteEveDisplay = false
     private var engineRunning = false
     private var longPressRightClick = true
     // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
@@ -188,6 +199,11 @@ class MainActivity : Activity() {
             setOnClickListener { setInputPadEnabled(!inputPadEnabled) }
         }
         updateInputPadButtonLabel()
+        // 方向键独立开关（v0.2.6）：与「按键栏」解耦，可单独关掉/留着动作键。
+        dpadButton = Button(this).apply {
+            setOnClickListener { setDpadEnabled(!dpadEnabled) }
+        }
+        updateDpadButtonLabel()
 
         // 画面区：native 在引擎线程上合成帧，这里只负责显示。
         renderer = RlvmRenderer()
@@ -223,6 +239,13 @@ class MainActivity : Activity() {
         longPressRightClick = prefs.getBoolean(KEY_LONG_PRESS_RIGHT, true)
         stopButton.setOnClickListener { toggleLongPressRightClick() }
         updateLongPressButtonLabel()
+        // ③ 「事件牌：屏蔽/恢复」：卡住的公告牌（PT_ANN*/PT_CALL* 那类）一键洗掉。
+        //    它挡的是 objEveDisplay 的"显示"请求 —— 脚本每帧重申显示，单纯隐藏一帧没用。
+        muteEveDisplay = prefs.getBoolean(KEY_MUTE_EVE, false)
+        eveDisplayButton = Button(this).apply {
+            setOnClickListener { toggleMuteEveDisplay() }
+        }
+        updateEveDisplayButtonLabel()
 
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
@@ -256,7 +279,7 @@ class MainActivity : Activity() {
                 text = "日志"
                 setOnClickListener { showLogOverlay(true) }
             }
-            addView(buttonRow(inputPadButton, logButton))
+            addView(buttonRow(inputPadButton, dpadButton, logButton))
             movTestButton = Button(this@MainActivity).apply {
                 setOnClickListener { toggleMovTest() }
             }
@@ -270,6 +293,8 @@ class MainActivity : Activity() {
                 }
             }
             addView(buttonRow(movTestButton, dumpTreeButton))
+            // 「事件牌」一键洗掉（见 toggleMuteEveDisplay 的注释）。
+            addView(buttonRow(eveDisplayButton))
         }
 
         // ---- 全屏日志层：面板里放不下日志，这里给它整屏 + 复制/清空 --------------
@@ -308,12 +333,16 @@ class MainActivity : Activity() {
         //   · 击打       → 鼠标左键按下/抬起；
         //   · 右键       → 鼠标右键按下/抬起（与长按等价，显式按钮更方便）。
         // 整层默认 GONE；除按钮本身外不拦截触摸（未命中按钮时事件照旧落到游戏画面）。
+        // 动作键保持原尺寸；**方向键单独放大**（真机反馈：54dp 的手指落点太窄，
+        // 按方向键经常滑出去）。按钮本身是圆形背景，放大只影响可点区域。
         val padSize = dp(54)
+        val dpadSize = dp(78)
         fun padButton(label: String,
                       onPress: () -> Unit,
-                      onRelease: () -> Unit): TextView = TextView(this@MainActivity).apply {
+                      onRelease: () -> Unit,
+                      textPx: Float = 17f): TextView = TextView(this@MainActivity).apply {
             text = label
-            textSize = 17f
+            textSize = textPx
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
             background = GradientDrawable().apply {
@@ -342,15 +371,15 @@ class MainActivity : Activity() {
             }
         }
 
-        fun padRow(vararg cells: android.view.View?): LinearLayout {
+        fun padRow(cellSize: Int, vararg cells: android.view.View?): LinearLayout {
             val row = LinearLayout(this@MainActivity)
             row.orientation = LinearLayout.HORIZONTAL
             for (cell in cells) {
                 if (cell == null) {
                     row.addView(android.view.View(this@MainActivity),
-                        LinearLayout.LayoutParams(padSize, padSize))
+                        LinearLayout.LayoutParams(cellSize, cellSize))
                 } else {
-                    row.addView(cell, LinearLayout.LayoutParams(padSize, padSize))
+                    row.addView(cell, LinearLayout.LayoutParams(cellSize, cellSize))
                 }
             }
             return row
@@ -363,13 +392,19 @@ class MainActivity : Activity() {
             // 「按方向键像按了鼠标左键」）。isClickable = true 让 ViewGroup 自己
             // 消费没有被子按钮处理的触摸，同时不影响屏幕其它区域的点击。
             isClickable = true
-            addView(padRow(null, padButton("\u2191", { startPadMove(RLKEY_UP, 0f, -8f) }, { stopPadMove() }), null))
-            addView(padRow(
-                padButton("\u2190", { startPadMove(RLKEY_LEFT, -8f, 0f) }, { stopPadMove() }),
+            addView(padRow(dpadSize,
                 null,
-                padButton("\u2192", { startPadMove(RLKEY_RIGHT, 8f, 0f) }, { stopPadMove() })
+                padButton("\u2191", { startPadMove(RLKEY_UP, 0f, -8f) }, { stopPadMove() }, 30f),
+                null))
+            addView(padRow(dpadSize,
+                padButton("\u2190", { startPadMove(RLKEY_LEFT, -8f, 0f) }, { stopPadMove() }, 30f),
+                null,
+                padButton("\u2192", { startPadMove(RLKEY_RIGHT, 8f, 0f) }, { stopPadMove() }, 30f)
             ))
-            addView(padRow(null, padButton("\u2193", { startPadMove(RLKEY_DOWN, 0f, 8f) }, { stopPadMove() }), null))
+            addView(padRow(dpadSize,
+                null,
+                padButton("\u2193", { startPadMove(RLKEY_DOWN, 0f, 8f) }, { stopPadMove() }, 30f),
+                null))
         }
 
         val actionPad = LinearLayout(this@MainActivity).apply {
@@ -397,6 +432,9 @@ class MainActivity : Activity() {
                 { sendKey(RLKEY_LCTRL, false) }),
             LinearLayout.LayoutParams(padSize, padSize))
 
+        dpadView = dpad
+        dpad.visibility =
+            if (dpadEnabled) android.view.View.VISIBLE else android.view.View.GONE
         inputOverlay = FrameLayout(this@MainActivity).apply {
             addView(dpad, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -410,9 +448,10 @@ class MainActivity : Activity() {
                 rightMargin = dp(12)
                 bottomMargin = dp(12)
             })
-            visibility = if (inputPadEnabled) android.view.View.VISIBLE else android.view.View.GONE
         }
         updateInputPadButtonLabel()
+        updateDpadButtonLabel()
+        updateInputOverlayVisibility()
 
         // 悬浮球：可拖动（免得挡住游戏 UI），点击则展开/收起侧栏。
         // 拖动有两条规则：
@@ -545,16 +584,56 @@ class MainActivity : Activity() {
     private fun setInputPadEnabled(enabled: Boolean) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putBoolean(KEY_INPUT_PAD_ON, enabled).apply()
-        if (::inputOverlay.isInitialized) {
-            inputOverlay.visibility =
-                if (enabled) android.view.View.VISIBLE else android.view.View.GONE
-        }
+        updateInputOverlayVisibility()
         updateInputPadButtonLabel()
         if (!enabled) stopPadMove()
         log(
             if (enabled) "按键栏：开（方向键 = 上下左右 + 光标微推 / 加速 / 击打 / 右键 / Ctrl）"
             else "按键栏：关"
         )
+    }
+
+    /**
+     * 方向键的独立开关（v0.2.6）。
+     *
+     * 与「按键栏」解耦：关掉方向键之后右侧的动作键照旧可用（反之亦然）。
+     * 但**打开方向键时会顺带打开按键栏** —— 否则浮层整体 GONE，按了开关屏幕上
+     * 什么也不会出现，容易被当成"开关坏了"。
+     */
+    private fun setDpadEnabled(enabled: Boolean) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_DPAD_ON, enabled).apply()
+        if (enabled && !inputPadEnabled) setInputPadEnabled(true)
+        updateDpadButtonLabel()
+        updateInputOverlayVisibility()
+        if (!enabled) stopPadMove()
+        log(
+            if (enabled) "方向键：开（左下角十字键，按住持续移动）"
+            else "方向键：关（右侧动作键不受影响）"
+        )
+    }
+
+    /** 按键栏总开关与方向键开关叠加决定浮层/十字键的可见性。 */
+    private fun updateInputOverlayVisibility() {
+        if (::inputOverlay.isInitialized) {
+            inputOverlay.visibility =
+                if (inputPadEnabled) android.view.View.VISIBLE else android.view.View.GONE
+        }
+        if (::dpadView.isInitialized) {
+            dpadView.visibility =
+                if (dpadEnabled) android.view.View.VISIBLE else android.view.View.GONE
+        }
+    }
+
+    private val dpadEnabled: Boolean
+        get() = getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getBoolean(KEY_DPAD_ON, true)
+
+    private fun updateDpadButtonLabel() {
+        if (::dpadButton.isInitialized) {
+            dpadButton.text = getString(
+                if (dpadEnabled) R.string.toggle_dpad_on else R.string.toggle_dpad_off)
+        }
     }
 
     /** 当前画面尺寸（宽, 高），来自 native 已呈现的帧。 */
@@ -837,6 +916,8 @@ class MainActivity : Activity() {
         log("--- SAF 运行 ---")
         // 每次开引擎都同步一次文本容器设置：开关可能刚被切过。
         applyTextContainer()
+        // 同理：把「事件牌：屏蔽/恢复」的当前状态同步给引擎（它是进程内的开关）。
+        runCatching { NativeBridge.setMuteEveDisplay(muteEveDisplay) }
         engineRunning = true
         updateEngineButtonLabel()
         background {
@@ -1046,6 +1127,39 @@ class MainActivity : Activity() {
             if (longPressRightClick) "长按=右键：开（短按仍是左键）"
             else "长按=右键：关（长按也只发左键；右键可用按键栏的「右键」按钮）"
         )
+    }
+
+    /**
+     * 「事件牌：屏蔽/恢复」开关。
+     *
+     * 做什么：让引擎忽略 `objEveDisplay(…, display=1, …)` —— 也就是"事件牌/公告牌"的显示请求。
+     *
+     * 为什么要它：`PT_ANN01/02`、`PT_CALL00` 这类牌子由 `objEveDisplay` 驱动的
+     * `DisplayMutator` 控制显示/隐藏；一旦触发它的那条脚本条件卡住（例如某个练习模式
+     * `intD[72]=15..19 && intD[73]==0` 一直成立），脚本会**每帧重新显示**一次，
+     * 于是"隐藏一帧"根本不管用 —— 只有从引擎侧屏蔽掉"显示"请求才能一键洗掉。
+     * 见 app/src/main/cpp/android/app_log.h 的 SetLbMuteEveDisplay()。
+     *
+     * 代价：屏蔽期间不会再有新的公告/事件牌出现（恢复即正常）。
+     */
+    private fun toggleMuteEveDisplay() {
+        muteEveDisplay = !muteEveDisplay
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_MUTE_EVE, muteEveDisplay).apply()
+        runCatching { NativeBridge.setMuteEveDisplay(muteEveDisplay) }
+            .onFailure { log("事件牌屏蔽写入失败：${it.message}") }
+        updateEveDisplayButtonLabel()
+        log(
+            if (muteEveDisplay) "事件牌：屏蔽（卡住的公告/事件牌会被洗掉，期间不再出现新的）"
+            else "事件牌：恢复显示"
+        )
+    }
+
+    private fun updateEveDisplayButtonLabel() {
+        if (::eveDisplayButton.isInitialized) {
+            eveDisplayButton.text =
+                if (muteEveDisplay) "事件牌：屏蔽" else "事件牌：显示"
+        }
     }
 
     private fun log(text: String) {
