@@ -68,10 +68,16 @@ bool LbGalleryProbeWanted();
 void SetLbWipeCopyAll(bool on);
 bool LbWipeCopyAllWanted();
 
-// 按钮覆盖抑制（diag: no_button_overrides=1，默认关）：让
-// `ButtonObjectSelectLongOperation::SetButtonOverride()` 直接不生效 ——
-// 于是按钮对象渲染时用脚本写的 `patt_no_`，而不是 `GAMEEXE.INI` 的 `BTNOBJ.ACTION` 表。
-// 用途：验证「UI 全部照默认图像渲染」是不是这张表/这条覆盖链造成的（PC 汉化版缺键/错值）。
+// 按钮图案覆盖：**默认关闭**（= 不应用 `GAMEEXE.INI` 的 `BTNOBJ.ACTION` 覆盖）。
+//
+// 背景：`ButtonObjectSelectLongOperation` 构造时会给每个"登记为按钮"的对象打 NORMAL 覆盖，
+// 而该表里**所有 `.NORMAL` 都是 0 号图**（HIT=2 / PUSH=3）。于是凡是被登记成按钮、
+// 又被脚本用 `objPattNo` 参数化的对象（相册页码 `O_CGM_NUM00` 就是），图案号会被
+// **静默改写成 0**，画面表现为"先正确一瞬、随后全部退回默认"。
+//
+// 用户定调（2026-10-07）：这是观感细节，不值得为它改引擎表驱动的按钮态机制，
+// 因此**默认不应用覆盖**（对象按脚本写的图案渲染）。代价：真按钮失去
+// 悬停/按下高亮与那个 1px 的按下位移。写 `no_button_overrides=0` 可恢复引擎行为做 A/B。
 void SetLbNoButtonOverrides(bool on);
 bool LbNoButtonOverridesWanted();
 

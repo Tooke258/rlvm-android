@@ -203,7 +203,8 @@ void SetLbWipeCopyAll(bool on) { g_lb_wipe_copy_all = on; }
 bool LbWipeCopyAllWanted() { return g_lb_wipe_copy_all; }
 
 namespace {
-bool g_lb_no_button_overrides = false;
+// **默认开**：不应用 BTNOBJ.ACTION 的按钮态图案覆盖（见 app_log.h 的说明）。
+bool g_lb_no_button_overrides = true;
 }  // namespace
 
 void SetLbNoButtonOverrides(bool on) { g_lb_no_button_overrides = on; }

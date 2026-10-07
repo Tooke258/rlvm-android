@@ -196,3 +196,40 @@ graphics_->Refresh(nullptr);                   // ← 再合成
 
 取证配置：`tools/rlvm-diag.gallery-patno.txt`（`patno_trace=1`）。
 复现：启动 → 进相册 → 停在页码不对的那一屏约 5 秒 → 退出 → 拉 `rlvm-log.txt`。
+
+## 8. 2026-10-07 深夜（收尾）· 真因：**按钮态图案覆盖吃掉了脚本写的图案号**
+
+### 8.1 三条"会吃掉图案号"的通路（完整清单）
+
+| # | 通路 | 机制 | 是否已修 |
+| --- | --- | --- | --- |
+| 1 | **越界退回 0 号** | `Surface::GetPattern(patt)` 对越界下标静默返回 `region_table_[0]` | 非缺陷（与上游一致），但会把"图案号算错"表现成一模一样的默认图 |
+| 2 | **参数复位** | `InitializeParams()`（`objInit/objBgInit/objChildFgInit/ClearAndPromoteObjects` 全汇于此）把 `patt_no_` 归 0 | 真机实验**排除**为"归位"的载体（全入口抑制后照样归位） |
+| 3 | **按钮态覆盖** ★ | `ButtonObjectSelectLongOperation` 构造时给每个"登记为按钮"的对象打 `NORMAL` 覆盖；`GraphicsObject::GetPattNo()` **有覆盖时优先返回覆盖值**；覆盖值来自 `GAMEEXE.INI` 的 `BTNOBJ.ACTION[action][NORMAL/HIT/PUSH]`，而该表**所有 `.NORMAL` 都是 0** | ✅ 本轮定位并闭环 |
+
+### 8.2 现场链条（相册页码 `O_CGM_NUM00`）
+
+```
+脚本 SEEN9515 L304  objPattNo(209, i, intL[20]+1)   → impl_->patt_no_ = 7   ✔ 写对
+longop push 31ButtonObjectSelectLongOperation @L324 → SetButtonOverride(obj,"NORMAL")
+                                                      → BTNOBJ.ACTION[*].NORMAL = 0
+GraphicsObject::GetPattNo() 有覆盖 ⇒ 返回 0          ← 7 被静默吃掉
+渲染 GetPattern(0) → 0 号图（"普通态"）
+```
+
+真机 A/B：`no_button_overrides=1`（让 `SetButtonOverride()` 直接返回）后**页码恢复正常**。
+配套静态核对：`GAMEEXE.INI` 与 `lbex_sc.ini` 的 `BTNOBJ.ACTION` 表**都存在且一致**，
+`000/001/002/010/…` 的 `.NORMAL` 一律为 0（`.HIT`=2、`.PUSH`=3）。
+
+### 8.3 处置（用户定调，2026-10-07）
+
+用户判断这属于**观感细节**："这个函数只是美观问题，无伤大雅就默认这样好了"。
+因此**默认不再应用按钮态覆盖**（对象按脚本写的图案渲染），代价是：
+真按钮失去**悬停/按下高亮**与 1px 的按下位移。
+
+* 代码：`app_log.cpp` 的 `g_lb_no_button_overrides = true`（`native-bridge.cpp` 同默认）；
+* 想 A/B 回引擎行为：diag 写 `no_button_overrides=0`；
+* 设备 diag 已换回常规配置 `tools/rlvm-diag.default.txt`（只留 `lb_minigame=1`）；
+* **未查的最后一步**（留档，非阻塞）：为什么这些页码对象会被登记成按钮
+  （`objBtn*`/`SetButtonData`/group 继承），以及真引擎是否因 `key.Exists()==false`
+  而**不覆盖**。这是纯静态问题，随时可回来补。

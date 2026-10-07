@@ -441,8 +441,9 @@ struct DiagOptions {
   bool gallery_probe = false;
   // wipe_copy_all=1：复位抑制试验（见 android/app_log.h）。默认关。
   bool wipe_copy_all = false;
-  // no_button_overrides=1：按钮覆盖抑制试验（见 android/app_log.h）。默认关。
-  bool no_button_overrides = false;
+  // 按钮态图案覆盖：**默认不应用**（见 android/app_log.h 的用户定调）。
+  // 想恢复引擎的 BTNOBJ.ACTION 行为，写 no_button_overrides=0。
+  bool no_button_overrides = true;
   // sys1005=legacy|fixed：Sys 1005（两点距离，LBEX 只在小游戏里用 1 次）的
   // 实现选择。默认 fixed（正确语义）；legacy = 退回上游 RLVM 的占位公式
   // `(v1-v3)/(v2-v4)`，用于真机 A/B 证明「球的显隐就是被它决定」。

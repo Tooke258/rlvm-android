@@ -1,0 +1,13 @@
+# 常规配置：只保留"跑小游戏"所必需的那一项。
+#
+# 历史：`lb_minigame=1` 会关闭上游那个把 LB 棒球整段绕过去的 hack（diskmark="LB_EX.ENV"），
+# 让脚本真正进入 SEEN7030。
+#
+# 已转正为默认、不再需要写在这里的：
+#   · 方向键 / 挥棒 → intD（v0.2.6 固化）
+#   · 按钮态图案覆盖：**默认不应用**（BTNOBJ.ACTION；见 android/app_log.h 的用户定调；
+#     想 A/B 回引擎行为写 no_button_overrides=0）
+#
+# 取证开关（patno_trace / gallery_probe / longop_log / wipe_copy_all / op_trace…）
+# 默认全关，需要时再临时覆盖本文件。
+lb_minigame=1
