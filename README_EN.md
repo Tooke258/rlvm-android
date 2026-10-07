@@ -5,6 +5,30 @@ of the RealLive interpreter, packaged as a modern Android application.
 
 This is the English translation of [README.md](README.md).
 
+## Version / releases
+
+**Latest: `v0.3.0`** (`versionCode 7`) —
+<https://github.com/Tooke258/rlvm-android/releases>
+
+Compared to v0.2.4 this release ships both the backlog from the save/gallery/scene-select
+line and a set of **real fixes for the Little Busters! EX baseball minigame**:
+
+- **Hit direction is no longer systematically mirrored**: the x87 pop-arith group (`DE`)
+  wrote every `FADDP/FMULP/FSUBRP/FSUBP/FDIVRP/FDIVP st(i),st0` destination into `st(1)`;
+  for `i≠1` that is "right value, wrong slot". Now bit-identical to the original
+  `PT00.dll` under the differential harness.
+- **Outfield throw-back no longer lands behind the batter**: the DLL's CRT static
+  constructors were never run (a real host runs them via `LoadLibrary`).
+- **The UI no longer renders correctly for one instant and then reverts to the default
+  image**: LBEX stores its gallery page table at `intA[7200+n]`, while our memory bank
+  only had 2000 entries *and* an access limit hard-coded to 2000.
+- **Menus no longer leave residue**; icons are no longer overwritten by the engine's
+  button-state pattern table; **gallery scene replay no longer hangs** (root cause was
+  our own audio layer) and **scene-select choices work**.
+
+Full notes: [`docs/RELEASE-NOTES-v0.3.0.md`](docs/RELEASE-NOTES-v0.3.0.md)
+(Chinese).
+
 ## What this is, and what it is not
 
 - **It is** an Android port layer for RLVM. The upstream engine (`libreallive`,
@@ -46,6 +70,24 @@ as Ogg Vorbis voice patches that follow the
 When reporting a problem, please include the `rlvm-stdout` / `rlvm-stderr` log
 lines: upstream sends unimplemented opcodes and swallowed instruction exceptions
 to those streams, and this port wires them to logcat.
+
+### Verified on device (Android, Redmi K40 Gaming / Android 12)
+
+| Title | Status |
+| --- | --- |
+| Kud Wafter (Japanese) | Verified: title → text, voice, BGM, save/load, Config |
+| Little Busters! EX (**Chinese-patched**) | Main flow usable: dialogue, save/load, gallery (incl. scene replay), scene-select choices; the minigame can be entered and played (hit direction / throw-back landing fixed) |
+
+### Known issues
+
+* Minigame **entity rendering** is still incomplete (cats / ball / batters sometimes
+  missing or misplaced), and the practice-select menu (`PT_PR_*`) has gaps.
+* Event plates (`PT_ANN*`, `PT_CALL*`) can get stuck on screen in some states; the panel
+  has an "Event plates: mute/restore" switch to clear them manually.
+* `logic_hz` and `lb_minigame` still live in `rlvm-diag.txt` (see *Diagnostics*):
+  **deleting that file** drops the minigame logic rate from the calibrated 37/s back to
+  65.7/s.
+* Upstream opcodes `Sys 457/2402/2502/1520/1521/366/801` are still unimplemented.
 
 ## License (important)
 
@@ -185,3 +227,18 @@ controls the observation parameters (per-instruction tracing, graphics-stack
 dump, run duration, audio statistics, ...). Log tags: `rlvm-native`,
 `rlvm-audio`, `rlvm-gl`, `rlvm-font`, `rlvm-graphics`, plus upstream's own
 diagnostic output on `rlvm-stdout` / `rlvm-stderr`.
+
+The **normal configuration** is
+[`tools/rlvm-diag.default.txt`](tools/rlvm-diag.default.txt):
+
+```ini
+lb_minigame=1     # disable upstream's "skip the whole LB baseball minigame" hack
+logic_hz=37       # logic-frame pacing, calibrated against PC's measured 37.5 fps
+                  # (throttles the script only; rendering is untouched)
+```
+
+**Both still live in the diag layer** — deleting/clearing `rlvm-diag.txt` silently
+reverts to the defaults (a faster logic rate, and the LB baseball minigame gets skipped).
+Keep the file around for stable long-term behaviour. All other instrumentation switches
+(`patno_trace`, `gallery_probe`, `wipe_log`, `op_trace`, ...) default to off; enable
+them ad hoc.

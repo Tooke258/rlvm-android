@@ -3,6 +3,23 @@
 把 [RLVM](http://rlvm.org/)（RealLive 虚拟机的开源重实现）封装成一个现代 Android
 应用，让 RealLive 引擎的游戏能在 Android 上运行。
 
+## 版本 / 下载
+
+**最新：`v0.3.0`**（`versionCode 7`）——<https://github.com/Tooke258/rlvm-android/releases>
+
+相对 v0.2.4，这一版把积压的**存档 / 相册 / 选择枝**与 **LBEX 棒球小游戏的一批真修复**
+一起放出来：
+
+- **击球方向不再系统性反向**：执行器 x87 出栈式算术（`DE` 组）的目的槽写死 `st(1)`，
+  `i≠1` 时"值对、槽错"；修好后与原版 `PT00.dll` 逐位一致；
+- **外野回传落点不再偏到身后**：补跑 DLL 的 CRT 静态构造（真实宿主 `LoadLibrary` 会跑）；
+- **整片 UI 不再"先正确一瞬、随后归位默认"**：LBEX 的相册页码表落在 `intA[7200+n]`，
+  而我们的存储区只有 2000 项、且有一处写死的 2000 访问上限；
+- **菜单关掉后不再残留**；图标不再被按钮态覆盖成同一张 0 号图；
+- **相册 Scene 回想不再卡死**（根因在自家音频层：淡出只降音量不停通道）、**剧情选择枝修复**。
+
+完整说明见 [`docs/RELEASE-NOTES-v0.3.0.md`](docs/RELEASE-NOTES-v0.3.0.md)。
+
 ## 这是什么 / 不是什么
 
 - **是**：RLVM 的 Android 移植层。上游引擎（`libreallive` / `machine` / `modules` /
@@ -38,6 +55,23 @@ Kud Wafter**（标题→正文、语音、BGM、存档、Config 均正常）。
 
 遇到问题请把日志标签 `rlvm-stdout` / `rlvm-stderr` 的内容一并附上（上游把未实现的
 操作码与指令异常都打到这两个流，本移植已把它们接到 logcat）。
+
+### 本移植真机验证（Android，Redmi K40 游戏版 / Android 12）
+
+| 作品 | 状态 |
+| --- | --- |
+| Kud Wafter（日文原版） | 已验证：标题 → 正文、语音、BGM、存档、Config |
+| Little Busters! EX（**汉化版**） | 主要流程可用：对白、存档/读档、相册（含 Scene 回想）、剧情选择枝；小游戏可进入并推进（击球方向 / 回传落点已修） |
+
+### 已知问题
+
+* 小游戏**实体渲染**仍不完整（猫 / 球 / 打者有时不出或位置不对），练习选择菜单
+  `PT_PR_*` 有细节缺失；
+* 事件牌 / 公告牌（`PT_ANN*`、`PT_CALL*`）在特定状态下会卡在屏幕上 —— 面板有
+  「事件牌：屏蔽/恢复」开关可手动清掉；
+* `logic_hz` 与 `lb_minigame` 两项仍在 `rlvm-diag.txt`（见「诊断」）：**删掉该文件**
+  会让小游戏逻辑帧率从标定值 37/s 回到默认 65.7/s；
+* 上游 `Sys 457/2402/2502/1520/1521/366/801` 等操作码仍未实现。
 
 ## 许可证（重要）
 
@@ -157,3 +191,15 @@ keyPassword=***
 push 到应用外部文件目录即可调整观察参数（逐条指令追踪、图形栈转储、运行时长、
 音频统计等）。日志标签：`rlvm-native` / `rlvm-audio` / `rlvm-gl` / `rlvm-font` /
 `rlvm-graphics`，以及上游诊断输出 `rlvm-stdout` / `rlvm-stderr`。
+
+**常规配置**是 [`tools/rlvm-diag.default.txt`](tools/rlvm-diag.default.txt)：
+
+```ini
+lb_minigame=1     # 关掉上游把 LB 棒球整段绕过去的 hack
+logic_hz=37       # 逻辑帧节拍，按 PC 实测 37.5 逻辑帧/秒标定（只节流脚本，不压渲染）
+```
+
+**这两项仍在 diag 层** —— 删掉/清空 `rlvm-diag.txt` 会静默回退到默认行为
+（小游戏逻辑帧率变快、且 LB 棒球会被跳过）。装包后若要长期稳定运行，请保留该文件。
+其余取证开关（`patno_trace` / `gallery_probe` / `wipe_log` / `op_trace` …）默认全关，
+需要时再临时覆盖。
