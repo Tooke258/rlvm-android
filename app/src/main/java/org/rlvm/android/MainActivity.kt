@@ -122,8 +122,6 @@ class MainActivity : Activity() {
     // 「事件牌：屏蔽/恢复」按钮（标签随状态变，留引用）。
     private lateinit var eveDisplayButton: Button
     private var muteEveDisplay = false
-    private val eveMuteHandler = Handler(Looper.getMainLooper())
-    private var eveMuteOff: Runnable? = null
     private var engineRunning = false
     private var longPressRightClick = true
     // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
@@ -243,12 +241,13 @@ class MainActivity : Activity() {
         longPressRightClick = prefs.getBoolean(KEY_LONG_PRESS_RIGHT, true)
         stopButton.setOnClickListener { toggleLongPressRightClick() }
         updateLongPressButtonLabel()
-        // ③ 「清事件牌」：卡住的公告牌（PT_ANN*/PT_CALL* 那类）一键洗掉。
+        // ③ 「事件牌：屏蔽/恢复」：卡住的公告牌（PT_ANN*/PT_CALL* 那类）一键洗掉。
         //    它挡的是 objEveDisplay 的"显示"请求 —— 脚本每帧重申显示，单纯隐藏一帧没用。
-        //    **一次性脉冲**：只屏蔽 1 秒就自动恢复；常开会把菜单元素一起杀掉（菜单也走同一族）。
-        muteEveDisplay = false
+        //    （先做过 1 秒自动恢复的脉冲版，实测"失效"——1 秒窗口对脚本的重发节奏太短，
+        //     已按用户意见回滚成常开开关；代价是屏蔽期间菜单元素也会被一起压掉。）
+        muteEveDisplay = prefs.getBoolean(KEY_MUTE_EVE, false)
         eveDisplayButton = Button(this).apply {
-            setOnClickListener { pulseMuteEveDisplay() }
+            setOnClickListener { toggleMuteEveDisplay() }
         }
         updateEveDisplayButtonLabel()
 
@@ -1144,35 +1143,37 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 「清事件牌」——**一次性脉冲**：屏蔽 `objEveDisplay` 的显示请求 1 秒，然后自动恢复。
+     * 「事件牌：屏蔽/恢复」开关。
      *
-     * 为什么要脉冲而不是常开：`PT_ANN01/02`、`PT_CALL00` 这类牌子由 `objEveDisplay` 驱动的
-     * `DisplayMutator` 控制；一旦触发它的脚本条件卡住（例如练习模式 `intD[72]=15..19 &&
-     * intD[73]==0` 一直成立），脚本会**每帧重新显示**一次，所以"隐藏一帧"没用 ——
-     * 只有从引擎侧屏蔽"显示"请求才洗得掉。但**菜单元素也走同一族**，常开会把菜单一起杀掉；
-     * 因此做成 1 秒脉冲：足够洗掉卡住的那一两帧重发，又不会长期压制 UI。
+     * 做什么：让引擎忽略 `objEveDisplay(…, display=1, …)` —— 也就是"事件牌/公告牌"的显示请求。
      *
+     * 为什么要它：`PT_ANN01/02`、`PT_CALL00` 这类牌子由 `objEveDisplay` 驱动的
+     * `DisplayMutator` 控制显示/隐藏；一旦触发它的脚本条件卡住（例如练习模式
+     * `intD[72]=15..19 && intD[73]==0` 一直成立），脚本会**每帧重新显示**一次，
+     * 于是"隐藏一帧"不管用 —— 只有从引擎侧屏蔽"显示"请求才洗得掉。
      * 见 app/src/main/cpp/android/app_log.h 的 SetLbMuteEveDisplay()。
+     *
+     * 形态：**常开开关**（持久化）。试过"1 秒自动恢复"的脉冲版，实测对脚本的重发节奏
+     * 来说窗口太短、清不掉，按用户意见回滚成开关。
+     * 代价：屏蔽期间不会再有新的公告/事件牌出现，菜单元素也会被一起压掉 —— 用完记得关。
      */
-    private fun pulseMuteEveDisplay() {
-        eveMuteOff?.let { eveMuteHandler.removeCallbacks(it) }
-        muteEveDisplay = true
-        runCatching { NativeBridge.setMuteEveDisplay(true) }
+    private fun toggleMuteEveDisplay() {
+        muteEveDisplay = !muteEveDisplay
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_MUTE_EVE, muteEveDisplay).apply()
+        runCatching { NativeBridge.setMuteEveDisplay(muteEveDisplay) }
             .onFailure { log("事件牌屏蔽写入失败：${it.message}") }
         updateEveDisplayButtonLabel()
-        val off = Runnable {
-            muteEveDisplay = false
-            runCatching { NativeBridge.setMuteEveDisplay(false) }
-            updateEveDisplayButtonLabel()
-        }
-        eveMuteOff = off
-        eveMuteHandler.postDelayed(off, 1000)
-        log("事件牌：清一次（屏蔽 1 秒后自动恢复）")
+        log(
+            if (muteEveDisplay) "事件牌：屏蔽（卡住的公告/事件牌会被洗掉，期间不再出现新的，菜单也会被压掉）"
+            else "事件牌：恢复显示"
+        )
     }
 
     private fun updateEveDisplayButtonLabel() {
         if (::eveDisplayButton.isInitialized) {
-            eveDisplayButton.text = if (muteEveDisplay) "清理中…" else "清事件牌"
+            eveDisplayButton.text =
+                if (muteEveDisplay) "事件牌：屏蔽" else "事件牌：显示"
         }
     }
 

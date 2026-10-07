@@ -12,4 +12,6 @@
     <string name="toggle_text_container_off">容器：关</string>
     <string name="toggle_input_pad_on">按键栏：开</string>
     <string name="toggle_input_pad_off">按键栏：关</string>
+    <string name="toggle_dpad_on">方向键：开</string>
+    <string name="toggle_dpad_off">方向键：关</string>
 </resources>
