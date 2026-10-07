@@ -54,6 +54,13 @@ bool LbCaseTraceWanted();
 void SetLbPatNoTrace(bool on);
 bool LbPatNoTraceWanted();
 
+// 相册页码取证（diag: gallery_probe=1，默认关）：`SEEN9515` 的
+// L278（取页码表）/ L301（守卫）/ L304·L307·L310（写 objPattNo）几行，
+// 每次派发打一行 `[gallery] SEEN9515 Lnnn intL[0]=.. intL[11]=.. intL[20]=.. intL[21]=.. intA[7200+intL[11]]=..`。
+// 用途：页码图案号变 0 时，判断是"页码源本身是 0/-1"还是"守卫没过、屏幕上是残留"。
+void SetLbGalleryProbe(bool on);
+bool LbGalleryProbeWanted();
+
 // 「最近一次派发的指令」上下文（scene/line/op 名），给 graphics_object 侧的
 // `InitializeParams()` 取证用：`[params-reset] after=SEENxxxx Lnnn op`。
 void SetLbLastOpContext(int scene, int line, const std::string& op_name);

@@ -187,6 +187,14 @@ void SetLbPatNoTrace(bool on) { g_lb_patno_trace = on; }
 bool LbPatNoTraceWanted() { return g_lb_patno_trace; }
 
 namespace {
+bool g_lb_gallery_probe = false;
+}  // namespace
+
+void SetLbGalleryProbe(bool on) { g_lb_gallery_probe = on; }
+
+bool LbGalleryProbeWanted() { return g_lb_gallery_probe; }
+
+namespace {
 int g_lb_last_scene = -1;
 int g_lb_last_line = -1;
 std::string g_lb_last_op;

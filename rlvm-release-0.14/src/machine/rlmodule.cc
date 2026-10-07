@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "libreallive/bytecode.h"
+#include "libreallive/intmemref.h"
 #include "machine/general_operations.h"
 #include "machine/rloperation.h"
 #include "utilities/exception.h"
@@ -158,6 +159,26 @@ void RLModule::DispatchFunction(RLMachine& machine,
         rlvm_android::SetLbLastOpContext(machine.SceneNumber(),
                                          machine.line_number(),
                                          it->second->name());
+      }
+      // 相册页码取证（diag: gallery_probe=1）：见 android/app_log.h 的说明。
+      // 只盯 SEEN9515 的 5 行——取页码表(L278)、守卫(L301)、三条写入(L304/307/310)。
+      if (rlvm_android::LbGalleryProbeWanted() &&
+          machine.SceneNumber() == 9515) {
+        const int line = machine.line_number();
+        if (line == 278 || line == 301 || line == 304 || line == 307 ||
+            line == 310) {
+          using libreallive::IntMemRef;
+          const int l11 = machine.GetIntValue(IntMemRef(libreallive::INTL_LOCATION, 11));
+          std::ostringstream g;
+          g << "[gallery] SEEN9515 L" << line
+            << " intL[0]=" << machine.GetIntValue(IntMemRef(libreallive::INTL_LOCATION, 0))
+            << " intL[11]=" << l11
+            << " intL[20]=" << machine.GetIntValue(IntMemRef(libreallive::INTL_LOCATION, 20))
+            << " intL[21]=" << machine.GetIntValue(IntMemRef(libreallive::INTL_LOCATION, 21))
+            << " intA[7200+intL[11]]="
+            << machine.GetIntValue(IntMemRef(libreallive::INTA_LOCATION, 7200 + l11));
+          rlvm_android::AppendAppLogLine(g.str());
+        }
       }
       it->second->DispatchFunction(machine, f);
     }

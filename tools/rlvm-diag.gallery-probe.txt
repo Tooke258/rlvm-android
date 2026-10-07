@@ -1,0 +1,14 @@
+# 相册页码取证（第二轮）：直接看页码源本身。
+#
+# 上一轮已确认：SEEN9515 L304/L307 的 objPattNo 写入值正确（set=7/6/3/4/5…），
+# 而帧尾 L315 `bgrLoadHaikei("?",0)` 会 ClearAndPromoteObjects（重置对象），
+# 之后重建时图案号落回 0。现在要区分：
+#   (a) 页码源本身变成 0/-1（intL[20]/intL[21] 或它的来源 intA[7200+intL[11]]）
+#   (b) 守卫 if (intL[20]>=1 && intL[21]>=2) 没过，屏幕上是缓存/残留
+#
+# gallery_probe=1 会在 SEEN9515 的 L278 / L301 / L304 / L307 / L310 各打一行：
+#   [gallery] SEEN9515 Lnnn intL[0]=.. intL[11]=.. intL[20]=.. intL[21]=.. intA[7200+intL[11]]=..
+# patno_trace=1 保留，用来同时看 [patno] 写入与 [params-reset] 现场。
+lb_minigame=1
+gallery_probe=1
+patno_trace=1
