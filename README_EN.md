@@ -10,8 +10,15 @@ This is the English translation of [README.md](README.md).
 **Latest: `v0.3.0`** (`versionCode 7`) —
 <https://github.com/Tooke258/rlvm-android/releases>
 
-Compared to v0.2.4 this release ships both the backlog from the save/gallery/scene-select
-line and a set of **real fixes for the Little Busters! EX baseball minigame**:
+Compared to v0.2.4 this release ships two things: the backlog from the save/gallery/
+scene-select line, and the **first proper support for the baseball minigame**.
+
+> ⚠️ **Note: v0.2.4 had no minigame at all.** Upstream RLVM carries an
+> `LB_SkipBaseball` hack that skips Little Busters!' entire baseball episode — the script
+> never even enters the minigame scene. v0.3.0 disables that hack and lets the engine
+> **execute the original `PT00.dll`** through a compatibility layer, so the minigame
+> actually runs for the first time. The bullets below are the real defects found and
+> fixed *while wiring it up*, not patches to something that already worked.
 
 - **Hit direction is no longer systematically mirrored**: the x87 pop-arith group (`DE`)
   wrote every `FADDP/FMULP/FSUBRP/FSUBP/FDIVRP/FDIVP st(i),st0` destination into `st(1)`;
