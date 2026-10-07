@@ -439,6 +439,8 @@ struct DiagOptions {
   bool patno_trace = false;
   // gallery_probe=1：相册页码取证（SEEN9515 的 L278/L301/L304/L307/L310 打 intL）。
   bool gallery_probe = false;
+  // wipe_copy_all=1：复位抑制试验（见 android/app_log.h）。默认关。
+  bool wipe_copy_all = false;
   // sys1005=legacy|fixed：Sys 1005（两点距离，LBEX 只在小游戏里用 1 次）的
   // 实现选择。默认 fixed（正确语义）；legacy = 退回上游 RLVM 的占位公式
   // `(v1-v3)/(v2-v4)`，用于真机 A/B 证明「球的显隐就是被它决定」。
@@ -569,6 +571,8 @@ DiagOptions LoadDiagOptions() {
       options.patno_trace = (number != 0);
     } else if (key == "gallery_probe") {
       options.gallery_probe = (number != 0);
+    } else if (key == "wipe_copy_all") {
+      options.wipe_copy_all = (number != 0);
     } else if (key == "sys1005") {
       options.sys1005 = value;
     } else if (key == "sys1005_trace") {
@@ -1858,6 +1862,7 @@ void RunEngineOn(System& system,
   rlvm_android::SetLbCaseTrace(diag.case_trace);
   rlvm_android::SetLbPatNoTrace(diag.patno_trace);
   rlvm_android::SetLbGalleryProbe(diag.gallery_probe);
+  rlvm_android::SetLbWipeCopyAll(diag.wipe_copy_all);
   // Sys 1005 的语义选择 + 求值取证（实现在上游 module_sys.cc 里）。
   g_sys1005_legacy = (diag.sys1005 == "legacy");
   g_sys1005_trace = diag.sys1005_trace;

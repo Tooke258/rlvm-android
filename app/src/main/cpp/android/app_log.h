@@ -61,6 +61,13 @@ bool LbPatNoTraceWanted();
 void SetLbGalleryProbe(bool on);
 bool LbGalleryProbeWanted();
 
+// 复位抑制实验（diag: wipe_copy_all=1，默认关）：让 `ClearAndPromoteObjects()` 把
+// **所有**前景槽都当成打过 objFgWipeCopyOn（即跳过 `fg->InitializeParams()/FreeObjectData()`）。
+// 用途：验证「UI 先正确渲染一瞬、随后复位默认」到底是不是这次复位在承载。
+// 这不是修法，是机械试验——打开后普通场景会留残影（对象不再被清）。
+void SetLbWipeCopyAll(bool on);
+bool LbWipeCopyAllWanted();
+
 // 「最近一次派发的指令」上下文（scene/line/op 名），给 graphics_object 侧的
 // `InitializeParams()` 取证用：`[params-reset] after=SEENxxxx Lnnn op`。
 void SetLbLastOpContext(int scene, int line, const std::string& op_name);

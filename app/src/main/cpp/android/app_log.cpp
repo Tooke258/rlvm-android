@@ -195,6 +195,14 @@ void SetLbGalleryProbe(bool on) { g_lb_gallery_probe = on; }
 bool LbGalleryProbeWanted() { return g_lb_gallery_probe; }
 
 namespace {
+bool g_lb_wipe_copy_all = false;
+}  // namespace
+
+void SetLbWipeCopyAll(bool on) { g_lb_wipe_copy_all = on; }
+
+bool LbWipeCopyAllWanted() { return g_lb_wipe_copy_all; }
+
+namespace {
 int g_lb_last_scene = -1;
 int g_lb_last_line = -1;
 std::string g_lb_last_op;

@@ -749,7 +749,10 @@ void GraphicsSystem::ClearAndPromoteObjects() {
       }
     }
 
-    if (fg.valid() && !fg->wipe_copy()) {
+    // 试验开关（diag: wipe_copy_all=1）：把所有前景槽都当"受 WipeCopy 保护"，
+    // 从而跳过下面这次复位。见 android/app_log.h 的说明。
+    if (fg.valid() && !fg->wipe_copy() &&
+        !rlvm_android::LbWipeCopyAllWanted()) {
       fg->InitializeParams();
       fg->FreeObjectData();
     }
