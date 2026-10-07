@@ -14,3 +14,7 @@
 # 取证开关（patno_trace / gallery_probe / longop_log / wipe_copy_all / op_trace…）
 # 默认全关，需要时再临时覆盖本文件。
 lb_minigame=1
+# 逻辑帧节拍：按 PC 实测（PB 37.5 逻辑帧/秒）标定，只节流 system.Run、不压渲染。
+# 注意：这一项**仍是 diag 层**，清空本文件时会静默回退到 65.7 逻辑帧/秒
+# （小游戏节奏变快、触球窗口变窄）。要不要像 pt00_run_ctors 那样转正，待定。
+logic_hz=37
