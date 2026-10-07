@@ -1,0 +1,19 @@
+# UI 呈现取证（暂停菜单 / CAM 菜单图标 + 渲染残留）——**干净配置，不刷屏**。
+#
+# 目的：抓当前版本的渲染树。上一份渲染树 dump（build/applog-menu2.txt、applog-patno.txt）
+# 是 **goto_case 修复之前** 的，所有子对象 `patt=0`，用它判断"图标对不对"会误判。
+#
+# 步骤：
+#   1) adb push tools/rlvm-diag.ui-tree.txt <...>/files/rlvm-diag.txt
+#   2) am force-stop org.rlvm.android，重开，进小游戏、呼出暂停菜单
+#   3) 面板 →「导出渲染树」；引擎线程会把整棵树写进应用日志 rlvm-log.txt
+#   4) 面板 →「日志」可直接看；PC 侧 adb pull .../files/rlvm-log.txt
+#
+# 树里每个对象会打印：`Object #N vis= data= patt= z= xy= parent=` ，
+# 紧跟一行 `Image: <文件名>` 与 `Rendering Rect(src) to Rect(dst)` ——
+# 后者就是**真正用到的子图矩形**，用来判断：
+#   `patt` 的值对不对（0/5/10 = 第 0/1/2 个按钮的普通态）
+#   以及 src 矩形有没有跟着 patt 走（`GetPattern(patt).rect`）。
+#
+# 排查"残留"时再加 wipe_log=1（逐对象回报 擦除/覆盖/保留），但要接受每帧刷屏。
+lb_minigame=1

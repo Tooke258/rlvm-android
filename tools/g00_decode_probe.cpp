@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <string>
 #include <vector>
 
 #include "xclannad/file.h"
@@ -38,11 +39,18 @@ static const char* BaseName(const char* p) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: g00_decode_probe.exe <a.g00> [b.g00 ...]\n");
+    fprintf(stderr, "usage: g00_decode_probe.exe [--raw <prefix>] <a.g00> [b.g00 ...]\n");
     return 2;
   }
+  // `--raw <prefix>`：额外把解码出的整图写成 RGBA 原始文件（供转 PNG 目视核对）。
+  const char* raw_prefix = nullptr;
+  int first = 1;
+  if (argc >= 3 && strcmp(argv[1], "--raw") == 0) {
+    raw_prefix = argv[2];
+    first = 3;
+  }
   int bad = 0;
-  for (int i = 1; i < argc; ++i) {
+  for (int i = first; i < argc; ++i) {
     bool ok = false;
     std::vector<char> data = ReadAll(argv[i], &ok);
     printf("=== %s (%zu bytes) ===\n", BaseName(argv[i]), data.size());
@@ -79,6 +87,21 @@ int main(int argc, char** argv) {
     }
     printf("  whole image: inked(a>0)=%zu  opaque(a>128)=%zu  of %d px  (%.1f%% inked)\n",
            inked, opaque, w * h, 100.0 * (double)inked / (double)std::max(1, w * h));
+
+    // `--raw <prefix>`：把解码结果原样写成 `<prefix><basename>.rgba`（RGBA8888、行优先），
+    // 供上层脚本转成 PNG 人眼核对「这张图的格子到底是什么图案」。这是判断
+    // 「脚本给的图案号该怎么映射到格子」的唯一硬证据，比继续读反汇编快得多。
+    if (raw_prefix) {
+      std::string out = std::string(raw_prefix) + BaseName(argv[i]) + ".rgba";
+      FILE* f = fopen(out.c_str(), "wb");
+      if (f) {
+        fwrite(img.data(), 1, img.size(), f);
+        fclose(f);
+        printf("  raw -> %s (%dx%d)\n", out.c_str(), w, h);
+      } else {
+        printf("  <cannot write %s>\n", out.c_str());
+      }
+    }
 
     for (size_t r = 0; r < conv->region_table.size(); ++r) {
       const GRPCONV::REGION& g = conv->region_table[r];
