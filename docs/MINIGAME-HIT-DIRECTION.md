@@ -147,3 +147,35 @@
 把 peek 扩到**不参与渲染的输入**：`box [620]/[622]`、球位置 `[226..231]`、目标 `[610..613]`，
 在同一相位下与 PC 逐项对照（PC 真值：`box ≈ (−128..−71, 2101..2119)`、目标 `(−128,0,2101,4)`），
 找出哪个输入两边不同 → 再做一次**不影响渲染同步**的定量实验。
+
+### 9.5 同轮闭环：外野回传落点（数据层）
+
+**症状**：捕手/野手回传的落点比 PC 明显偏到**击球手身后**。
+
+**根因**：`PT00.dll` 的目标点/本垒 `dword_10023D20/D24/D28`（文件初值 `0/0/0`）
+由 **CRT 静态构造表**里的 `sub_10004AD0` 写成 `(0, 0, 2100)`：
+
+```
+.data 0x1001F004 起、6 项、以 0 结尾：
+   10001070 100010b0 100010f0 10001130 10001170 10004ad0
+10004ad0  jmp sub_10004AE0
+10004ae0  xor eax,eax ; mov dword_10023D28,834h(=2100) ; mov dword_10023D20,eax ; mov dword_10023D24,eax ; retn
+```
+
+PC 用 `LoadLibrary` 加载 ⇒ Windows 跑 `DllMain → _CRT_INIT → _initterm`；
+我们的执行器手工加载镜像、从 `func_load`(0x11B0) 起跑（`tools/pt00_emu/emu.c:1055`
+注释写着"我们不跑 DllMain"）⇒ **整张构造表没执行** ⇒ 目标点停在 `0/0/0`
+⇒ 回传瞄 z=0（击球手 z≈2100）⇒ 落点偏身后。
+
+**修法与验证**：diag `pt00_run_ctors=1`（`tools/rlvm-diag.run-ctors.txt`）在 `func_load` 前补跑该表。
+
+```
+[pt00] ctor 10001070 ok … [pt00] ctor 10004ad0 ok
+[pt00] CRT initializers attempted: 6
+[pt00] peek 10023d20=0 10023d24=0 10023d28=2100
+```
+**用户真机确认回传落点恢复正常 ✓。**
+
+> 注：同一张表的另外 5 项是 C++ 静态对象构造（3×`Iostream_init` + CRT 包装 + no-op）；
+> `DllMain` 还写模块句柄 `dword_1002382C`（我们仍为 0，暂无消费者）。
+> 探针/执行器侧的相关设置见 `tools/rlvm-diag.run-ctors.txt` 与 `build/pt00-ctors.txt`（反汇编快照）。
