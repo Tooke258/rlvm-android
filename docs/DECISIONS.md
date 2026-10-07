@@ -1078,3 +1078,56 @@ INDENT_USE / R_COMMAND_MOD / NAME_MOD`），等于改掉原有行为，把流程
 2. 完美档（`global.sav.gz` 及设备上的 `.perfect` 等实验备份）不要进 APK/仓库，
    它们只是本地验证产物（`build/` 已被 gitignore）；
 3. 本地待推的提交清单见 `docs/PROGRESS.md` 本轮章节（`227a22f` / `d276310` / `fe3a934`）。
+
+---
+
+## D-042 兼容层的三处**主动偏离**：可用性优先，代价与回退开关写清
+
+**日期**：2026-10-07（v0.3.0）
+
+**背景**：这三处都不是"上游 bug"，而是真引擎的既有语义在我们这套 CPU 合成移植上
+表现成了明显的观感缺陷（而排查成本远高于收益）。经用户逐条定调（"无伤大雅就默认这样"、
+"与其追状态链不如给外部开关"），统一按下表处理：**默认选可用行为，保留一键回退**。
+
+| # | 偏离 | 真引擎语义 | 我们的默认 | 回退方式 | 代价 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 按钮态图案覆盖 | `ButtonObjectSelectLongOperation` 构造时给每个"登记为按钮"的对象打 `NORMAL` 覆盖，图案号取自 `GAMEEXE.INI` 的 `BTNOBJ.ACTION`（该表 `.NORMAL` 全为 0）；`GraphicsObject::GetPattNo()` 有覆盖时**优先返回覆盖值** | **不应用覆盖**（对象用脚本 `objPattNo` 写的值） | diag `no_button_overrides=0` | 真按钮失去悬停/按下高亮与 1px 按下位移 |
+| 2 | 菜单关闭后的残留 | 脚本关闭路径只 `objVisible(221, 1..14, 0)`，菜单按钮落在子对象 15/16/17（子对象列表换菜单时未清空）⇒ 扫不到 | **长操作析构时**隐藏它管辖的按钮对象 + 同父的 0 号子对象（底板） | 代码内一处（`button_object_select_long_operation.cc` 析构） | 依赖"底板 = 同父 child 0"这一本作布局约定 |
+| 3 | 卡住的事件牌 | `PT_ANN*`/`PT_CALL*` 由 `objEveDisplay` 的 `DisplayMutator` 驱动；触发条件（`intD[72]=15..19 && intD[73]==0`）卡住时脚本**每帧重发 display=1** | 面板「**事件牌：屏蔽/恢复**」开关，屏蔽 `objEveDisplay` 的显示请求 | 面板按钮再点一次，或 diag `mute_eve_display=0` | 屏蔽期间不会有新的公告/事件牌，菜单元素也会被一起压掉 |
+
+**理由**：① 三处的根因都在"真引擎语义 × 我们的呈现/宿主差异"的缝里，改引擎语义风险大、
+收益是观感；② 都做成**可回退**（diag 或按钮），随时能 A/B 回真引擎行为；③ 用户明确
+判断这三处属"细节/美观"，不值得为它们继续拉长逆向链。
+
+**配套**：① 每处都在代码注释里写明"真引擎怎么做 / 我们为什么偏 / 怎么退"；
+② `docs/MINIGAME-UI-PRESENTATION.md` §8 列出"会吃掉图案号的三条通路"完整清单；
+③ 事件牌那条先做过"1 秒自动恢复"的脉冲版，实测窗口太短、清不掉，已回滚为常开开关（D-042 表内即最终形态）。
+
+---
+
+## D-043 两处内存模型缺口：存储区 2000→8192 + 去掉写死的访问上限
+
+**日期**：2026-10-07（v0.3.0）
+
+**现象**：LBEX 相册/菜单等整片 UI「先正确渲染一瞬、随后全部归位默认」。
+
+**根因（两处，缺一不可）**：
+
+1. `rlvm-release-0.14/src/machine/memory.h` 的 `SIZE_OF_MEM_BANK = 2000`：LBEX 的相册
+   用 `intA[900*8 + intL[11]]`（= `intA[7200+n]`）存页码表，**高位区间压根没有存储空间**；
+2. `src/machine/memory_intmem.cc` 的 `GetIntValue/SetIntValue` 里**写死了 `2000`** 的
+   可访问上限（与 `SIZE_OF_MEM_BANK` 无关）⇒ 即使把存储区扩大，`location ≥ 2000` 依旧
+   一律抛 `Invalid memory access`。
+
+**决策**：① 存储区取 **8192**（覆盖脚本实际用到的最大下标 7215，内存代价约 200KB）；
+② 两处边界检查改为跟随 `SIZE_OF_MEM_BANK`（位域访问用 `SIZE_OF_MEM_BANK*32/factor`，
+与原 `64000/factor` 等价）。
+
+**注意（必须知会）**：这些存储区会被**序列化** ⇒ 改动会改变**我们自己**的存档/全局内存布局
+（`global.sav.gz` 等）。原生存档（`SAVEDATA/*.sav`）不受影响。旧全局内存会走既有的
+"加载失败 → 挪走重建"降级路径。
+
+**证据链**：`GAMEHANDOFF`——`gallery_probe` 打点实测每一次 `intA[7200+n]` 读取都抛
+`Invalid memory access intA[7200] in RLMachine::GetIntValue()`，且同期打出的
+`bank=8192` 证明扩容已在包里生效 ⇒ 定位到 `memory_intmem.cc` 那条写死的边界。
+详见 `docs/MINIGAME-UI-PRESENTATION.md` §7–§8。
