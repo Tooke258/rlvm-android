@@ -178,12 +178,24 @@ void RLModule::DispatchFunction(RLMachine& machine,
           p11 = l11;
           p20 = l20;
           p21 = l21;
+          // **取证代码绝对不能影响执行**：`intL[11]` 可能是任意值，越界读会抛
+          // 异常并把这条指令的派发打断（真机表现：相册页面渲染不全）。
+          // 所以这里对页码表取值单独 try/catch，读不到就写 oob。
+          std::string tbl = "oob";
+          const int idx = 7200 + l11;
+          if (idx >= 0 && idx < 65536) {
+            try {
+              tbl = std::to_string(
+                  machine.GetIntValue(IntMemRef(libreallive::INTA_LOCATION, idx)));
+            } catch (...) {
+              tbl = "throw";
+            }
+          }
           std::ostringstream g;
           g << "[gallery] SEEN9515 L" << machine.line_number() << " op="
             << it->second->name() << " intL[0]=" << l0 << " intL[11]=" << l11
             << " intL[20]=" << l20 << " intL[21]=" << l21
-            << " intA[7200+intL[11]]="
-            << machine.GetIntValue(IntMemRef(libreallive::INTA_LOCATION, 7200 + l11));
+            << " intA[7200+intL[11]]=" << tbl;
           rlvm_android::AppendAppLogLine(g.str());
         }
       }
