@@ -46,6 +46,7 @@
 
 #include "machine/memory.h"
 #include "machine/rlmachine.h"
+#include "android/app_log.h"
 #include "utilities/exception.h"
 #include "libreallive/intmemref.h"
 
@@ -130,6 +131,28 @@ void Memory::SetIntValue(const IntMemRef& ref, int value) {
     // A[]..G[], Z[] を直に書く（同上：以前这里写死 2000）
     if ((unsigned int)(location) >= (unsigned int)SIZE_OF_MEM_BANK)
       throwIllegalIndex(ref, "RLMachine::SetIntValue()");
+
+    // 取证（diag: gallery_probe=1）：盯 LBEX 相册的 CG 页表 intA[7200..7259]。
+    // 只在这个区间、且值真变化时打一行，附带"最近一条派发的指令"上下文——
+    // 用来回答：这张表是**谁建的**、又是**谁清的**（真机症状：先渲染正确、随后复位默认）。
+    if (rlvm_android::LbGalleryProbeWanted() && index == 0 && location >= 7200 &&
+        location < 7260) {
+      static int last_val[60];
+      static bool last_init = false;
+      const int slot = location - 7200;
+      if (!last_init) {
+        for (int i = 0; i < 60; ++i) last_val[i] = 0x7fffffff;
+        last_init = true;
+      }
+      if (last_val[slot] != value) {
+        last_val[slot] = value;
+        rlvm_android::AppendAppLogLine(
+            "[cgtable] intA[" + std::to_string(location) + "]=" +
+            std::to_string(value) + " after=" +
+            rlvm_android::LbLastOpContextString());
+      }
+    }
+
     saveOriginalValue(bank, original_bank, location);
     bank[location] = value;
   } else {
