@@ -84,6 +84,19 @@ ButtonObjectSelectLongOperation::~ButtonObjectSelectLongOperation() {
     // 这里在长操作析构（= 菜单真正结束）时，把它管辖的按钮对象一并置为不可见。
     // 属于引擎侧、窄口径的偏离：脚本下次要用它们时会重新 objVisible/objOfChild 建回来。
     button_pair.first->SetVisible(0);
+    // 底板：渲染树实测，暂停菜单的底板 `PT_RMENU_BG00` 是**同一个父对象下的 child #0**
+    // （它与按钮 15/16/17 同父），不是按钮、因而不在 buttons_ 名单里 ——
+    // 只隐按钮会"按钮没了、底板还在"。这里把同父的 0 号子对象一并隐藏。
+    GraphicsObject* parent = button_pair.second;
+    if (parent && parent->has_object_data()) {
+      ParentGraphicsObjectData* parent_data =
+          dynamic_cast<ParentGraphicsObjectData*>(&parent->GetObjectData());
+      if (parent_data) {
+        LazyArray<GraphicsObject>& kids = parent_data->objects();
+        LazyArray<GraphicsObject>::full_iterator it = kids.full_begin();
+        if (it != kids.full_end() && it.valid()) it->SetVisible(0);
+      }
+    }
   }
 }
 
