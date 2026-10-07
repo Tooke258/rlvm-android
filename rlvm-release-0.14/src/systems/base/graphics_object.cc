@@ -924,6 +924,11 @@ void GraphicsObject::InitializeParams() {
         "[params-reset] InitializeParams after=" +
         rlvm_android::LbLastOpContextString());
   }
+  // 试验开关（diag: wipe_copy_all=1）：`InitializeParams()` 是**所有**参数复位的唯一汇聚点
+  // （objInit / objFgInit / objBgInit / objChildFgInit / ClearAndPromoteObjects 全走这里）。
+  // 打开后彻底不改对象参数，用来验证「UI 先正确一瞬、随后归位默认」是不是由复位承载。
+  // 这不是修法：打开后对象永远不会被清，普通场景会糊成一片。
+  if (rlvm_android::LbWipeCopyAllWanted()) return;
   impl_ = s_empty_impl;
   DeleteObjectMutators();
 }
