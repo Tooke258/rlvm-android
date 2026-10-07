@@ -333,8 +333,14 @@ struct DiagOptions {
   // 用途：两侧对照 DLL 全局量，例如目标点/本垒 0x10023D20/0x10023D28
   //（文件里是 0/0，运行期应为 0/2100）。
   std::string pt00_peek;
-  // pt00_run_ctors=1：补跑 PT00.dll 的 CRT 静态构造表（默认关，A/B 用）。
-  bool pt00_run_ctors = false;
+  // PT00.dll 的 CRT 静态构造表：**默认跑**（转正，2026-10-07）。
+  //
+  // 真实宿主用 LoadLibrary 加载 DLL 时会走 DllMain→_CRT_INIT→_initterm，而我们的执行器是
+  // 手工加载镜像、从 func_load 起跑，不跑 DllMain ⇒ 那张表里的初始化从不发生：
+  //   · `sub_10004AD0` 把目标点/本垒 `dword_10023D20/D24/D28` 写成 (0,0,2100) ——
+  //     不跑它，目标点停在 0/0/0 ⇒「朝目标投/捕手回传」全部瞄 z=0 ⇒ 回传落点偏到击球手身后。
+  // 之前它一直是 diag 开关（`pt00_run_ctors=1`），本轮转正；想 A/B 回旧行为写 `pt00_run_ctors=0`。
+  bool pt00_run_ctors = true;
   // intd_pin=624=2635[,槽=值…]：喂给 DLL 的 intD 副本里把这些槽钉住。
   std::string intd_pin;
   // intd_bias=624=-900[,槽=增量…]：喂给 DLL 的 intD 副本加上这个常数（保留脚本推进）。

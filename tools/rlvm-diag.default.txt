@@ -7,6 +7,9 @@
 #   · 方向键 / 挥棒 → intD（v0.2.6 固化）
 #   · 按钮态图案覆盖：**默认不应用**（BTNOBJ.ACTION；见 android/app_log.h 的用户定调；
 #     想 A/B 回引擎行为写 no_button_overrides=0）
+#   · **PT00.dll 的 CRT 静态构造（`pt00_run_ctors`）：默认跑**（2026-10-07 转正）。
+#     它负责把目标点/本垒写成 (0,0,2100)；以前是 diag 开关，换常规配置时被删掉会导致
+#     「外野回传落点偏到击球手身后」复发。想 A/B 写 pt00_run_ctors=0。
 #
 # 取证开关（patno_trace / gallery_probe / longop_log / wipe_copy_all / op_trace…）
 # 默认全关，需要时再临时覆盖本文件。
