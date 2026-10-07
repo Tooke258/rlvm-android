@@ -1010,14 +1010,38 @@ static int x87_impl(uint8_t op) {
         return 0;
       }
       switch (reg) {
-        case 0: *XP(1) += *XP(0); fp_pop(); return 0;  /* faddp */
-        case 1: *XP(1) *= *XP(0); fp_pop(); return 0;  /* fmulp */
-        /* DE 组：E0+i = FSUBRP st(i),st0（st(i)=st0-st(i) 后 pop）；E8+i = FSUBP（st(i)=st(i)-st0）。
-         * 球 B 的抛物线 `v0*t - 0.6t²` 用的就是 DE E9（FSUBP），原先方向反了 → 落点符号错 → 复位判定走另一支。 */
-        case 4: { double t = *XP(0) - *XP(1); fp_pop(); *XP(0) = t; return 0; }
-        case 5: { double t = *XP(1) - *XP(0); fp_pop(); *XP(0) = t; return 0; }
-        case 6: { double t = *XP(0) / *XP(1); fp_pop(); *XP(0) = t; return 0; }
-        case 7: { double t = *XP(1) / *XP(0); fp_pop(); *XP(0) = t; return 0; }
+        /* DE 组是**出栈式**算术，目的槽是 st(i)，i 来自 ModRM 的 r/m 字段 —— 不是恒定的 st(1)：
+         *   C0+i = FADDP  st(i),st0 → st(i) = st(i) + st0
+         *   C8+i = FMULP  st(i),st0 → st(i) = st(i) * st0
+         *   E0+i = FSUBRP st(i),st0 → st(i) = st0 - st(i)
+         *   E8+i = FSUBP  st(i),st0 → st(i) = st(i) - st0
+         *   F0+i = FDIVRP st(i),st0 → st(i) = st0 / st(i)
+         *   F8+i = FDIVP  st(i),st0 → st(i) = st(i) / st0
+         * 以前一律按 st(1) 实现：i=1 时侥幸正确（所以球 B 的抛物线 DE E9 那条一改就好），
+         * i≠1 时是"值对、槽错"—— 栈上的数字集合不变，但**顺序被置换**，下游再取就取到另一个数。
+         * 真机症状（2026-10-07 夜）：棒球 `func 50` 的方向组装里有
+         *   0x10003F7A `DE CA` = FMULP st(2),st
+         *   0x10003F82 `DE C2` = FADDP st(2),st
+         * 而手机侧 func 50 的 7 个输入槽与 PC 实测**完全同构**（入球速度都是 (-2..+2, -38..-40)），
+         * 结果却是 PC 触球 5/5 飞外野（[264]=+318..+909）、手机 5/5 飞身后（[264]=-180..-716）
+         * —— 正好是"方向被系统性转掉、量级还对得上"。 */
+        default: {
+          double r;
+          const int di = m.rm; /* 目的槽：st(i) */
+          switch (reg) {
+            case 0: r = *XP(di) + *XP(0); break;
+            case 1: r = *XP(di) * *XP(0); break;
+            case 4: r = *XP(0) - *XP(di); break;
+            case 5: r = *XP(di) - *XP(0); break;
+            case 6: r = *XP(0) / *XP(di); break;
+            case 7: r = *XP(di) / *XP(0); break;
+            default: return -1;
+          }
+          fp_pop();
+          /* pop 之后，原来的 st(i)（i>=1）落到 st(i-1)；i==0 时该槽已被弹走（硬件上是下溢，忽略）。 */
+          if (di >= 1) *XP(di - 1) = r;
+          return 0;
+        }
       }
     }
   } else if (op == 0xdf) {
@@ -2053,6 +2077,32 @@ int main(int argc, char **argv) {
     RUN_EXPORT(at2, 0);
     printf("# selftest x87 fiadd m32int（4+4）：eax=%d → %s\n", (int)cpu.eax,
            cpu.eax == 8 ? "PASS" : "FAIL（m32int 组未实现或算错）");
+    /* x87 回归：**出栈式算术的目的槽 st(i)**（i≠1）。
+     * 真机日志里棒球方向组装用的是 `DE CA`（fmulp st(2),st）与 `DE C2`（faddp st(2),st），
+     * 而以前这两种一律落到 st(1)：值没错、槽错位，栈顺序被置换。
+     * 夹具：压入 100,10,2（st0=2 st1=10 st2=100）
+     *   fmulp st(2),st  → st2 = 100*2 = 200，pop ⇒ st0=10, st1=200
+     *   faddp st(1),st  → st1 = 200+10 = 210，pop ⇒ st0=210
+     * 期望 210；旧实现（都按 st(1)）算出 120。 */
+    static const uint8_t kPopStiCode[] = {
+        0xC7, 0x05, 0x00, 0x01, 0x2F, 0x10, 0x64, 0x00, 0x00, 0x00, /* mov dword [0x1002F100],100 */
+        0xDB, 0x05, 0x00, 0x01, 0x2F, 0x10,                         /* fild dword [0x1002F100] */
+        0xC7, 0x05, 0x00, 0x01, 0x2F, 0x10, 0x0A, 0x00, 0x00, 0x00, /* mov dword [0x1002F100],10 */
+        0xDB, 0x05, 0x00, 0x01, 0x2F, 0x10,                         /* fild dword [0x1002F100] */
+        0xC7, 0x05, 0x00, 0x01, 0x2F, 0x10, 0x02, 0x00, 0x00, 0x00, /* mov dword [0x1002F100],2 */
+        0xDB, 0x05, 0x00, 0x01, 0x2F, 0x10,                         /* fild dword [0x1002F100] */
+        0xDE, 0xCA,                                                 /* fmulp st(2),st */
+        0xDE, 0xC1,                                                 /* faddp st(1),st */
+        0xDB, 0x1D, 0x00, 0x01, 0x2F, 0x10,                         /* fistp dword [0x1002F100] */
+        0xA1, 0x00, 0x01, 0x2F, 0x10,                               /* mov eax,[0x1002F100] */
+        0xC3,                                                       /* ret */
+    };
+    const uint32_t at3 = IMAGE_BASE + 0x2F300u;
+    for (size_t k = 0; k < sizeof(kPopStiCode); ++k)
+      wr8(at3 + (uint32_t)k, kPopStiCode[k]);
+    RUN_EXPORT(at3, 0);
+    printf("# selftest x87 faddp/fmulp st(i)（i≠1，期望 210）：eax=%d → %s\n",
+           (int)cpu.eax, cpu.eax == 210 ? "PASS" : "FAIL（出栈式算术的目的槽没按 st(i) 落位）");
   }
 
   if (argc > 2) {
