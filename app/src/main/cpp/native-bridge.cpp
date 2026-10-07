@@ -468,6 +468,9 @@ struct DiagOptions {
   // 合帧闸门默认**关闭**（每轮无条件合帧）——开启会让过场出现整屏黑闪，
   // 机理见 android_system.cpp 里 g_dirty_gate 的注释。写 dirty_gate=1 可打开做 A/B。
   bool dirty_gate = false;
+  // 合帧时机：默认 0 = 现行为（脚本之后合成）；1 = 上游次序（脚本之前合成）。
+  // 机理与真机症状见 android_system.h 里 SetRefreshBeforeRun() 的说明。
+  bool refresh_before_run = false;
   // v0.2.3 影片探针：mov_probe=MOV/op00.mpg 时，在引擎启动时跑一次
   // 「MPEG-PS 解复用 + AMediaCodec(video/mpeg2)」的最小闭环，结果写进报告。
   std::string mov_probe;
@@ -626,6 +629,8 @@ DiagOptions LoadDiagOptions() {
       options.blit_fast = (number != 0);
     } else if (key == "dirty_gate") {
       options.dirty_gate = (number != 0);
+    } else if (key == "refresh_before_run") {
+      options.refresh_before_run = (number != 0);
     } else if (key == "mov_probe") {
       options.mov_probe = value;
     } else if (key == "dump_scenes") {
@@ -1862,6 +1867,7 @@ void RunEngineOn(System& system,
   SetBlitStatsEnabled(diag.blit_stats);
   SetBlitFastEnabled(diag.blit_fast);
   SetDirtyGateEnabled(diag.dirty_gate);
+  SetRefreshBeforeRun(diag.refresh_before_run);
 
   // v0.2.3 影片探针（M2）：只跑一次，把「PS 解复用 + AMediaCodec」的结果写进报告，
   // 不影响引擎本身的运行。见 android/mov_probe.h。
@@ -1950,6 +1956,7 @@ void RunEngineOn(System& system,
             " blit_stats=" + std::string(diag.blit_stats ? "on" : "off") +
             " blit_fast=" + std::string(diag.blit_fast ? "on" : "off") +
             " dirty_gate=" + std::string(diag.dirty_gate ? "on" : "off") +
+            " refresh_before_run=" + std::string(diag.refresh_before_run ? "on" : "off") +
             " time_budget_ms=" + std::to_string(diag.time_budget_ms) +
             " max_instructions=" + std::to_string(max_instructions) +
             " frame_log_every=" + std::to_string(diag.frame_log_every) + "\n";

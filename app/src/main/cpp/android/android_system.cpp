@@ -38,6 +38,10 @@ namespace {
 // 仍然保留，单次合帧成本依旧远低于 v0.2.0。诊断文件可用 dirty_gate=1 打开做 A/B。
 std::atomic<bool> g_dirty_gate{false};
 
+// 合帧时机（见 android_system.h 的说明）：0 = 现行为（脚本之后合成），
+// 1 = 上游次序（脚本之前合成，永不合成"重置后未重建"的中间态）。
+std::atomic<bool> g_refresh_before_run{false};
+
 // 引擎只要求时间单调递增，与真实时钟起点无关。
 // 计时**基点**不是小事：上游 RLVM 的帧计数器把 tick 存进 float
 // （frame_counter.h 的 `float time_at_last_check_`），float 只有 24 位尾数。
@@ -71,6 +75,10 @@ bool FirstCodepoint(const std::string& text, uint32_t& codepoint) {
 void SetDirtyGateEnabled(bool enabled) { g_dirty_gate.store(enabled); }
 
 bool IsDirtyGateEnabled() { return g_dirty_gate.load(); }
+
+void SetRefreshBeforeRun(bool enabled) { g_refresh_before_run.store(enabled); }
+
+bool IsRefreshBeforeRun() { return g_refresh_before_run.load(); }
 
 // ---------------------------------------------------------------------------
 // AndroidEventSystem
@@ -921,12 +929,44 @@ AndroidSystem::AndroidSystem(Gameexe& gameexe)
 
 AndroidSystem::~AndroidSystem() = default;
 
+// 合成一帧并按上游约定清脏标记。抽成函数是为了让"合帧时机"可切：
+// 现行为在脚本之后调用，`refresh_before_run=1` 时改为脚本之前调用（上游次序）。
+static void RefreshAndClearDirty(AndroidGraphicsSystem& g) {
+  // 诊断：小游戏里「脚本 ~16 帧/秒、画面却只有 ~1 帧/秒」，先量清这 1 秒花在哪。
+  const auto t0 = std::chrono::steady_clock::now();
+  g.Refresh(nullptr);
+  g.OnScreenRefreshed();  // 上游在 Refresh 之后清脏标记
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
+  static int n = 0;
+  static long long acc = 0;
+  static int slow = 0;
+  ++n;
+  acc += us;
+  if (us > 50000) ++slow;   // 超过 50ms 记一次「慢帧」
+  if (n % 120 == 0) {
+    __android_log_print(ANDROID_LOG_INFO, "rlvm-graphics",
+                        "refresh: n=%d avg=%.1fms slow(>50ms)=%d last=%.1fms",
+                        n, (double)acc / n / 1000.0, slow, (double)us / 1000.0);
+    n = 0;
+    acc = 0;
+    slow = 0;
+  }
+}
+
 void AndroidSystem::Run(RLMachine& machine) {
   // 与上游 SDLSystem::Run 相同的顺序：事件 -> 文本 -> 声音 -> 图形 -> 平台。
   event_system_->ExecuteEventSystem(machine);
   text_system_->ExecuteTextSystem();
   sound_system_->ExecuteSoundSystem();
   graphics_->ExecuteGraphicsSystem(machine);
+
+  // 诊断 refresh_before_run=1：按**上游次序**在跑脚本之前合成。
+  // 这样合成到的永远是"上一遍完整搭好"的对象状态，不会撞上脚本里
+  // 「objChildFgInit 重置 → 重新建对象」之间的中间态（见 android_system.h）。
+  if (IsRefreshBeforeRun()) RefreshAndClearDirty(*graphics_);
+
   if (platform())
     platform()->Run(machine);
 
@@ -951,28 +991,9 @@ void AndroidSystem::Run(RLMachine& machine) {
   // 光标、场景过渡…），主循环被拖慢的观感就是"动画渲染很慢"。
   //
   // 设备侧诊断文件写 dirty_gate=0 可以退回旧行为做对比。
-  if (!IsDirtyGateEnabled() || graphics_->screen_needs_refresh()) {
-    // 诊断：小游戏里「脚本 ~16 帧/秒、画面却只有 ~1 帧/秒」，先量清这 1 秒花在哪。
-    const auto t0 = std::chrono::steady_clock::now();
-    graphics_->Refresh(nullptr);
-    graphics_->OnScreenRefreshed();  // 上游在 Refresh 之后清脏标记
-    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - t0)
-                        .count();
-    static int n = 0;
-    static long long acc = 0;
-    static int slow = 0;
-    ++n;
-    acc += us;
-    if (us > 50000) ++slow;   // 超过 50ms 记一次「慢帧」
-    if (n % 120 == 0) {
-      __android_log_print(ANDROID_LOG_INFO, "rlvm-graphics",
-                          "refresh: n=%d avg=%.1fms slow(>50ms)=%d last=%.1fms",
-                          n, (double)acc / n / 1000.0, slow, (double)us / 1000.0);
-      n = 0;
-      acc = 0;
-      slow = 0;
-    }
+  if (!IsRefreshBeforeRun() &&
+      (!IsDirtyGateEnabled() || graphics_->screen_needs_refresh())) {
+    RefreshAndClearDirty(*graphics_);
   }
 }
 

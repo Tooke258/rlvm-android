@@ -98,3 +98,60 @@ adb pull /sdcard/Android/data/org.rlvm.android/files/rlvm-log.txt build/applog-u
 * `patt=5/10` 且 `src=(41,0)-(81,40)` / `(82,0)-(122,40)` ⇒ 图标侧已正确，问题只剩残留；
 * `patt=0` 或 `src=(0,0)-(40,40)` ⇒ 图案号仍被写成 0 / 被覆盖 / 越界 ⇒ 继续查写入侧；
 * 关掉菜单再打一次 dump：若树里已经没有这些对象、但屏幕上还在 ⇒ 残留确认在执行侧（合成/擦除）。
+
+## 6. 2026-10-07 深夜 · 渲染树对完了：**图案号是对的，是合帧时机错了**
+
+### 6.1 真机渲染树 + 累积日志给出的硬事实
+
+用户按 §5 抓了一次**当前版本**的渲染树（`build/applog-ui-tree.txt`，7.8 万行，
+应用日志是跨会话累积的，里面还留着上一轮 `patno_trace` 的记录）。三条硬事实：
+
+1. **图案号写得完全正确**。同一帧里：
+
+   ```
+   [patno] SEEN7800 L131 parent=221 child=8  set=30 now=30
+   [patno] SEEN7800 L131 parent=221 child=9  set=35 now=35
+   [patno] SEEN7800 L131 parent=221 child=10 set=40 now=40
+   [patno] SEEN7800 L131 parent=221 child=12 set=50 now=50
+   [patno] SEEN7800 L131 parent=221 child=14 set=55 now=55
+   [patno] SEEN7800 L162 parent=221 child=15 set=0  now=0     ← 暂停菜单按钮 1
+   [patno] SEEN7800 L172 parent=221 child=16 set=5  now=5     ← 暂停菜单按钮 2
+   [src]   PT_CAM_BTN00 patt=0 / 30 / 35 / 40 / 50 / 55 …     ← SrcRect 真的用上了这些值
+   ```
+
+   ⇒ §2.3 那条"越界退回 0 号"**没有发生**（0/5/10 都在 15 个子图范围内），
+   图标映射本身是好的。**上一轮"越界猜测"到此作废。**
+
+2. **每帧都有一轮"重置"**：`[params-reset] InitializeParams after=SEEN7800 L121 objChildFgInit`
+   在日志里出现 17 次 —— 菜单每帧先把子对象**重置回默认参数（patt=0）**，同一帧再重建。
+   这是引擎的正常写法（每帧重建 UI），问题不在这条指令本身。
+
+3. **但我们抽到的渲染树里 `patt=0`**：`Object #16 … patt=0 … Rendering Rect(0,0,41,41)`。
+   而 `导出渲染树` 走的是 `System::DumpRenderTree() → graphics().Refresh()` ——
+   **一次独立合成**。它拍到 0，说明**存在"对象已重置、还没重建"的中间态会被合成上屏**。
+
+### 6.2 根因：合帧时机与上游相反
+
+```cpp
+// app/src/main/cpp/android/android_system.cpp（修改前）
+graphics_->ExecuteGraphicsSystem(machine);
+if (platform()) platform()->Run(machine);      // ← 先跑脚本（重置 → 重建）
+...
+graphics_->Refresh(nullptr);                   // ← 再合成
+
+// 上游 SDL（sdl_system.cc + SDLGraphicsSystem::ExecuteGraphicsSystem）
+//   if (is_responsible_for_update() && screen_needs_refresh()) { Refresh(); OnScreenRefreshed(); }
+//   —— 合成发生在**跑脚本之前**，所以合成到的永远是"上一遍完整搭好"的状态。
+```
+
+脚本一旦在「`objChildFgInit` 重置 → `objOfFile`+`objPattNo` 重建」之间让出
+（`wait` / 长操作 / 分帧构建），**脚本之后合成**就会把刚被重置成默认的对象合成上屏。
+这与用户的描述逐字吻合：**"元素已经被正确排列好了，完全渲染的下一刻全部切回了默认"**，
+而且**与场景无关**（相册同理）。
+
+### 6.3 修法（先做成可 A/B 的开关）
+
+新增 diag `refresh_before_run=1`（`tools/rlvm-diag.refresh-before.txt`）：
+打开时按上游次序**在跑脚本之前**合成；默认仍为原行为，便于对比。
+`android_system.cpp` 里把合成那段抽成 `RefreshAndClearDirty()`，两处按标志二选一调用。
+引擎启动报告的 diagnostics 行会打印 `refresh_before_run=on/off` 以便确认生效。

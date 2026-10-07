@@ -33,6 +33,18 @@ class RLMachine;
 void SetDirtyGateEnabled(bool enabled);
 bool IsDirtyGateEnabled();
 
+// 合帧时机（诊断项，默认 0 = 现行为）。
+//
+// 上游 SDL 在 `SDLGraphicsSystem::ExecuteGraphicsSystem` 里合成，也就是**跑脚本之前**；
+// 我们原来在 `platform()->Run(machine)` **之后**合成。两者在"脚本一遍跑完"时结果相同，
+// 但只要脚本在「先重置、后重建」之间让出（wait / 长操作 / 分帧构建），
+// 脚本之后合成就会把**刚被 objChildFgInit/objFgInit 重置成默认的对象**合成上屏。
+//
+// 真机症状（LBEX 暂停菜单 / CAM 菜单 / 相册）：正确的 UI 先渲染出来一瞬，
+// 下一刻整个 UI 切回默认图案。写 `refresh_before_run=1` 切到上游次序做 A/B。
+void SetRefreshBeforeRun(bool enabled);
+bool IsRefreshBeforeRun();
+
 class AndroidEventSystem : public EventSystem {
  public:
   explicit AndroidEventSystem(Gameexe& gexe);

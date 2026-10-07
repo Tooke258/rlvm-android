@@ -1,0 +1,12 @@
+# A/B：把合帧时机切到**上游次序**（跑脚本之前合成）。
+#
+# 机理（见 app/src/main/cpp/android/android_system.h 的 SetRefreshBeforeRun 说明）：
+#   上游 SDL 在 ExecuteGraphicsSystem 里合成 ⇒ 合成的是"上一遍完整搭好"的对象状态；
+#   我们原来在 platform()->Run(machine) **之后**合成 ⇒ 脚本里
+#   「objChildFgInit 把子对象重置成默认 → 再 objOfFile+objPattNo 重建」之间一旦让出，
+#   这一帧就会把**默认图案**合成上屏。
+#   真机症状：UI（暂停菜单 / CAM 菜单 / 相册）正确渲染一瞬，下一刻整体切回默认。
+#
+# 日志里可用 "refresh_before_run=on" 确认新包生效（引擎启动时的 diagnostics 行）。
+lb_minigame=1
+refresh_before_run=1
