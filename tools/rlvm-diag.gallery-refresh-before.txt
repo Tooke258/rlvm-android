@@ -1,0 +1,14 @@
+# 相册复位 A/B：合帧时机切到**上游次序**（跑脚本之前合成）+ 页码打点。
+#
+# 背景（2026-10-07 深夜）：
+#   1) 已修两处真实缺陷：SIZE_OF_MEM_BANK 2000→8192、去掉 memory_intmem.cc 里写死的
+#      2000 上限 —— 之后相册页码表 intA[7200+n] 才读得到（打点里不再是 ex:）。
+#   2) 但帧的**收尾**仍是 SEEN9515 L315 `bgrLoadHaikei("?",0)`：它 ClearAndPromoteObjects
+#      重置对象、并压一个 before→after 的 FadeEffect（after = 重置后的默认画面）。
+#      我们的合成在 platform()->Run(machine) **之后** ⇒ 收到的是重置后的那一版；
+#      上游 SDL 在 ExecuteGraphicsSystem（跑脚本之前）合成 ⇒ 收到的是上一帧搭好的状态。
+#
+# 上一次做这个 A/B 时页码表还是坏的（重建出来本来就是 0），所以那次没有分辨力。
+lb_minigame=1
+refresh_before_run=1
+gallery_probe=1
