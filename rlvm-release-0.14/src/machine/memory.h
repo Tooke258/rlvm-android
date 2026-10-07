@@ -42,7 +42,13 @@
 #include "libreallive/intmemref.h"
 
 const int NUMBER_OF_INT_LOCATIONS = 8;
-const int SIZE_OF_MEM_BANK = 2000;
+// 整数/字符串存储区的大小。上游 RLVM 用 2000，但 LBEX 的脚本会用到**高位区间**：
+// 相册 `SEEN9515` 读的是 `intA[900 * 8 + intL[11]]`（= `intA[7200+n]`）这张页码表，
+// 2000 项的存储区里根本没有这一段 ⇒ 读出来是垃圾 ⇒ 页码位只能画 0 号图
+// （真机症状：整个 UI 先正确渲染一瞬、随后复位成默认，相册尤其明显）。
+// 取 8192：装得下脚本实际用到的最大下标（7215+），内存代价 6×8192×4B ≈ 200KB。
+// 注意：这些存储区会被序列化，改动会改变我们自己的存档/全局内存布局。
+const int SIZE_OF_MEM_BANK = 8192;
 const int SIZE_OF_INT_PASSING_MEM = 40;
 const int SIZE_OF_NAME_BANK = 702;
 
