@@ -89,7 +89,11 @@ int Memory::GetIntValue(const IntMemRef& ref) {
 
   if (type == 0) {
     // A[]..G[], Z[] を直に読む
-    if ((unsigned int)(location) >= 2000)
+    // **这里以前写死 2000**（与 memory.h 的 SIZE_OF_MEM_BANK 无关）。LBEX 的脚本
+    // 会用到高位区间（相册 `SEEN9515` 的页码表就是 `intA[900*8+n]` = `intA[7200+n]`），
+    // 写死 2000 会把它们全部拒掉 ⇒ 读出来是垃圾 ⇒ 页码位只能画 0 号图
+    // （真机症状：UI 先正确渲染一瞬、随后整体复位默认）。改成跟随存储区实际大小。
+    if ((unsigned int)(location) >= (unsigned int)SIZE_OF_MEM_BANK)
       throwIllegalIndex(ref, "RLMachine::GetIntValue()");
 
     return bank[location];
@@ -97,7 +101,8 @@ int Memory::GetIntValue(const IntMemRef& ref) {
     // Ab[]..G4b[], Z8b[] などを読む
     int factor = 1 << (type - 1);
     int eltsize = 32 / factor;
-    if ((unsigned int)(location) >= (64000u / factor))
+    if ((unsigned int)(location) >=
+        ((unsigned int)SIZE_OF_MEM_BANK * 32u / (unsigned int)factor))
       throwIllegalIndex(ref, "RLMachine::GetIntValue()");
 
     return (bank[location / eltsize] >> ((location % eltsize) * factor)) &
@@ -122,8 +127,8 @@ void Memory::SetIntValue(const IntMemRef& ref, int value) {
   }
 
   if (type == 0) {
-    // A[]..G[], Z[] を直に書く
-    if ((unsigned int)(location) >= 2000)
+    // A[]..G[], Z[] を直に書く（同上：以前这里写死 2000）
+    if ((unsigned int)(location) >= (unsigned int)SIZE_OF_MEM_BANK)
       throwIllegalIndex(ref, "RLMachine::SetIntValue()");
     saveOriginalValue(bank, original_bank, location);
     bank[location] = value;
@@ -133,7 +138,8 @@ void Memory::SetIntValue(const IntMemRef& ref, int value) {
     int eltsize = 32 / factor;
     int eltmask = (1 << factor) - 1;
     int shift = (location % eltsize) * factor;
-    if ((unsigned int)(location) >= (64000u / factor))
+    if ((unsigned int)(location) >=
+        ((unsigned int)SIZE_OF_MEM_BANK * 32u / (unsigned int)factor))
       throwIllegalIndex(ref, "RLMachine::SetIntValue()");
 
     saveOriginalValue(bank, original_bank, location / eltsize);
