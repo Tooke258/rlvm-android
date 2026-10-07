@@ -37,6 +37,7 @@
 #include "libreallive/bytecode.h"
 #include "libreallive/intmemref.h"
 #include "machine/general_operations.h"
+#include "machine/memory.h"
 #include "machine/rloperation.h"
 #include "utilities/exception.h"
 #include "android/app_log.h"
@@ -187,6 +188,9 @@ void RLModule::DispatchFunction(RLMachine& machine,
             try {
               tbl = std::to_string(
                   machine.GetIntValue(IntMemRef(libreallive::INTA_LOCATION, idx)));
+            } catch (const std::exception& e) {
+              // 打印异常文本：用来区分「下标越界」与「API 用错」。
+              tbl = std::string("ex:") + e.what();
             } catch (...) {
               tbl = "throw";
             }
@@ -195,7 +199,8 @@ void RLModule::DispatchFunction(RLMachine& machine,
           g << "[gallery] SEEN9515 L" << machine.line_number() << " op="
             << it->second->name() << " intL[0]=" << l0 << " intL[11]=" << l11
             << " intL[20]=" << l20 << " intL[21]=" << l21
-            << " intA[7200+intL[11]]=" << tbl;
+            << " intA[7200+intL[11]]=" << tbl
+            << " bank=" << SIZE_OF_MEM_BANK;
           rlvm_android::AppendAppLogLine(g.str());
         }
       }
