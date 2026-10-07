@@ -1,0 +1,16 @@
+# 试验：不应用任何按钮图案覆盖（no_button_overrides=1）。
+#
+# 机理：ButtonObjectSelectLongOperation 构造时会给每个登记过的按钮打 "NORMAL" 覆盖，
+# 而 `SetButtonOverride()` 从 `GAMEEXE.INI` 的 `BTNOBJ.ACTION[action][NORMAL|HIT|PUSH]`
+# 取图案号；`GraphicsObject::GetPattNo()` 在"有覆盖"时**优先返回覆盖值**，脚本写的
+# `objPattNo` 被完全忽略 ⇒ 表里若缺键/错值，就是"全部照默认图像渲染"。
+#
+# 判据：
+#   开 → 图标变对 ⇒ 就是这张表/这条覆盖链（下一步纯静态对 GAMEEXE.INI 的 BTNOBJ.ACTION）；
+#   开 → 图标不变 ⇒ 覆盖不是主因。
+#
+# 注意：这是试验，不是修法（真实引擎本来就该走这张表）。
+lb_minigame=1
+no_button_overrides=1
+longop_log=1
+patno_trace=1

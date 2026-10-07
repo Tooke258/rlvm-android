@@ -27,6 +27,7 @@
 #include "long_operations/button_object_select_long_operation.h"
 
 #include "machine/rlmachine.h"
+#include "android/app_log.h"
 #include "systems/base/graphics_object.h"
 #include "systems/base/graphics_system.h"
 #include "systems/base/parent_graphics_object_data.h"
@@ -144,6 +145,9 @@ bool ButtonObjectSelectLongOperation::operator()(RLMachine& machine) {
 
 void ButtonObjectSelectLongOperation::SetButtonOverride(GraphicsObject* object,
                                                         const char* type) {
+  // 试验开关（diag: no_button_overrides=1）：完全不应用覆盖 ⇒ 对象渲染用脚本写的
+  // `patt_no_`，而不是 GAMEEXE.INI 的 BTNOBJ.ACTION 表。见 android/app_log.h。
+  if (rlvm_android::LbNoButtonOverridesWanted()) return;
   int action = object->GetButtonAction();
 
   GameexeInterpretObject key = gameexe_("BTNOBJ.ACTION", action, type);

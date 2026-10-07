@@ -68,6 +68,13 @@ bool LbGalleryProbeWanted();
 void SetLbWipeCopyAll(bool on);
 bool LbWipeCopyAllWanted();
 
+// 按钮覆盖抑制（diag: no_button_overrides=1，默认关）：让
+// `ButtonObjectSelectLongOperation::SetButtonOverride()` 直接不生效 ——
+// 于是按钮对象渲染时用脚本写的 `patt_no_`，而不是 `GAMEEXE.INI` 的 `BTNOBJ.ACTION` 表。
+// 用途：验证「UI 全部照默认图像渲染」是不是这张表/这条覆盖链造成的（PC 汉化版缺键/错值）。
+void SetLbNoButtonOverrides(bool on);
+bool LbNoButtonOverridesWanted();
+
 // 「最近一次派发的指令」上下文（scene/line/op 名），给 graphics_object 侧的
 // `InitializeParams()` 取证用：`[params-reset] after=SEENxxxx Lnnn op`。
 void SetLbLastOpContext(int scene, int line, const std::string& op_name);

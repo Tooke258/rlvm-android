@@ -203,6 +203,14 @@ void SetLbWipeCopyAll(bool on) { g_lb_wipe_copy_all = on; }
 bool LbWipeCopyAllWanted() { return g_lb_wipe_copy_all; }
 
 namespace {
+bool g_lb_no_button_overrides = false;
+}  // namespace
+
+void SetLbNoButtonOverrides(bool on) { g_lb_no_button_overrides = on; }
+
+bool LbNoButtonOverridesWanted() { return g_lb_no_button_overrides; }
+
+namespace {
 int g_lb_last_scene = -1;
 int g_lb_last_line = -1;
 std::string g_lb_last_op;
