@@ -7,3 +7,10 @@
 # 注意：这不是修法。打开后普通场景会留残影（对象不再被清），只看相册即可。
 lb_minigame=1
 wipe_copy_all=1
+# 长操作取证：push/pop 各一行并带 C++ 类型名。
+# 判据：若相册里反复出现 push(FadeEffect/…LoadHaikei…) 却几乎没有对应的 pop
+#      ⇒ 转场长操作一直挂在栈上，每帧把它的 after 快照盖在对象层之上（= "归位"）。
+#      （上一版配置漏了 patno_trace/gallery_probe，导致那一轮日志只有 1.7KB、什么都看不到。）
+longop_log=1
+patno_trace=1
+gallery_probe=1
