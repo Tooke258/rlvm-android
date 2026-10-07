@@ -23,6 +23,8 @@ void pt00_emu_get_intd(int* dst, unsigned count);
 void pt00_emu_set_trace_ctx(int on, int max_lines);
 void pt00_emu_set_watch(unsigned eip, int max_lines);
 void pt00_emu_set_fp_trace(unsigned lo, unsigned hi, int cap);
+void pt00_emu_set_peek(const unsigned *vas, int n);
+void pt00_emu_set_run_ctors(int on);
 void pt00_emu_set_insn_trace(unsigned lo, unsigned hi, int cap);
 void pt00_emu_set_jcc_flip(unsigned eip);
 }
@@ -33,6 +35,25 @@ constexpr int kIntDCount = 2000;
 
 bool g_tried = false;
 bool g_ready = false;
+
+// diag intd_pin：钉住若干 intD 槽（只影响喂给 DLL 的那份快照）。
+static int g_pin_slot[8];
+static int g_pin_value[8];
+static int g_pin_n = 0;
+
+// diag intd_bias：给若干 intD 槽**加常数**（不是钉死）——保留脚本自己的推进，
+// 只把整条阶梯平移。用于"把触球相位整体挪到 PC 的位置"这类定量实验。
+static int g_bias_slot[8];
+static int g_bias_delta[8];
+static int g_bias_n = 0;
+
+static bool IsIntdSlotInjected(int slot) {
+  for (int i = 0; i < g_pin_n; ++i)
+    if (g_pin_slot[i] == slot) return true;
+  for (int i = 0; i < g_bias_n; ++i)
+    if (g_bias_slot[i] == slot) return true;
+  return false;
+}
 bool g_tick31 = false;  // 试验开关：帧首替脚本补调 CallDLL(0,31)
 // pt00_intg_hack=0 时不在首次调用时预置 intG[1900]/[1901]（交给脚本自己置位）。
 bool g_intg_hack = true;
@@ -96,6 +117,77 @@ void SetInsnTrace(unsigned lo, unsigned hi, int cap) {
 
 // 定点翻转条件跳转（见 emu.c 里 pt00_emu_set_jcc_flip 的说明）。
 void SetJccFlip(unsigned eip) { pt00_emu_set_jcc_flip(eip); }
+
+// diag intd_pin=<slot>=<value>[,…]：解析后由 CallDLL 每次喂快照时钉住。
+void SetIntdPin(const std::string& csv) {
+  g_pin_n = 0;
+  size_t from = 0;
+  while (from <= csv.size() && g_pin_n < 8) {
+    size_t comma = csv.find(',', from);
+    std::string one = csv.substr(
+        from, comma == std::string::npos ? std::string::npos : comma - from);
+    size_t eq = one.find('=');
+    if (eq != std::string::npos) {
+      int slot = atoi(one.substr(0, eq).c_str());
+      int val = atoi(one.substr(eq + 1).c_str());
+      if (slot > 0) {
+        g_pin_slot[g_pin_n] = slot;
+        g_pin_value[g_pin_n] = val;
+        ++g_pin_n;
+      }
+    }
+    if (comma == std::string::npos) break;
+    from = comma + 1;
+  }
+}
+
+// diag intd_bias=<slot>=<delta>[,…]：喂快照时给这些槽加常数（保留扫动）。
+void SetIntdBias(const std::string& csv) {
+  g_bias_n = 0;
+  size_t from = 0;
+  while (from <= csv.size() && g_bias_n < 8) {
+    size_t comma = csv.find(',', from);
+    std::string one = csv.substr(
+        from, comma == std::string::npos ? std::string::npos : comma - from);
+    size_t eq = one.find('=');
+    if (eq != std::string::npos) {
+      int slot = atoi(one.substr(0, eq).c_str());
+      int val = atoi(one.substr(eq + 1).c_str());
+      if (slot > 0) {
+        g_bias_slot[g_bias_n] = slot;
+        g_bias_delta[g_bias_n] = val;
+        ++g_bias_n;
+      }
+    }
+    if (comma == std::string::npos) break;
+    from = comma + 1;
+  }
+}
+
+// CRT 静态构造（diag pt00_run_ctors=1）：补上手工加载镜像缺失的 _initterm 那一步。
+// 见 emu.c 里 run_crt_initializers() 的说明（目标点/本垒 (0,0,2100) 就出自那里）。
+void SetRunCtos(bool on) { pt00_emu_set_run_ctors(on ? 1 : 0); }
+
+// 按地址盯几个 dword（diag pt00_peek=10023D20,10023D28），值变化时执行器打一行。
+// 用途：目标点/本垒在 DLL 文件里是 0/0，运行期应为 0/2100；两侧对照同一对地址。
+void SetPeek(const std::string& csv_hex) {
+  unsigned vas[8];
+  int n = 0;
+  size_t from = 0;
+  while (from <= csv_hex.size() && n < 8) {
+    size_t comma = csv_hex.find(',', from);
+    std::string one = csv_hex.substr(
+        from, comma == std::string::npos ? std::string::npos : comma - from);
+    while (!one.empty() && (one[0] == ' ' || one[0] == '\t')) one.erase(0, 1);
+    while (!one.empty() && (one.back() == ' ' || one.back() == '\t')) one.pop_back();
+    if (!one.empty()) {
+      vas[n++] = (unsigned)strtoul(one.c_str(), nullptr, 16);
+    }
+    if (comma == std::string::npos) break;
+    from = comma + 1;
+  }
+  pt00_emu_set_peek(vas, n);
+}
 
 void SetVerbose(bool on) { g_verbose = on; }
 
@@ -334,6 +426,22 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
   if (g_verbose && call_count % 2000 == 0) DumpFuncHistogram();
   // 跑完再把改动写回引擎（只写真正变了的槽，省点 SetIntValue 的开销）。
   for (int i = 0; i < kIntDCount; ++i) g_intd[i] = GetD(machine, i);
+  // diag intd_pin=<slot>=<value>[,…]：把指定 intD 槽**钉住**后再喂给模拟器。
+  // 用途（2026-10-07）：把棒角 intD[624] 钉到 PC 触球时的值（2635/2785），
+  // 用来分开"触球相位"与"参数/轴向映射"两种可能——
+  //   钉住后偏转变外野 ⇒ 参数没问题，之前是相位；
+  //   钉住后仍逆时针偏 ~90° ⇒ 参数/轴向确实错。
+  // 只改喂给 DLL 的副本，不动脚本自己的推进。
+  for (int i = 0; i < g_pin_n; ++i) {
+    if (g_pin_slot[i] >= 0 && g_pin_slot[i] < kIntDCount)
+      g_intd[g_pin_slot[i]] = g_pin_value[i];
+  }
+  // diag intd_bias=<slot>=<delta>[,…]：给指定槽**加常数**（保留扫动）。
+  // 定量实验用：intd_bias=624=-900 ⇒ 棒角整条阶梯平移 −6 级（= −90°）。
+  for (int i = 0; i < g_bias_n; ++i) {
+    if (g_bias_slot[i] >= 0 && g_bias_slot[i] < kIntDCount)
+      g_intd[g_bias_slot[i]] += g_bias_delta[i];
+  }
   pt00_emu_set_intd(g_intd.data(), kIntDCount);
   int cam_before[5];
   for (int i = 0; i < 5; ++i) cam_before[i] = g_intd[1900 + i];
@@ -389,6 +497,9 @@ bool CallDLL(RLMachine& machine, int func, int a1, int a2, int a3, int a4) {
     }
   }
   for (int i = 0; i < kIntDCount; ++i) {
+    // 被 intd_pin / intd_bias 改过的槽**不写回**：否则偏置会泄漏进脚本，
+    // 脚本下一帧再从错的值继续推进（例如棒角 [624] 会逐帧漂移）。
+    if (IsIntdSlotInjected(i)) continue;
     if (g_intd[i] != GetD(machine, i)) SetD(machine, i, g_intd[i]);
   }
   return true;

@@ -1,6 +1,8 @@
 #ifndef PT00_EMU_BRIDGE_H_
 #define PT00_EMU_BRIDGE_H_
 
+#include <string>
+
 class RLMachine;
 
 // PT00 小游戏的**兼容层**桥：把脚本的 CallDLL 转给自研 x86-32 执行器，
@@ -32,6 +34,14 @@ void SetWatch(unsigned eip, int max_lines);
 void SetFpTrace(unsigned lo, unsigned hi, int cap);
 void SetInsnTrace(unsigned lo, unsigned hi, int cap);
 void SetJccFlip(unsigned eip);
+// 按 guest 地址盯几个 dword（diag pt00_peek=10023D20,10023D28），值变化时打一行。
+void SetPeek(const std::string& csv_hex);
+// CRT 静态构造（diag pt00_run_ctors=1）。
+void SetRunCtos(bool on);
+// diag intd_pin=<slot>=<value>[,…]：每次喂 intD 快照给 DLL 时钉住这些槽。
+void SetIntdPin(const std::string& csv);
+// diag intd_bias=<slot>=<delta>[,…]：喂给 DLL 时给这些槽加常数（保留脚本推进）。
+void SetIntdBias(const std::string& csv);
 
 // 逐调用诊断日志开关（默认关；logcat 是同步 I/O，开着会把小游戏越跑越慢）。
 void SetVerbose(bool on);

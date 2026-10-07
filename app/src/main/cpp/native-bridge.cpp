@@ -329,6 +329,16 @@ struct DiagOptions {
   // 地址就打印寄存器 + [edi-0x10] 结构体窗口。死循环里的寄存器被 add 推歪之后
   // 看不出入口现场，这是唯一能拿回「循环入口 begin/end」的手段。
   unsigned pt00_watch = 0;
+  // pt00_peek=<hex>,<hex>,…：盯这些 guest 地址的 dword（值变化时执行器打一行）。
+  // 用途：两侧对照 DLL 全局量，例如目标点/本垒 0x10023D20/0x10023D28
+  //（文件里是 0/0，运行期应为 0/2100）。
+  std::string pt00_peek;
+  // pt00_run_ctors=1：补跑 PT00.dll 的 CRT 静态构造表（默认关，A/B 用）。
+  bool pt00_run_ctors = false;
+  // intd_pin=624=2635[,槽=值…]：喂给 DLL 的 intD 副本里把这些槽钉住。
+  std::string intd_pin;
+  // intd_bias=624=-900[,槽=增量…]：喂给 DLL 的 intD 副本加上这个常数（保留脚本推进）。
+  std::string intd_bias;
   bool dump_graphics = false;
   bool audio_selftest = false;
   // 合成统计（逐像素累加）默认关闭，避免拖慢渲染。
@@ -631,6 +641,18 @@ DiagOptions LoadDiagOptions() {
     } else if (key == "pt00_watch") {
       options.pt00_watch =
           static_cast<unsigned>(std::strtoul(value.c_str(), nullptr, 16));
+    } else if (key == "pt00_peek") {
+      // pt00_peek=10023D20,10023D28：盯这几个 guest 地址的 dword，值变就打一行。
+      options.pt00_peek = value;
+    } else if (key == "pt00_run_ctors") {
+      // pt00_run_ctors=1：补跑 CRT 静态构造表（手工加载镜像缺的 _initterm 那一步）。
+      options.pt00_run_ctors = (number != 0);
+    } else if (key == "intd_pin") {
+      // intd_pin=624=2635：每次喂 intD 给 DLL 时把该槽钉住（只影响 DLL 看到的副本）。
+      options.intd_pin = value;
+    } else if (key == "intd_bias") {
+      // intd_bias=624=-900：每次喂 intD 给 DLL 时给该槽加常数（保留扫动，只平移相位）。
+      options.intd_bias = value;
     } else if (key == "mov_probe_path") {
       options.mov_probe_path = value;  // 值是设备上的路径或诊断目录下的文件名
     } else if (key == "mov_codec") {
@@ -1584,6 +1606,13 @@ void RunEngineOn(System& system,
   /* max_lines = -1：只进环形缓冲，步数上限时才整环转储（避免每帧几十条刷屏）。 */
   if (diag.pt00_watch != 0)
     pt00emu::SetWatch(diag.pt00_watch, -1);
+  if (!diag.pt00_peek.empty()) pt00emu::SetPeek(diag.pt00_peek);
+  pt00emu::SetRunCtos(diag.pt00_run_ctors);
+  if (!diag.intd_pin.empty()) pt00emu::SetIntdPin(diag.intd_pin);
+  if (!diag.intd_bias.empty()) pt00emu::SetIntdBias(diag.intd_bias);
+  // 版本标记：用来一眼确认设备上跑的是不是"带 ctors 开关"这一版 APK。
+  std::fprintf(stderr, "[pt00] diag: run_ctors=%d peek=\"%s\"\n",
+               diag.pt00_run_ctors ? 1 : 0, diag.pt00_peek.c_str());
   // 上限 6000 行：大约覆盖 func 50 的 6~8 次调用。
   // （第一轮设成 600，结果只装下一次「没击中」的调用，击中支被截断了。）
   if (g_pt00_fp_lo != 0 && g_pt00_fp_hi > g_pt00_fp_lo)

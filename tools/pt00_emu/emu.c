@@ -193,6 +193,54 @@ static void intd_ring_add(uint32_t idx, uint32_t val, uint32_t eip); /* 定义�
 
 static uint32_t rd32(uint32_t a);   /* 下面定义；guest_fault 里要 dump ctx */
 
+/* -------------------------------------------------------------------------*
+ * pt00_peek：按 guest 地址盯几个 dword，值一变就打一行（默认关）。
+ *
+ * 为什么需要：目标点/本垒在 DLL 文件里是 0/0（`0x10023D20` / `0x10023D28`），
+ * 运行期应由 func 50 内的初始化段填成 0 / 2100；「朝目标投/传」的逻辑都用它。
+ * 手机上如果读到 0/0，就是"外野回传的落点朝击球手身后偏"的直接原因
+ * （目标 z 从 2100 变成 0）。两侧对照同一对地址即可定性。
+ * -------------------------------------------------------------------------*/
+static uint32_t g_peek_va[8];
+static uint32_t g_peek_last[8];
+static int g_peek_n = 0;
+static int g_peek_printed = 0;
+
+/* CRT 静态构造开关（diag pt00_run_ctors=1，默认关）。
+ * 见 run_crt_initializers() 的说明：真实宿主 LoadLibrary 会跑 DllMain→_initterm，
+ * 我们手工加载镜像不会。先做成开关做 A/B，验证后再考虑转正。 */
+static int g_run_ctors = 0;
+
+void pt00_emu_set_run_ctors(int on) { g_run_ctors = on ? 1 : 0; }
+
+void pt00_emu_set_peek(const uint32_t *vas, int n) {
+  if (n > 8) n = 8;
+  if (n < 0) n = 0;
+  g_peek_n = n;
+  for (int i = 0; i < n; ++i) {
+    g_peek_va[i] = vas[i];
+    g_peek_last[i] = 0xFFFFFFFFu;
+  }
+  g_peek_printed = 0;
+}
+
+static void peek_dump(void) {
+  if (g_peek_n <= 0) return;
+  uint32_t cur[8];
+  int changed = !g_peek_printed;
+  for (int i = 0; i < g_peek_n; ++i) {
+    cur[i] = rd32(g_peek_va[i]);
+    if (cur[i] != g_peek_last[i]) changed = 1;
+  }
+  if (!changed) return;
+  g_peek_printed = 1;
+  for (int i = 0; i < g_peek_n; ++i) g_peek_last[i] = cur[i];
+  fprintf(stderr, "[pt00] peek");
+  for (int i = 0; i < g_peek_n; ++i)
+    fprintf(stderr, " %08x=%d(0x%08x)", g_peek_va[i], (int)cur[i], cur[i]);
+  fprintf(stderr, "\n");
+}
+
 #if !defined(_WIN32)
 /* ------------------------------------------------------------------ 崩溃自证
  * 我们踩过两次：真机 tombstone 的 pc/frame 落在纯算术函数里（clang 内联 + 
@@ -1743,6 +1791,35 @@ static int emu_run(uint32_t entry_, int argc_, const uint32_t *args) {
   return rc;
 }
 
+/* -------------------------------------------------------------------------*
+ * CRT 静态构造（_initterm 的等价物）—— diag pt00_run_ctors=1。
+ *
+ * 真实宿主（REALLIVE.EXE）用 LoadLibrary 加载 PT00.dll ⇒ Windows 跑
+ * DllMain(DLL_PROCESS_ATTACH) → _CRT_INIT → _initterm，于是 DLL 里
+ * **整张静态构造表**会被执行一遍。
+ * 我们的执行器是手工加载镜像、从 reallive_dll_func_load(0x11B0) 起跑，
+ * 这一步一直缺失。已证实的后果（2026-10-07）：
+ *   目标点 / 本垒 (0, 0, 2100) 是静态构造表里的 sub_10004AD0 写的；
+ *   它没跑 ⇒ dword_10023D20/D24/D28 停在文件初值 0/0/0 ⇒
+ *   所有「朝目标投 / 捕手回传」都瞄 z=0 ⇒ 落点偏到击球手身后 2100
+ *   （用户实测：「外野回传目标点朝击球手后面偏移很多」）。
+ *
+ * 表位置（IDA xref 实证：0x1001F018 处 `dd offset sub_10004AD0`）：
+ *   .data 0x1001F004 起、项是绝对 VA、以 0 结尾。
+ * -------------------------------------------------------------------------*/
+static void run_crt_initializers(void) {
+  uint32_t va = IMAGE_BASE + 0x1F004u;
+  int n = 0;
+  for (; n < 64; ++n, va += 4) {
+    uint32_t fn = rd32(va);
+    if (fn < IMAGE_BASE + 0x1000u || fn >= IMAGE_BASE + 0x1D000u) break;
+    uint32_t args[1] = {0};
+    int rc = emu_run(fn, 0, args);
+    fprintf(stderr, "[pt00] ctor %08x %s\n", fn, rc == 0 ? "ok" : "EARLY-RETURN");
+  }
+  fprintf(stderr, "[pt00] CRT initializers attempted: %d\n", n);
+}
+
 int pt00_emu_load_image(const void *data, unsigned size) {
   emu_install_fault_handler();
   if (!g_mem) {
@@ -1767,6 +1844,9 @@ int pt00_emu_load_image(const void *data, unsigned size) {
   wr32(TIB_BASE + 0x00, 0xffffffffu);
   wr32(CTX_BASE + 0x14, INTD_BASE);
   uint32_t args[5] = {CTX_BASE, 0, 0, 0, 0};
+  /* 真实宿主的顺序：LoadLibrary（含 CRT 静态构造）→ func_load → func_init。
+   * 这里在 func_load 之前补上静态构造（diag 开关，默认关）。 */
+  if (g_run_ctors) run_crt_initializers();
   if (emu_run(IMAGE_BASE + 0x11B0u, 2, args) != 0) return -3; /* func_load */
   { /* 与 oracle 对齐：钉死 CRT 的 rand 起点（对照装置语义，见 HANDOFF §7.2） */
     uint32_t idx = rd32(IMAGE_BASE + 0x20AA0);
@@ -1780,6 +1860,7 @@ int pt00_emu_load_image(const void *data, unsigned size) {
 int pt00_emu_call(int func, int a1, int a2, int a3, int a4) {
   uint32_t args[5] = {(uint32_t)func, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3,
                       (uint32_t)a4};
+  peek_dump();   /* pt00_peek：只在值变化时打行 */
   if (emu_run(IMAGE_BASE + 0x1680u, 5, args) != 0) return 1; /* 契约：恒返回 1 */
   return (int)cpu.eax;
 }
