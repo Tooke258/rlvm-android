@@ -734,12 +734,17 @@ void AudioEngine::Play(int channel_index,
     channel.pending_volume.store(clamped);
     channel.pending_loop.store(loop);
     channel.fade_out_request.store(true);
+    // ★ 换曲必须清掉上一首留下的「到点真停」（`FadeOutAndStop` 写的 `stop_at_ms`）。
+    // 否则：`bgmFadeOut(2000)` 排下的停播到点，会在 2 秒后把**刚起的新曲**一起停掉 ——
+    // 真机症状就是「每次换曲都只播两秒就被截断」。见 FadeOutAndStop() 与 MixInto()。
+    channel.stop_at_ms.store(0, std::memory_order_relaxed);
     return;
   }
 
   channel.playing.store(false);   // 先停，避免回调读到半更新状态
   channel.draining.store(false);
   channel.fade_out_request.store(false);
+  channel.stop_at_ms.store(0, std::memory_order_relaxed);  // ★ 同上：起播前的冷启动路径
   channel.ring->Reset();
   {
     std::lock_guard<std::mutex> lock(channel.mutex);
@@ -869,6 +874,10 @@ void AudioEngine::DecoderLoop() {
           channel->ring->Reset();
           channel->volume.store(channel->pending_volume.load());
           channel->loop.store(channel->pending_loop.load());
+          // ★ 新音源真正上线的这一刻也要清「到点真停」：这是最权威的一处 ——
+          // 换曲走的是"挂起 pending_source → 旧内容淡出 → 解码线程接手"这条路，
+          // 旧曲的停播待办如果活到这里，就会在到点把新曲停掉（每次换曲两秒即断）。
+          channel->stop_at_ms.store(0, std::memory_order_relaxed);
           channel->draining.store(false);
           // 新音源淡入 + 旧内容已淡出 = 交叉淡化，切换点无台阶。
           channel->fade_in_remaining = kFadeInFrames;
