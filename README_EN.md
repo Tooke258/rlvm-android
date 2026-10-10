@@ -7,8 +7,15 @@ This is the English translation of [README.md](README.md).
 
 ## Version / releases
 
-**Latest: `v0.3.0`** (`versionCode 7`) —
+**Latest: `v0.3.1`** (`versionCode 8`) —
 <https://github.com/Tooke258/rlvm-android/releases>
+
+> `v0.3.1` fixes an audio regression introduced in v0.3.0: **BGM was cut off ~2 s after
+> every track change** (the previous track's "stop when faded" deadline was never cleared
+> when a new track started), and removes the pad's "加速" button, which duplicated "Ctrl".
+> **Upgrading is recommended for all v0.3.0 users.** Also note: from v0.3.0 on, the global
+> memory (collection/settings) uses a new layout, so a `global.sav.gz` from v0.2.4 or earlier
+> will not load on v0.3.0+ (in-game native saves are unaffected).
 
 Compared to v0.2.4 this release ships two things: the backlog from the save/gallery/
 scene-select line, and the **first proper support for the baseball minigame**.

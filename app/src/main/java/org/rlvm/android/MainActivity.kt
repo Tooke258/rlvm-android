@@ -196,7 +196,7 @@ class MainActivity : Activity() {
             setOnClickListener { setTextContainerEnabled(!textContainerEnabled) }
         }
         updateContainerButtonLabel()
-        // 浮动按键栏（v0.2.1 T7.2）：默认关。开启后显示方向键 + 加速 + 击打 + 右键。
+        // 浮动按键栏（v0.2.1 T7.2）：默认关。开启后显示方向键 + 击打 + 右键（+ Ctrl）。
         inputPadButton = Button(this).apply {
             setOnClickListener { setInputPadEnabled(!inputPadEnabled) }
         }
@@ -330,12 +330,12 @@ class MainActivity : Activity() {
 
         // ---- 浮动按键栏（v0.2.1 T7.2）：默认关闭的输入层 --------------------
         //
-        // 给"方向 + 按住键 + 鼠标键"这类小游戏（LBEX 那种）补输入。四条通路：
+        // 给"方向 + 按住键 + 鼠标键"这类小游戏（LBEX 那种）补输入。三条通路：
         //   · 四向方向键 → 移动**鼠标光标**（RealLive 脚本今天唯一读得到的方向输入）；
-        //   · 加速       → 按住时发键盘键（默认 LSHIFT）。脚本目前读不到键盘，这一路是
-        //                  为将来补上小游戏 DLL 模拟预留的；
         //   · 击打       → 鼠标左键按下/抬起；
         //   · 右键       → 鼠标右键按下/抬起（与长按等价，显式按钮更方便）。
+        // （原「加速」按钮＝按 SHIFT，已在 v0.3.1 移除：它与「Ctrl」功能重复，而 Ctrl 走的是
+        //   引擎 `ShouldFastForward` 里那条真正的快进路，SHIFT 只是给脚本预留、没有消费者。）
         // 整层默认 GONE；除按钮本身外不拦截触摸（未命中按钮时事件照旧落到游戏画面）。
         // 动作键保持原尺寸；**方向键单独放大**（真机反馈：54dp 的手指落点太窄，
         // 按方向键经常滑出去）。按钮本身是圆形背景，放大只影响可点区域。
@@ -419,8 +419,6 @@ class MainActivity : Activity() {
             addView(padButton("\u56de\u6eaf", { sendWheel(1) }, {}),
                 LinearLayout.LayoutParams(padSize, padSize))
             addView(padButton("\u524d\u7ffb", { sendWheel(-1) }, {}),
-                LinearLayout.LayoutParams(padSize, padSize))
-            addView(padButton("加速", { sendKey(RLKEY_LSHIFT, true) }, { sendKey(RLKEY_LSHIFT, false) }),
                 LinearLayout.LayoutParams(padSize, padSize))
             addView(padButton("击打", { sendMouseButton(1, true) }, { sendMouseButton(1, false) }),
                 LinearLayout.LayoutParams(padSize, padSize))
@@ -601,7 +599,7 @@ class MainActivity : Activity() {
         updateInputPadButtonLabel()
         if (!enabled) stopPadMove()
         log(
-            if (enabled) "按键栏：开（方向键 = 上下左右 + 光标微推 / 加速 / 击打 / 右键 / Ctrl）"
+            if (enabled) "按键栏：开（方向键 = 上下左右 + 光标微推 / 击打 / 右键 / Ctrl）"
             else "按键栏：关"
         )
     }

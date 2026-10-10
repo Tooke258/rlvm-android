@@ -737,3 +737,50 @@ v0.2.4 之后积压的这一批（存档/相册/选择枝）与本日的**小游
 
 > 归档说明：本日所有 `docs/*.md` 均已更新/归档，无未落盘的结论；代码侧改动全部已提交并推送
 > （`git log --oneline` 从 `227a22f` 到 `1e4f3cd`）。
+
+---
+
+## 2026-10-11 · **v0.3.1**（音频回归修复 + 面板整理 + 完美档资产换代）
+
+`versionCode 8 / versionName 0.3.1`。发版说明见 `docs/RELEASE-NOTES-v0.3.1.md`。
+
+### A. 修的回归：BGM 每次换曲只播两秒
+
+v0.3.0 为修「相册 Scene 回想卡死」把 `BgmFadeOut` 改成 `FadeOutAndStop`
+（音量淡出 + **到点真停**，回调用 `stop_at_ms`），但 **`AudioEngine::Play()` 起新曲时
+没有清 `stop_at_ms`** ⇒ `bgmFadeOut(2000)` 排下的停播到点，2 秒后把刚起的新曲一起停掉。
+修法：在三个"新音源装上"的点清 `stop_at_ms`（`Play()` 的 pending / 冷启动分支 +
+解码线程接手 `pending_source` 那一刻）。`bgmFadeOutEx` 语义不变（相册修复不回归）。
+提交 `9c4d6f6`。
+
+> 教训（与 D-042/D-043 同类）：**引入"到点副作用"（定时停播）时，必须在"新生命周期开始"
+> 的每一处把它清掉**；只清"淡出请求"这类显式标志是不够的。
+
+### B. 变更：「加速」按钮移除
+
+原「加速」= 键盘 `SHIFT`（当年给脚本预留、无消费者），与「Ctrl」（引擎
+`ShouldFastForward` 的真快进）重复 ⇒ 移除，快进统一走 Ctrl。
+
+### C. 完美收集档资产换代（**重要**）
+
+实测确认 D-043 的代价：**2000 布局的旧 `global.sav.gz` 在 v0.3.0+ 上加载失败**
+
+```
+global memory not loaded (first run?): boost::filesystem::rename: Invalid argument ...
+kidoku_unlock_all: marked 640000 bits and flushed global
+cgm_mark_all: entries=410 intZ_set=410 out_of_range=0 cgm_data=410
+collection_unlock_all: set 72 bits (scene 390*32+0..15, music 391*32+0..55)
+```
+
+设备侧用 `tools/rlvm-diag.perfect.txt` 重新解锁后，引擎写出的新档已拉回归档：
+
+| 文件（均在 gitignore 的 `build/`，只是本地资产） | 说明 |
+| --- | --- |
+| `build/global-perfect-engine.sav.gz` | **新（8192 布局，28845 B，2026-10-11）** ⇒ v0.3.0+ 可用 |
+| `build/global-perfect-engine-v031.sav.gz` | 同上（按版本留档） |
+| `build/global-perfect-engine-2000layout.sav.gz` | 旧（28571 B / 10-07）⇒ **仅供 v0.2.4 及更早** |
+
+设备侧 `rlvm-diag.txt` 已换回常规配置（`tools/rlvm-diag.default.txt`），避免每次启动重复解锁。
+另外记一笔：**重装/清应用数据会连 `/sdcard/Android/data/<pkg>/` 一起清掉**（存档、diag 全没，
+SAF 授权也要重授）—— 这正是这次需要重建完美档的原因；升级时一律用 `install -r` 覆盖，
+且**必须与已装包同签名**（本机 release 用 `CN=Tooke.Yang` 那把 keystore ⇒ 装机走 `assembleRelease`）。
