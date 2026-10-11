@@ -30,6 +30,12 @@ constexpr int kAudioMaxChannels = 32;
 // 影片音频专用的混音通道（v0.2.3 / M4）：游戏自己用 0..31，多出来的这一路留给
 // MOV 播放器，避免和 BGM/SE/语音的通道号抢。
 constexpr int kMovieAudioChannel = kAudioMaxChannels;
+// 游戏侧的两路"分组"通道号（与 android_system.cpp 的映射一致）：
+//   · BGM  —— 对应上游用 Mix_HookMusic 维护的独立音乐流（android_system.cpp: kBgmEngineChannel）
+//   · 语音 —— 上游 `KOE_CHANNEL = NUM_BASE_CHANNELS(16) + NUM_EXTRA_WAVPLAY_CHANNELS(8)`
+// 分组增益/鸭子（见 SetAudioMix）就作用在这两路上，SE（0..23）与影片（32）不受影响。
+constexpr int kEngineChannelKoe = 24;
+constexpr int kEngineChannelBgm = 30;
 
 /** 交错立体声 16-bit PCM 的帧数统计。 */
 class FrameRing {
@@ -179,6 +185,22 @@ class AudioEngine {
   void FadeOutAndStop(int channel, int duration_ms);
   bool IsPlaying(int channel) const;
 
+  /**
+   * 音频分组控制（UI「音频」面板）：
+   *   voice_pct —— 语音（KOE，通道 24）增益百分比 0..100
+   *   bgm_pct   —— BGM（通道 30）增益百分比 0..100
+   *   duck_pct  —— **人声播放时**把 BGM 降到的百分比 0..100（100 = 不降）
+   *
+   * 三者都是**乘在**游戏自身音量之上的额外一层（类似系统混音器），不影响
+   * `bgm_volume_script/mod` 那套语义；鸭子跟随"语音通道是否在播"自动起落，
+   * 并用一次回调内的小步长平滑，避免开关瞬间的"抽气"声。
+   */
+  void SetAudioMix(int voice_pct, int bgm_pct, int duck_pct);
+  int mix_voice_pct() const { return mix_voice_pct_.load(std::memory_order_relaxed); }
+  int mix_bgm_pct() const { return mix_bgm_pct_.load(std::memory_order_relaxed); }
+  int mix_duck_pct() const { return mix_duck_pct_.load(std::memory_order_relaxed); }
+  bool mix_voice_playing() const { return mix_voice_playing_.load(std::memory_order_relaxed); }
+
   struct Stats {
     unsigned long long callbacks = 0;
     unsigned long long frames_rendered = 0;
@@ -206,6 +228,12 @@ class AudioEngine {
   std::atomic<bool> running_{false};
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> suspended_{false};
+  // 分组增益（百分数）与鸭子状态。`mix_duck_cur_pct_` 只在音频回调线程里读写。
+  std::atomic<int> mix_voice_pct_{100};
+  std::atomic<int> mix_bgm_pct_{100};
+  std::atomic<int> mix_duck_pct_{100};
+  std::atomic<bool> mix_voice_playing_{false};
+  int mix_duck_cur_pct_ = 100;
   std::string last_error_;
   void* stream_ = nullptr;   // AAudioStream*
   int decoder_thread_started_ = 0;

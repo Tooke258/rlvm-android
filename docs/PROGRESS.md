@@ -784,3 +784,22 @@ collection_unlock_all: set 72 bits (scene 390*32+0..15, music 391*32+0..55)
 另外记一笔：**重装/清应用数据会连 `/sdcard/Android/data/<pkg>/` 一起清掉**（存档、diag 全没，
 SAF 授权也要重授）—— 这正是这次需要重建完美档的原因；升级时一律用 `install -r` 覆盖，
 且**必须与已装包同签名**（本机 release 用 `CN=Tooke.Yang` 那把 keystore ⇒ 装机走 `assembleRelease`）。
+
+### D. v0.3.1 之后（未发版）：UI「音频」面板
+
+侧栏新增**可展开的「音频」区**（表头按钮「音频 ▸/▾」），三个量各自带开关：
+
+| 项 | 语义 | 关掉时 |
+| --- | --- | --- |
+| 语音 | 语音通道（KOE = 引擎通道 24）增益百分比 | 不干预（100） |
+| BGM | BGM 通道（引擎通道 30）增益百分比 | 不干预（100） |
+| 人声时 BGM 降到 | 语音在播时把 BGM 乘上的百分比（鸭子） | 不干预（100） |
+
+* 实现在**混音回调**里：`AudioEngine::SetAudioMix(voice,bgm,duck)` 存三个原子百分数，
+  `MixInto()` 按通道号归属分组乘上去 —— 因此它作用在"游戏自身音量（含淡入淡出）"之上，
+  等价于系统混音器多拧一格，**不改** `bgm_volume_script/mod` / `KoeVolume_mod` 那套语义；
+  鸭子用整数小步长（约 4 个回调 ≈ 40ms）平滑，避免开关瞬间"抽气"；
+* 通道号一致性用 `static_assert` 钉住（`android_system.cpp` 的 `KOE_CHANNEL`/`kBgmEngineChannel`
+  vs `audio_engine.h` 的 `kEngineChannelKoe/kEngineChannelBgm`）；
+* 面板状态六项持久化（`audio_*`），开引擎时同步一次；无头也可用 diag
+  `audio_mix=voice,bgm,duck`（百分数，缺省 100,100,100）。

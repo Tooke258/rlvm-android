@@ -76,6 +76,15 @@ object NativeBridge {
     external fun setMuteEveDisplay(on: Boolean)
 
     /**
+     * UI「音频」面板：分组增益（百分数）。
+     *
+     * [voicePct] 语音（KOE）增益、[bgmPct] BGM 增益、[duckPct] 人声播放时把 BGM 降到的
+     * 百分比；三者都传 100 表示不干预。它们**乘在**游戏自身音量之上（类似系统混音器），
+     * 不影响游戏内的 Config 音量。见 app/src/main/cpp/android/audio_engine.h 的 SetAudioMix()。
+     */
+    external fun setAudioMix(voicePct: Int, bgmPct: Int, duckPct: Int)
+
+    /**
      * 指定文本容器（汉化/原版 SEEN 归档）在**游戏目录树内的相对路径**；
      * 空串表示用游戏目录里的 Seen.txt。
      *

@@ -829,6 +829,13 @@ bool AudioEngine::IsPlaying(int channel_index) const {
   return channels_[channel_index]->playing.load();
 }
 
+void AudioEngine::SetAudioMix(int voice_pct, int bgm_pct, int duck_pct) {
+  auto clamp = [](int v) { return std::max(0, std::min(100, v)); };
+  mix_voice_pct_.store(clamp(voice_pct), std::memory_order_relaxed);
+  mix_bgm_pct_.store(clamp(bgm_pct), std::memory_order_relaxed);
+  mix_duck_pct_.store(clamp(duck_pct), std::memory_order_relaxed);
+}
+
 /**
  * 挂起/恢复音频（黑屏、应用进后台时由 native-bridge.cpp 的 SetEngineSuspended 调用）。
  *
@@ -942,8 +949,35 @@ void AudioEngine::MixInto(int16_t* out,
   if (suspended_.load(std::memory_order_relaxed)) return;
 
   const long long now = NowMillis();
-  for (auto& channel : channels_) {
+  // 分组增益 + 人声鸭子（见 SetAudioMix）：每次回调先算一次，供本轮所有通道使用。
+  // 鸭子用整数小步长逼近目标，~4 个回调（约 40ms）走完，避免开关瞬间的"抽气"声。
+  const int mix_voice = mix_voice_pct_.load(std::memory_order_relaxed);
+  const int mix_bgm = mix_bgm_pct_.load(std::memory_order_relaxed);
+  const int mix_duck = mix_duck_pct_.load(std::memory_order_relaxed);
+  const bool voice_playing =
+      kEngineChannelKoe < static_cast<int>(channels_.size()) &&
+      channels_[kEngineChannelKoe]->playing.load(std::memory_order_relaxed);
+  mix_voice_playing_.store(voice_playing, std::memory_order_relaxed);
+  {
+    const int target = voice_playing ? mix_duck : 100;
+    const int delta = target - mix_duck_cur_pct_;
+    if (delta != 0) {
+      const int step = delta / 4;
+      mix_duck_cur_pct_ += (step != 0 ? step : (delta > 0 ? 1 : -1));
+    }
+  }
+
+  for (size_t ci = 0; ci < channels_.size(); ++ci) {
+    Channel* channel = channels_[ci].get();
     if (!channel->playing.load(std::memory_order_relaxed)) continue;
+
+    // 该通道属于哪一组：语音（KOE）/ BGM 各自一组；SE 与影片音频不参与分组控制。
+    int group_pct = 100;
+    if (ci == static_cast<size_t>(kEngineChannelKoe)) {
+      group_pct = mix_voice;
+    } else if (ci == static_cast<size_t>(kEngineChannelBgm)) {
+      group_pct = mix_bgm * mix_duck_cur_pct_ / 100;
+    }
 
     // 到点停：必须在"读环形缓冲"之前判断。若放在后面，一旦缓冲已排空
     // （got == 0 就 continue），这个停通道的请求永远不会被处理，
@@ -989,6 +1023,8 @@ void AudioEngine::MixInto(int16_t* out,
         volume = std::max(0, std::min(255, volume));
       }
     }
+    // 分组增益：乘在"游戏自身音量（含渐变）"之上，等价于系统混音器多拧一格。
+    if (group_pct != 100) volume = volume * group_pct / 100;
 
     const size_t samples = got * kAudioChannels;
 

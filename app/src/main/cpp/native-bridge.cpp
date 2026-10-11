@@ -452,6 +452,9 @@ struct DiagOptions {
   bool no_button_overrides = true;
   // mute_eve_display=1：事件牌（objEveDisplay）显示抑制。默认关。
   bool mute_eve_display = false;
+  // audio_mix=voice,bgm,duck：音频分组增益（百分数，缺省 100,100,100 = 不干预）。
+  // 对应 UI 面板「音频」那一段；见 audio_engine.h 的 SetAudioMix()。
+  std::string audio_mix;
   // sys1005=legacy|fixed：Sys 1005（两点距离，LBEX 只在小游戏里用 1 次）的
   // 实现选择。默认 fixed（正确语义）；legacy = 退回上游 RLVM 的占位公式
   // `(v1-v3)/(v2-v4)`，用于真机 A/B 证明「球的显隐就是被它决定」。
@@ -588,6 +591,8 @@ DiagOptions LoadDiagOptions() {
       options.no_button_overrides = (number != 0);
     } else if (key == "mute_eve_display") {
       options.mute_eve_display = (number != 0);
+    } else if (key == "audio_mix") {
+      options.audio_mix = value;
     } else if (key == "sys1005") {
       options.sys1005 = value;
     } else if (key == "sys1005_trace") {
@@ -1880,6 +1885,23 @@ void RunEngineOn(System& system,
   rlvm_android::SetLbWipeCopyAll(diag.wipe_copy_all);
   rlvm_android::SetLbNoButtonOverrides(diag.no_button_overrides);
   rlvm_android::SetLbMuteEveDisplay(diag.mute_eve_display);
+  // audio_mix：三个百分数（voice,bgm,duck），缺省不干预。
+  if (!diag.audio_mix.empty()) {
+    int v[3] = {100, 100, 100};
+    int n = 0;
+    size_t from = 0;
+    while (from <= diag.audio_mix.size() && n < 3) {
+      const size_t comma = diag.audio_mix.find(',', from);
+      const std::string one = diag.audio_mix.substr(
+          from, comma == std::string::npos ? std::string::npos : comma - from);
+      if (!one.empty()) v[n++] = atoi(one.c_str());
+      if (comma == std::string::npos) break;
+      from = comma + 1;
+    }
+    rlvm_android::AudioEngine::Instance().SetAudioMix(v[0], v[1], v[2]);
+    std::fprintf(stderr, "[audio] diag audio_mix: voice=%d bgm=%d duck=%d\n",
+                 v[0], v[1], v[2]);
+  }
   // Sys 1005 的语义选择 + 求值取证（实现在上游 module_sys.cc 里）。
   g_sys1005_legacy = (diag.sys1005 == "legacy");
   g_sys1005_trace = diag.sys1005_trace;
@@ -2727,6 +2749,15 @@ void SetMuteEveDisplay(JNIEnv* /*env*/, jobject /*thiz*/, jboolean on) {
   rlvm_android::SetLbMuteEveDisplay(on == JNI_TRUE);
 }
 
+/**
+ * UI「音频」面板：语音 / BGM 的分组增益（百分数）与"人声播放时把 BGM 降到多少"。
+ * 100,100,100 = 完全不干预。见 audio_engine.h 的 SetAudioMix()。
+ */
+void SetAudioMix(JNIEnv* /*env*/, jobject /*thiz*/, jint voice_pct, jint bgm_pct,
+                 jint duck_pct) {
+  rlvm_android::AudioEngine::Instance().SetAudioMix(voice_pct, bgm_pct, duck_pct);
+}
+
 void SetEngineSuspended(JNIEnv* /*env*/, jobject /*thiz*/, jboolean suspended) {
   const bool value = suspended != JNI_FALSE;
   g_engine_suspended.store(value);
@@ -2879,6 +2910,7 @@ const JNINativeMethod kNativeMethods[] = {
     {"requestStop", "()V", reinterpret_cast<void*>(RequestStop)},
     {"setEngineSuspended", "(Z)V", reinterpret_cast<void*>(SetEngineSuspended)},
     {"setMuteEveDisplay", "(Z)V", reinterpret_cast<void*>(SetMuteEveDisplay)},
+    {"setAudioMix", "(III)V", reinterpret_cast<void*>(SetAudioMix)},
     {"requestGraphicsDump", "()V", reinterpret_cast<void*>(RequestGraphicsDump)},
     {"setTextContainerPath", "(Ljava/lang/String;)V",
      reinterpret_cast<void*>(SetTextContainerPath)},

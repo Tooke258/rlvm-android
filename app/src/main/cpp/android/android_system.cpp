@@ -622,6 +622,11 @@ constexpr char kAudioTag[] = "rlvm-audio";
 // BGM 单独占用一个引擎通道：对应上游用 Mix_HookMusic 维护的独立音乐流。
 // RLVM 自己的通道 0..23（WAV/SE）与 24（KOE）直接一对一映射。
 constexpr int kBgmEngineChannel = 30;
+// 分组控制（UI「音频」面板）按通道号归属分组，两处常量必须一致：
+static_assert(KOE_CHANNEL == rlvm_android::kEngineChannelKoe,
+              "语音通道号与 audio_engine.h 的 kEngineChannelKoe 不一致");
+static_assert(kBgmEngineChannel == rlvm_android::kEngineChannelBgm,
+              "BGM 通道号与 audio_engine.h 的 kEngineChannelBgm 不一致");
 
 /** 从文件标识里取小写扩展名，用于选择解码器。 */
 std::string ExtensionOf(const std::string& file_id) {

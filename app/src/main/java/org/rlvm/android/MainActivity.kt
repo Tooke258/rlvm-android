@@ -25,6 +25,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import java.io.File
 import kotlin.concurrent.thread
@@ -59,6 +60,13 @@ class MainActivity : Activity() {
         const val KEY_LONG_PRESS_RIGHT = "long_press_right"
         // 「事件牌：屏蔽/恢复」（2026-10-07）：卡住的公告/事件牌一键洗掉，默认关。
         const val KEY_MUTE_EVE = "mute_eve_display"
+        // UI「音频」面板的六项状态（三个量 + 三个开关）。
+        const val KEY_AUDIO_VOICE_ON = "audio_voice_on"
+        const val KEY_AUDIO_VOICE_PCT = "audio_voice_pct"
+        const val KEY_AUDIO_BGM_ON = "audio_bgm_on"
+        const val KEY_AUDIO_BGM_PCT = "audio_bgm_pct"
+        const val KEY_AUDIO_DUCK_ON = "audio_duck_on"
+        const val KEY_AUDIO_DUCK_PCT = "audio_duck_pct"
         // 引擎默认不限时运行（见 rlvm-diag.txt 的 time_budget_ms），
         // 指令上限也放宽到实际达不到的值，由「停止引擎」按钮负责收尾。
         const val MAX_INSTRUCTIONS = Int.MAX_VALUE
@@ -122,6 +130,16 @@ class MainActivity : Activity() {
     // 「事件牌：屏蔽/恢复」按钮（标签随状态变，留引用）。
     private lateinit var eveDisplayButton: Button
     private var muteEveDisplay = false
+    // ---- UI「音频」面板（v0.3.1+）：分组增益 + 人声鸭子 --------------------------
+    // 三个量各自一个开关：关掉即"不干预"（voice/bgm→100、duck→100）。
+    private lateinit var audioSection: LinearLayout
+    private lateinit var audioToggleButton: Button
+    private var audioVoiceOn = true
+    private var audioVoicePct = 100
+    private var audioBgmOn = true
+    private var audioBgmPct = 100
+    private var audioDuckOn = false
+    private var audioDuckPct = 40
     private var engineRunning = false
     private var longPressRightClick = true
     // 虚拟光标位置（游戏帧坐标）；由方向键推动，-1 表示还没初始化。
@@ -299,6 +317,26 @@ class MainActivity : Activity() {
             addView(buttonRow(movTestButton, dumpTreeButton))
             // 「事件牌」一键洗掉（见 toggleMuteEveDisplay 的注释）。
             addView(buttonRow(eveDisplayButton))
+            // ---- 「音频」可展开控制项（v0.3.1+）-------------------------------
+            // 三个量 + 三个开关：语音增益 / BGM 增益 / 人声播放时把 BGM 降到的百分比。
+            // 都乘在游戏自身音量之上（类似系统混音器），不改变游戏内 Config 语义。
+            audioVoiceOn = prefs.getBoolean(KEY_AUDIO_VOICE_ON, true)
+            audioVoicePct = prefs.getInt(KEY_AUDIO_VOICE_PCT, 100)
+            audioBgmOn = prefs.getBoolean(KEY_AUDIO_BGM_ON, true)
+            audioBgmPct = prefs.getInt(KEY_AUDIO_BGM_PCT, 100)
+            audioDuckOn = prefs.getBoolean(KEY_AUDIO_DUCK_ON, false)
+            audioDuckPct = prefs.getInt(KEY_AUDIO_DUCK_PCT, 40)
+            audioSection = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = android.view.View.GONE
+            }
+            audioToggleButton = Button(this@MainActivity).apply {
+                setOnClickListener { toggleAudioSection() }
+            }
+            updateAudioToggleLabel()
+            rebuildAudioSection()
+            addView(buttonRow(audioToggleButton))
+            addView(audioSection)
         }
 
         // ---- 全屏日志层：面板里放不下日志，这里给它整屏 + 复制/清空 --------------
@@ -929,6 +967,8 @@ class MainActivity : Activity() {
         applyTextContainer()
         // 同理：把「事件牌：屏蔽/恢复」的当前状态同步给引擎（它是进程内的开关）。
         runCatching { NativeBridge.setMuteEveDisplay(muteEveDisplay) }
+        // 音频分组增益也是进程内状态：每次开引擎同步一次。
+        applyAudioMix()
         engineRunning = true
         updateEngineButtonLabel()
         background {
@@ -1173,6 +1213,97 @@ class MainActivity : Activity() {
             eveDisplayButton.text =
                 if (muteEveDisplay) "事件牌：屏蔽" else "事件牌：显示"
         }
+    }
+
+    // ---- UI「音频」面板 -------------------------------------------------------
+
+    /** 展开/收起「音频」区（只是可见性切换；不重建视图）。 */
+    private fun toggleAudioSection() {
+        if (!::audioSection.isInitialized) return
+        val show = audioSection.visibility != android.view.View.VISIBLE
+        audioSection.visibility =
+            if (show) android.view.View.VISIBLE else android.view.View.GONE
+        updateAudioToggleLabel()
+        rootView.requestLayout()
+    }
+
+    private fun updateAudioToggleLabel() {
+        if (!::audioToggleButton.isInitialized) return
+        val expanded = ::audioSection.isInitialized &&
+            audioSection.visibility == android.view.View.VISIBLE
+        audioToggleButton.text = if (expanded) "音频 ▾" else "音频 ▸"
+    }
+
+    /** 把三个量按当前开关折算成实际生效值（关 = 不干预）后交给引擎。 */
+    private fun applyAudioMix() {
+        val voice = if (audioVoiceOn) audioVoicePct else 100
+        val bgm = if (audioBgmOn) audioBgmPct else 100
+        val duck = if (audioDuckOn) audioDuckPct else 100
+        runCatching { NativeBridge.setAudioMix(voice, bgm, duck) }
+    }
+
+    private fun persistAudioMix() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(KEY_AUDIO_VOICE_ON, audioVoiceOn)
+            .putInt(KEY_AUDIO_VOICE_PCT, audioVoicePct)
+            .putBoolean(KEY_AUDIO_BGM_ON, audioBgmOn)
+            .putInt(KEY_AUDIO_BGM_PCT, audioBgmPct)
+            .putBoolean(KEY_AUDIO_DUCK_ON, audioDuckOn)
+            .putInt(KEY_AUDIO_DUCK_PCT, audioDuckPct)
+            .apply()
+    }
+
+    /**
+     * 重建「音频」区的三行。每行 = 名称 + 开关按钮 + 滑杆。
+     *
+     * 直接整段重建（而不是维持一堆控件引用）是因为它最多三行、交互频率很低，
+     * 开关与数值的联动逻辑也就只有一份。
+     */
+    private fun rebuildAudioSection() {
+        if (!::audioSection.isInitialized) return
+        audioSection.removeAllViews()
+        fun addRow(label: String, pct: Int, on: Boolean,
+                   onToggle: (Boolean) -> Unit, onPct: (Int) -> Unit) {
+            val head = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            head.addView(
+                TextView(this@MainActivity).apply {
+                    text = "$label　${if (on) pct else 0}%"
+                    setTextColor(0xFFFFFFFF.toInt())
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            head.addView(Button(this@MainActivity).apply {
+                text = if (on) "开" else "关"
+                setOnClickListener { onToggle(!on) }
+            })
+            val bar = SeekBar(this@MainActivity).apply {
+                max = 100
+                progress = pct
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (fromUser) onPct(p)
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) {}
+                })
+            }
+            audioSection.addView(head)
+            audioSection.addView(bar)
+        }
+        addRow("语音", audioVoicePct, audioVoiceOn, { audioVoiceOn = it; audioChanged() },
+               { audioVoicePct = it; audioChanged() })
+        addRow("BGM", audioBgmPct, audioBgmOn, { audioBgmOn = it; audioChanged() },
+               { audioBgmPct = it; audioChanged() })
+        addRow("人声时 BGM 降到", audioDuckPct, audioDuckOn,
+               { audioDuckOn = it; audioChanged() }, { audioDuckPct = it; audioChanged() })
+    }
+
+    /** 任何一项变化：持久化 → 立刻生效 → 刷新那一行的显示。 */
+    private fun audioChanged() {
+        persistAudioMix()
+        applyAudioMix()
+        rebuildAudioSection()
     }
 
     private fun log(text: String) {
